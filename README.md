@@ -8,6 +8,8 @@ Runs on `global.anthropic.claude-opus-5` on Amazon Bedrock with adaptive thinkin
 
 **Agents as objects.** The library is decorator-first: an agent is a module-level function whose docstring is the prompt. `pneuma.Agent` inverts that — a subclass declares the static parts in its class body and carries the varying parts as instance state, then compiles itself into one `AIFunction`. `Specialist("metrics")` and `Specialist("logs")` are two live threads from one class, each holding private evidence the other cannot read.
 
+**Tools on `self`.** A method decorated with strands' `@tool` becomes a tool bound to the instance. `Agent.tools()` walks the MRO and reads each one off `self`, so `DecoratedFunctionTool.__get__` binds it: two instances get two distinct tools closing over their own state, and `self` never reaches the schema the model sees. `Specialist.search_plane` is the payoff — each analyst can grep its own plane and no other.
+
 **Self-staffing subagents.** The library injects `list_threads` and `send_message` into every thread, so an agent can talk to peers that already exist. It cannot create one. `ThreadConfig.config_hook` is documented as the place to inject a spawn tool, and nothing ships it. `pneuma.staffing` does: `hire(role, name, mandate)`, `delegate(name, request)`, `dismiss(name)`, each bound to the live cycle context so the hiring agent is recorded as parent — which is what makes the library's own token rollup work across a tree the agent built itself.
 
 **Three layers of orchestration in one run.** A deterministic plain-Python `Spawnable` fans out specialists with `asyncio.gather`; the lead delegates to peers at runtime through the library's tools; the lead also builds its own team through ours.
@@ -20,7 +22,7 @@ Runs on `global.anthropic.claude-opus-5` on Amazon Bedrock with adaptive thinkin
 uv sync
 uv run pneuma                    # live Bedrock run, writes artifacts/
 uv run pneuma --truth            # print the planted ground truth and exit
-uv run pytest                    # 15 offline tests, scripted models, no network
+uv run pytest                    # 21 offline tests, scripted models, no network
 ```
 
 `pneuma` exits non-zero when the oracle rejects the verdict.

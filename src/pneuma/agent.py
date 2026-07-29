@@ -27,6 +27,7 @@ from ai_functions import AIFunction, Coordinator, ThreadHandle
 from ai_functions.ai_thread import PostCondition
 from ai_functions.ai_thread.config import ThreadConfig
 from ai_functions.types import InputShape, ThreadId
+from strands.tools.decorator import DecoratedFunctionTool
 from strands.types.tools import AgentTool
 
 from .model import Effort, opus5
@@ -72,7 +73,23 @@ class Agent:
         return opus5(self.effort)
 
     def tools(self) -> list[AgentTool | Any]:
-        return []
+        """Tools this agent exposes. Defaults to its own `@tool` methods.
+
+        Walks the MRO so an inherited tool is not dropped, and reads each name
+        off the instance so `DecoratedFunctionTool.__get__` binds `self`. Two
+        instances therefore get two distinct tool objects closing over their own
+        state, and `self` never appears in the schema the model sees.
+        """
+        found: list[AgentTool | Any] = []
+        seen: set[str] = set()
+        for klass in type(self).__mro__:
+            for attr, value in vars(klass).items():
+                if attr in seen:
+                    continue
+                seen.add(attr)
+                if isinstance(value, DecoratedFunctionTool):
+                    found.append(getattr(self, attr))
+        return found
 
     def post_conditions(self) -> list[PostCondition]:
         return []

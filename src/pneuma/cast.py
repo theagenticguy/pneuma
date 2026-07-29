@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
+from strands.tools.decorator import tool as strands_tool
 
 from . import incident
 from .agent import Agent
@@ -90,6 +91,19 @@ class Specialist(Agent):
             "an honest list of surviving candidates is more useful to the incident lead "
             "than a confident wrong answer."
         )
+
+    @strands_tool
+    def search_plane(self, substring: str) -> str:
+        """Search your own telemetry plane for records containing a substring.
+
+        Case-insensitive. Use it to check a specific service, change id, or
+        timestamp without re-reading the whole plane.
+        """
+        needle = substring.strip().lower()
+        hits = [line for line in self.evidence.splitlines() if needle in line.lower()]
+        if not hits:
+            return f"no {self.plane} record contains {substring!r}"
+        return "\n".join(hits[:40])
 
     def brief(self, request: str) -> str:
         return (
@@ -203,7 +217,7 @@ class IncidentLead(Agent):
         self._tools = tool_list or []
 
     def tools(self) -> list[Any]:
-        return list(self._tools)
+        return [*super().tools(), *self._tools]
 
     def system_prompt(self) -> str:
         peers = ", ".join(f"{p}-analyst" for p in self.specialists)

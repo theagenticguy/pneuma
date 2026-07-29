@@ -9,6 +9,7 @@ from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
 from ai_functions.types import EventKind, InputShape
 from pydantic import BaseModel
 from rich.console import Console
+from strands.tools.decorator import tool as strands_tool
 
 from pneuma import incident
 from pneuma.agent import ROSTER, Agent
@@ -290,3 +291,71 @@ async def test_tape_subscription_uses_the_real_teardown_api() -> None:
     subscription = tape.watch(coordinator)
     subscription.unsubscribe()
     subscription.unsubscribe()  # idempotent by contract
+
+
+# ── Method tools: @tool on a method, bound to instance state ──
+
+
+class Toolful(Agent):
+    """Base contributing one inherited tool."""
+
+    role: ClassVar[str] = "toolful"
+    result_type: ClassVar[type] = str
+    hireable: ClassVar[bool] = False
+
+    def brief(self, request: str) -> str:
+        return request
+
+    @strands_tool
+    def inherited(self) -> str:
+        """A tool defined on the base class."""
+        return "base"
+
+
+class ToolfulChild(Toolful):
+    role: ClassVar[str] = "toolful-child"
+    hireable: ClassVar[bool] = False
+
+    def __init__(self, secret: str, *, name: str | None = None) -> None:
+        super().__init__(name=name)
+        self.secret = secret
+
+    @strands_tool
+    def reveal(self, count: int) -> str:
+        """Return the first `count` characters of this instance's secret."""
+        return self.secret[:count]
+
+
+def test_method_tools_are_discovered_across_the_mro() -> None:
+    """A subclass sees its own tools and its base's, not one or the other."""
+    names = {t.tool_name for t in ToolfulChild("abcdef").tools()}
+    assert names == {"inherited", "reveal"}
+
+
+def test_method_tools_hide_self_from_the_model() -> None:
+    """`self` must not appear in the schema, or the model would try to supply it."""
+    reveal = next(t for t in ToolfulChild("abcdef").tools() if t.tool_name == "reveal")
+    assert set(reveal.tool_spec["inputSchema"]["json"]["properties"]) == {"count"}
+
+
+def test_method_tools_bind_to_their_own_instance() -> None:
+    """Two instances get two tool objects, each closing over its own state."""
+    a, b = ToolfulChild("aaa-1"), ToolfulChild("bbb-2")
+    ta = next(t for t in a.tools() if t.tool_name == "reveal")
+    tb = next(t for t in b.tools() if t.tool_name == "reveal")
+    assert ta is not tb
+    assert ta(5) == "aaa-1"
+    assert tb(5) == "bbb-2"
+
+
+def test_specialist_tool_reads_only_its_own_plane() -> None:
+    """The information asymmetry has to survive being reachable through a tool."""
+    metrics, logs = Specialist("metrics"), Specialist("logs")
+    assert metrics.search_plane("checkout") != logs.search_plane("checkout")
+    assert metrics.search_plane("no-such-record").startswith("no metrics record")
+
+
+def test_lead_keeps_injected_tools_alongside_method_tools() -> None:
+    """Overriding `tools()` must extend the method tools, not replace them."""
+    lead = IncidentLead(specialists=["metrics"], tool_list=["injected-sentinel"])
+    assert "injected-sentinel" in lead.tools()
