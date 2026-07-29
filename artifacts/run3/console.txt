@@ -1,0 +1,303 @@
+╭────────────────────────────────────────────────── pneuma war room ───────────────────────────────────────────────────╮
+│ 4 specialists, one lead holding no evidence, up to 3 self-hired subagents.                                           │
+│ Ground truth is planted and checked by a post-condition; 6 mechanisms are allowed.                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+          war-room thinking
+    thread-87b4a26 spawned child thread-948920b
+    thread-87b4a26 spawned child thread-5b0790f
+    thread-87b4a26 spawned child thread-0b687e6
+    thread-87b4a26 spawned child thread-4699f93
+   deploys-analyst thinking
+   metrics-analyst thinking
+      logs-analyst thinking
+    traces-analyst thinking
+    thread-0b687e6 calls Finding(plane=logs, onset=2026-07-28T14:12:58Z, observations=["Baseline is clean and shows a 
+2-attempt retry ceiling: ..., suspects=['retry_amplification - strongest fit in my plane: attem)
+      logs-analyst done
+    thread-948920b calls Finding(plane=deploys, onset=2026-07-28T14:26:00Z, observations=["d-11 (2026-07-28T14:26:00Z) 
+is the earliest record in m..., suspects=["retry_amplification -- strongest fit on my plane al)
+   deploys-analyst done
+    thread-5b0790f calls Finding(plane=metrics, onset=2026-07-28T14:16:00Z, observations=['Demand was constant: 
+edge-gateway rps_in stays 1180-120..., suspects=['n_plus_one_fanout - a per-request increase in disti)
+   metrics-analyst done
+    thread-4699f93 calls Finding(plane=traces, onset=2026-07-28T14:20:47.862Z, observations=['Earliest failing span on 
+this plane is t-12 (pricing.qu..., suspects=['retry_amplification - strongest fit on this plan)
+    traces-analyst done
+    thread-87b4a26 spawned child thread-1b6ca89
+     incident-lead thinking
+    thread-1b6ca89 calls list_threads()
+    thread-1b6ca89 calls send_message(thread_id=thread-948920ba23ff, message=Incident lead here. I have no telemetry of 
+my own, so I n...)
+    thread-1b6ca89 calls send_message(thread_id=thread-5b0790f25268, message=Incident lead here. I have no telemetry of 
+my own, so I n...)
+    thread-1b6ca89 calls send_message(thread_id=thread-0b687e6e7a1e, message=Incident lead here. I have no telemetry of 
+my own, so I n...)
+    thread-1b6ca89 calls send_message(thread_id=thread-4699f939e02e, message=Incident lead here. I have no telemetry of 
+my own, so I n...)
+   deploys-analyst thinking
+   metrics-analyst thinking
+      logs-analyst thinking
+    traces-analyst thinking
+    thread-948920b calls Finding(cannot_determine=["Whether my inventory is COMPLETE for the fleet. change_..., 
+observations=['COMPLETE INVENTORY: 15 records (d-01..d-15) spanning 20..., onset=2026-07-28T14:26:00Z)
+   deploys-analyst done
+    thread-4699f93 calls Finding(cannot_determine=["Causal order between retry_amplification and connection..., 
+observations=['[Q1 HEALTHY] tr-7b02 = 7 spans, depth 3: root s-7b02-1 ..., onset=2026-07-28T14:20:47.)
+    traces-analyst done
+    thread-0b687e6 calls Finding(plane=logs, onset=2026-07-28T14:12:58Z, observations=["[1a] EARLIEST ANOMALOUS LINE — 
+l-06 | 2026-07-28T14:12:..., suspects=['retry_amplification — best-supported in my plane: ceil)
+      logs-analyst done
+    thread-5b0790f calls Finding(cannot_determine="ORDERING WITHIN THE ONSET BUCKET. Four services first de..., 
+observations=["TIMEZONE: every record's ts ends in 'Z' = UTC/+00:00. B..., onset=2026-07-28T14:16:00Z)
+   metrics-analyst done
+    thread-1b6ca89 calls send_message(message=Follow-up, incident lead. Three precise questions about t..., 
+thread_id=thread-5b0790f25268)
+    thread-1b6ca89 calls send_message(message=Follow-up, incident lead. Four precise questions.
+
+Q1 — P..., thread_id=thread-4699f939e02e)
+    thread-1b6ca89 calls send_message(message=Follow-up, incident lead. Four precise questions about ch..., 
+thread_id=thread-948920ba23ff)
+    thread-1b6ca89 calls send_message(message=Follow-up, incident lead. Four precise questions. Your pl..., 
+thread_id=thread-0b687e6e7a1e)
+    thread-1b6ca89 calls hire(role=historian, name=timeline, mandate=Build a single strict cross-plane timeline for the 
+2026-0...)
+    thread-1b6ca89 spawned child thread-5a12b64
+    thread-1b6ca89 calls hire(role=correlator, name=intersect, mandate=Intersect findings across the deploys, metrics, 
+logs and ...)
+    thread-1b6ca89 spawned child thread-134dfbe
+   metrics-analyst thinking
+    traces-analyst thinking
+   deploys-analyst thinking
+      logs-analyst thinking
+    thread-948920b calls Finding(cannot_determine=["Q1: whether bare 'pool.max_idle' (d-08) is the outbound..., 
+observations=["Q1 PARTIAL CONFIRM: four of the five keys in d-08 carry..., onset=2026-07-28T14:26:00Z)
+   deploys-analyst done
+    thread-0b687e6 calls Finding(plane=logs, onset=2026-07-28T14:12:58Z, observations=["[Q1 — ARITHMETIC] Model implied 
+by my own lines: attemp..., suspects=['retry_amplification — now the best-supported mechanism)
+      logs-analyst done
+    thread-4699f93 calls Finding(cannot_determine=["Q1 POOL OWNERSHIP - the decisive field is missing. No s..., 
+observations=['[Q1 LITERAL PLACEMENT] The attribute tokens are exactly..., onset=2026-07-28T14:20:47.)
+    traces-analyst done
+    thread-5b0790f calls Finding(cannot_determine="Q1 LIMIT - I cannot certify your 3-second boundary. My s..., 
+observations=['Q1 ANSWER, plainly: essentially yes but not literally. ..., onset=2026-07-28T14:16:00Z)
+   metrics-analyst done
+    thread-1b6ca89 calls delegate(name=timeline, request=Build a strict chronological timeline for 2026-07-28 from...)
+    thread-1b6ca89 calls delegate(name=intersect, request=Eliminate mechanism candidates by multi-plane intersectio...)
+          timeline thinking
+         intersect thinking
+    thread-134dfbe calls list_threads()
+    thread-134dfbe calls send_message(thread_id=thread-5b0790f25268, message=Intersect thread. Two narrow questions on 
+your plane only...)
+    thread-134dfbe calls send_message(thread_id=thread-4699f939e02e, message=Intersect thread. Two narrow questions on 
+your plane only...)
+   metrics-analyst thinking
+    traces-analyst thinking
+    thread-5a12b64 calls list_threads()
+    thread-4699f93 calls Finding(cannot_determine=["PRICING -> CART TRAFFIC IS INVISIBLE. pricing.quote has..., 
+observations=['[Q1 SICK cart.get COUNT] Exactly one cart.get child per..., onset=2026-07-28T14:20:47.)
+    traces-analyst done
+    thread-5a12b64 calls Timeline(ordered_events=['2026-07-27T11:05Z | DEPLOYS | d-04 chg-4408 checkout-ap..., 
+causal_breaks=['EFFECT PRECEDES CAUSE: l-19 (14:22:47Z, 504 with dur_ms...)
+          timeline done
+    thread-5b0790f calls Finding(plane=metrics, onset=2026-07-28T14:16:00Z, observations=["Q1 - YOUR PREMISE IS REFUTED 
+AT BASELINE BY MY COUNTERS..., suspects=["retry_amplification - OPEN, and STRENGTHENED relati)
+   metrics-analyst done
+         intersect failed: MaxTokensReachedException('Model stopped generating due to maximum token limit. The partial 
+message has been added to the conversation history. You can continue
+    thread-1b6ca89 calls delegate(name=intersect, request=BE CONCISE. Short bullets, no restating evidence back to ...)
+         intersect thinking
+    thread-134dfbe calls FinalAnswer(answer=**1. Verdicts (one conjunction each)**
+
+- **cache_key_col...)
+         intersect done
+    thread-1b6ca89 calls hire(role=skeptic, name=redteam, mandate=Adversarially review my draft verdict on the 
+2026-07-28 i...)
+    thread-1b6ca89 spawned child thread-5cf2c5c
+    thread-1b6ca89 calls delegate(name=redteam, request=Attack this draft verdict. Be specific and brutal. Flag e...)
+           redteam thinking
+    thread-5cf2c5c calls list_threads()
+    thread-5cf2c5c calls send_message(thread_id=thread-5b0790f25268, message=Redteam here, adversarially auditing the 
+chg-4417/retry_a...)
+    thread-5cf2c5c calls send_message(thread_id=thread-4699f939e02e, message=Redteam here, adversarially auditing the 
+chg-4417/retry_a...)
+    thread-5cf2c5c calls send_message(thread_id=thread-0b687e6e7a1e, message=Redteam here, adversarially auditing the 
+chg-4417/retry_a...)
+    thread-5cf2c5c calls send_message(thread_id=thread-948920ba23ff, message=Redteam here, adversarially auditing the 
+chg-4417/retry_a...)
+   metrics-analyst thinking
+    traces-analyst thinking
+      logs-analyst thinking
+   deploys-analyst thinking
+    thread-0b687e6 calls Finding(cannot_determine=["The '32 -> unlimited' claim itself. My plane cannot sup..., 
+observations=["[Q1 — IN-FLIGHT CEILING: the limb has almost zero log s..., onset=2026-07-28T14:12:58Z)
+      logs-analyst done
+    thread-4699f93 calls Finding(cannot_determine=["POOL OWNERSHIP still not settled by attributes. Present..., 
+observations=['[Q1 FULL ATTRIBUTE INVENTORY, SICK CHILD SPANS] t-12: h..., onset=2026-07-28T14:20:47.)
+    traces-analyst done
+    thread-948920b calls Finding(cannot_determine=["Q1, the central hole: the content of a83b6f1. I need th..., 
+observations=["Q1 DIRECT ANSWER -- I HAVE NOTHING ON a83b6f1's CONTENT..., onset=2026-07-28T14:26:00Z)
+   deploys-analyst done
+    thread-5b0790f calls Finding(cannot_determine="COUNTER SEMANTICS - the decisive gap. I need the instrum..., 
+observations=['Q1 - PRICING rps_in PER BUCKET, verbatim: 1118 (m-prici..., observations_note=n/a, ons)
+   metrics-analyst done
+           redteam failed: MaxTokensReachedException('Model stopped generating due to maximum token limit. The partial 
+message has been added to the conversation history. You can continue
+    thread-1b6ca89 calls delegate(name=redteam, request=BE TERSE. Max 500 words. Do not restate my evidence.
+
+Ver...)
+           redteam thinking
+    thread-5cf2c5c calls Critique(holds=False, unsupported_claims=['PLANE LAUNDERING: pool_wait 380->590 is presented as
+a ..., missing_evidence=['Instrumentation definition of pricing rps_in and error_..., alterna)
+           redteam done
+    thread-1b6ca89 calls dismiss(name=timeline)
+    thread-1b6ca89 calls dismiss(name=intersect)
+    thread-1b6ca89 calls dismiss(name=redteam)
+    thread-1b6ca89 calls Verdict(culprit_service=checkout-api, culprit_change_id=chg-4417, 
+mechanism=retry_amplification, causal_chain=['14:12:00 chg-4417 begins a 3-stage canary on checkout-a..., 
+ruled_out=['chg-)
+     incident-lead done
+          war-room done
+╭────────────────────────────────────────────────────── verdict ───────────────────────────────────────────────────────╮
+│  culprit     checkout-api / chg-4417                                                                                 │
+│  mechanism   retry_amplification                                                                                     │
+│  confidence  0.78                                                                                                    │
+│  oracle      correct                                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+causal chain
+  1. 14:12:00 chg-4417 begins a 3-stage canary on checkout-api (d-08 5%, d-09 25% at 14:16, d-10 100% at 14:20). One 
+diff moves five outbound-client keys: http.client.max_retries 2->5, backoff exp_jitter->fixed_50ms, retry_budget_pct 
+10->disabled, max_inflight 32->unlimited, pool.max_idle 8->16.
+  2. 14:12:03 the rollout-start line (l-05) is the last clean record on any plane; 55s later checkout-api emits the 
+first anomaly anywhere (l-06, 'attempt=3/5'). Both lines are checkout-api, i.e. one host clock, so no clock offset can 
+invert them. Arithmetic on the fixed 50ms backoff bounds attempt 1 of that burst to ~14:12:57.8, worst case 14:12:51.9 -
+still after 14:12:03.
+  3. Canary instances begin issuing up to 5 attempts per logical pricing.quote call instead of 2, with no retry budget 
+to throttle them. Traces fingerprint this directly: a sick request with items=1 spawns FIVE sequential children, all 
+carrying ONE idempotency key with attempt=1,2,3,4,5 (t-12..t-16) - literal repetition of one logical call, versus the 
+healthy pattern of one child per SKU with distinct keys (t-03/t-04/t-05).
+  4. Outbound volume rises with inbound demand flat: checkout rps_out 1132->1290 while rps_in holds 948->951 
+(m-checkout-api-03 vs -04), and edge/checkout ingress stays flat in all 11 buckets. This is a change in per-request 
+behaviour, not in traffic.
+  5. The amplification scales with canary DOSE, not with downstream errors. Inverting the mix model gives an implied 
+changed-fraction of 0.035 / 0.331 / 0.849 / 0.963 against the scheduled 0.05 / 0.25 / 1.00 / 1.00 
+(m-checkout-api-04..-07). At the first deviating bucket the extra calls (+158 rps) exceed pricing's total errors 
+(~3.9/s) by ~40x, so the initial increment is unconditional, not error-triggered.
+  6. Because max_inflight was simultaneously removed (32->unlimited), the retry demand from a small canary fraction was 
+not bounded to that fraction: pricing-svc pool occupancy roughly doubles from 15/48 (l-02, baseline) to 31/48 within ~2 
+minutes (l-07, 14:14:30), while pricing-svc itself had shipped no change for 46 hours (d-02 to d-15).
+  7. The amplified attempt volume saturates a fixed 48-slot connection pool attested independently by metrics 
+(m-pricing-svc-06 first 48/48 at 14:24, pool_max=48 in all 11 records, never resized) and by pricing-svc's own logs 
+(l-10, l-13, l-17, l-22, l-30, l-36, l-40: 'no connection available in_use=48 max=48', waited_ms rising 812->2411).
+  8. Connection acquisition, not work, becomes the cost: pool_wait_ms is 94-98% of every sick pricing span (t-12..t-15 
+380/430/470/500; t-20/t-21 580/590) and residual non-wait work is only 12-28ms, BELOW the healthy 57-61ms end-to-end. 
+Attempts terminate in pool_timeout=true (t-16, t-22). This is a traces-plane measurement, corroborated in kind - not in 
+value - by pricing's pool gauge and PoolTimeout logs.
+  9. Failed and abandoned attempts feed more attempts, so the multiplier climbs 1.356 -> 2.765 -> 5.231 -> 5.772 and 
+then SATURATES at the configured ceiling: 5.772 is 97.0% of baseline fanout 1.19 x 5 attempts = 5.95. It is a bounded 
+multiplier pinned to the deployed parameter, and it plateaus while pricing's error rate is still rising (0.243->0.261), 
+so it is not tracking downstream errors.
+  10. Pricing-svc collapses under the manufactured load: queue full and load shed at depth=512 (l-27), p99 4400ms, 
+error_rate 0.261, saturation 0.98 (m-pricing-svc-08); checkout-api reports 'inflight=214 limit=unlimited' (l-18), 'retry
+budget disabled; not throttling retries' (l-29) and fanout=5.76 (l-44); pricing confirms duplicate work server-side with
+'duplicate request detected ... seen=4/seen=5' (l-20, l-33). edge-gateway is a pure pass-through victim, emitting 
+502/504s that blame checkout-api (l-19, l-28, l-39) with its own fanout flat at 0.795-0.799.
+  11. 14:44:08 chg-4423 reverts chg-4417 (d-14, l-46); 14:44:51 the retry keys are restored (l-47 'max_retries=2 
+backoff=exp_jitter retry_budget_pct=10'). Pricing's pool drains 81 seconds later at UNCHANGED capacity (l-48 'pool 
+recovered in_use=27 max=48'), edge is healthy by 14:48:03 (l-49), and only then is capacity added at 14:52:07 (l-51, 
+d-15 replicas 12->20) - 5m55s AFTER recovery. Demand-side reversal was sufficient; capacity was irrelevant. Full 
+baseline at 14:56 (m-*-11), with the retry ceiling observed back at 1/2 (l-52, t-25).
+
+decoys dismissed
+  - chg-4420 (auth-svc, jwt.cache.key sub->sub+aud, ttl_s 60->900, 14:31) - the most seductive decoy, since an 
+audience-blind cache key is exactly the shape of cache_key_collision. Dead on ordering: it POSTDATES the first anomaly 
+by 18 minutes, the first metrics deviation by 15, and the first PoolTimeout by 13. Dead on symptoms: auth-svc shows zero
+latency, error, load or pool deviation in all 11 buckets (m-auth-svc-01..-11) and logs only healthy lines (l-24, l-35, 
+l-42). Dead on recovery: it was NEVER reverted, yet full baseline was reached at 14:56. Its one real footprint - hit 
+ratio 0.91->0.96->0.97 first moving at 14:44 and never reverting - is an effect of its own 15x TTL extension, not of the
+incident.
+  - cache_key_collision as a mechanism - rejected across three planes. No change in the entire 4-day inventory ever 
+altered cart-store's key format; the only key-format change (chg-4420) is the ineligible decoy above. Logs show zero 
+plane-wide matches for 'stale' and no line anywhere shows a wrong or mismatched value served. cart-store first deviates 
+at 14:16, the SAME bucket as everything else and never earlier, never emitted a single ERROR, was never blamed by any 
+service, and recovered to 0.94 with no change of its own. Residual unexplained oddity I could not close: one healthy 
+post-incident span (t-28) reads another trace's key cart:v2:8842 and gets a HIT; spans carry no payload, so correctness 
+is unverifiable.
+  - cart-store's 2.58x inbound growth with hit ratio falling 0.94->0.70 - the strongest quantitative objection to my 
+verdict, since retried IDENTICAL reads should raise a hit ratio, not lower it. Resolved without a new cause: 
+pricing.quote is a LEAF span with uninstrumented children and pricing-svc has NO rps_out metric on any record, so the 
+pricing->cart-store edge is invisible rather than absent, and cart's growth (2.58x) sits below pricing's intake growth 
+(4.87x) as a partial downstream share would. Falling hit ratio needs no novel keys: requests abandoned mid-flight on 
+pool_timeout never complete their cache write-back, and eviction churn (evictions_5m=41200, l-21) plus widened miss 
+windows do the rest. Honest caveat: that edge is inferred from a coefficient fit, never directly observed.
+  - chg-4413 (cart-store, cache.max_entries 200k->260k, 09:31) - eligible on timing but dead on dose and recovery: it 
+was at 100% for five hours before onset, so it cannot produce a step change at 14:12, it was never reverted while the 
+fleet fully recovered, and cart-store never led any deviation.
+  - chg-4415 (edge-gateway, tls.session_cache 8192->16384, 14:02, WITH an unexamined version bump) - the most dangerous 
+predating decoy, landing 10 minutes before chg-4417 with unverified code. Dead on dose-invariance: it was at 100% before
+onset. Dead on symptoms: edge rps_in (1180-1204) and edge fanout (0.795-0.799) are flat in ALL 11 buckets, so the edge 
+tier neither amplified nor retried; edge shows no distress until 14:20:33 (l-12), 18 minutes after its own deploy, and 
+only ever blames checkout-api. Never reverted, yet recovery completed.
+  - chg-4408 (checkout-api, feature.flag.split_ship on, 07-27) and n_plus_one_fanout - the flag genuinely multiplies 
+per-request downstream calls, and it was live through the incident. Dead as generator on three planes: traces show 
+baseline children track item count EXACTLY with distinct keys and SKUs (items=3->3, items=2->2, items=1->1), while both 
+sick traces have items=1 yet 5 and 3 children ALL sharing one idem key with attempt=1..N - repetition, not per-item 
+work. Per-tier counts are 1->1->5->0 with multiplication at exactly ONE tier; there is no 1->3->9 cascade. Metrics show 
+demand flat in all 11 buckets, so the item mix cannot have shifted. Decisively, the flag was at 100% for 27 hours before
+onset and was never reverted while the fleet recovered - it is dose-invariant. It survives only as a possible 
+multiplicand that retries amplified.
+  - connection_pool_exhaustion - real, directly logged, and the proximate cause of the user-visible errors, but a 
+CONSEQUENCE, not the trigger. Ordering: checkout's egress rose at 14:16 while pricing's pool was still only 19/48; the 
+pool did not pin at 48/48 until 14:24. Capacity: pool_max=48 is constant in all 11 metrics records and in every log line
+including recovery - nothing shrank it, and no change in the inventory ever altered a pricing-svc pool. Agency: 
+pricing-svc shipped nothing for 46 hours. Recovery: the pool drained at UNCHANGED max=48 within 81s of the retry-key 
+restore and 5m55s before any replica was added. Note the diff RAISED pool.max_idle 8->16, i.e. more idle retention, 
+which relieves rather than causes pressure.
+  - unbounded_concurrency - the closest rival and the one I cannot fully separate, since max_inflight 32->unlimited 
+shipped in the SAME diff, on the same canary ladder, with the same single rollback. Demoted to permissive co-factor, not
+generator, on two grounds no other reading explains: (1) removing an in-flight ceiling cannot mint an attempt 
+DENOMINATOR of 5 - logs show the ceiling moving 1/2 -> x/5 -> restored 2 -> 1/2 (l-01, l-06/l-14, l-47, l-52), traces 
+show attempt=1..5 on ONE idem key, and the metrics plateau sits at 97% of exactly 5x baseline; (2) traces show sibling 
+spans strictly SEQUENTIAL with zero overlap, so per-request parallelism is 1. 'inflight=214' (l-18) is not independent 
+support for the concurrency limb - it is rate x inflated latency, a consequence. I record it as the enabling co-factor 
+that let a 5% canary saturate a shared pool.
+  - clock_skew - measured but non-causal. clock_offset_ms=-118 appears on exactly ONE host (pricing-svc-7) with the 
+IDENTICAL value in a healthy pre-incident span (t-09, 13:52), the sick span (t-12, 14:20) and a healthy post-incident 
+span (t-26, 14:56): zero drift, no correlation with failure, and every other slow span carries no offset at all. A 
+constant offset contributes 0ms to any duration since start and end are read from the same clock, and 118ms is 4.7% of a
+2501ms symptom. Logs have zero plane-wide matches for clock/NTP/skew/drift/not-yet-valid/expired, and the decisive 
+ordering pair (l-05 vs l-06) is intra-service on one clock. Where skew IS load-bearing: it corrupts my backoff 
+fingerprint on the one offset host - the first inter-attempt gap is 146ms raw but 28ms skew-corrected, BELOW the 50ms 
+floor, so I rest that fingerprint only on the three clean gaps (51/52/52ms) on non-offset hosts plus 50/50ms in the 
+second sick trace. Two earlier log 'inversions' were withdrawn by the logs plane itself in favour of idempotency-key 
+reuse across request waves, which is intra-service arithmetic no constant offset can produce.
+  - chg-4421 (edge-gateway, upstream.timeout_ms 1500->2500, 14:34) - postdates the first anomaly by 21 minutes; 
+ineligible. Flagged separately as an effect-precedes-cause anomaly in the evidence itself: a 504 with dur_ms=2501 was 
+already logged at 14:22:47 (l-19), 11m22s BEFORE the 2500ms ceiling was announced (l-38), so the recorded diff cannot 
+explain the ceiling that was already in force. Annotated 'no effect' and never reverted.
+  - chg-4425 (pricing-svc, replicas 12->20, 14:52) - the intuitive 'we were under-provisioned' story, and doubly 
+ineligible: it postdates onset by 37 minutes AND postdates measured recovery (pool recovered 14:46:12, edge healthy 
+14:48:03). Capacity was added to an already-healed system.
+  - chg-4419 (cart-store, trace.sampling 0.10->0.25, 14:26) - postdates cart-store's own first deviation (14:16 bucket) 
+by ~10 minutes, by which time the cache slide was already three buckets deep. Telemetry-only, but it does mean raw span 
+volume is not comparable across 14:26, which I accounted for by reasoning from per-trace SHAPE (children per request, 
+idem keys, attempt counters) rather than span counts.
+
+subagents the lead hired for itself
+  timeline (historian): Build a single strict cross-plane timeline for the 2026-07-28 incident from evidence I supply 
+verbatim, and flag any candidate cause whose timestamp postdates the effect it is supposed to explain. You produce 
+ordering verdicts only, never mechanism claims.
+  intersect (correlator): Intersect findings across the deploys, metrics, logs and traces planes for the 2026-07-28 
+incident to eliminate every mechanism candidate that survives on one plane but dies on the intersection. Report which 
+candidates are eliminated, by which specific multi-plane conjunction, and which single candidate survives all four 
+planes.
+  redteam (skeptic): Adversarially review my draft verdict on the 2026-07-28 incident. Attack every unsupported 
+inferential step, name any claim that rests on a single plane, and tell me the specific confidence level the evidence 
+actually licenses.
+╭──────────────────────────────────────────────────────── run ─────────────────────────────────────────────────────────╮
+│  tool calls       Critiquex1, FinalAnswerx1, Findingx18, Timelinex1, Verdictx1, delegatex5, dismissx3, hirex3,       │
+│                   list_threadsx4, send_messagex14                                                                    │
+│  threads spawned  8                                                                                                  │
+│  tokens           1,367,046 in / 274,118 out                                                                         │
+│  turns            38                                                                                                 │
+│  wall clock       2368.3s                                                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

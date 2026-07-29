@@ -1,0 +1,254 @@
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+}
+
+:root {
+  --ink: #16181d;
+  --muted: #5c6370;
+  --rule: #d8dce3;
+  --accent: #1f4f8f;
+  --wash: #f5f6f8;
+  --code: #f0f2f5;
+}
+
+* { box-sizing: border-box; }
+
+html {
+  font-size: 10.5pt;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Charter", "Bitstream Charter", "Georgia", serif;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Cover ── */
+
+.cover {
+  page-break-after: always;
+  padding-top: 32mm;
+}
+
+.cover .eyebrow {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 8.5pt;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.cover h1 {
+  font-size: 30pt;
+  line-height: 1.1;
+  margin: 6mm 0 3mm;
+  letter-spacing: -0.02em;
+}
+
+.cover .deck {
+  font-size: 13pt;
+  color: var(--muted);
+  max-width: 128mm;
+  line-height: 1.45;
+  margin: 0 0 12mm;
+}
+
+.cover dl {
+  display: grid;
+  grid-template-columns: 34mm 1fr;
+  gap: 2mm 6mm;
+  border-top: 1.5px solid var(--ink);
+  padding-top: 5mm;
+  margin: 0;
+  font-size: 9.5pt;
+}
+
+.cover dt {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 8pt;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 0.4mm;
+}
+
+.cover dd { margin: 0; }
+
+/* ── Structure ── */
+
+h2 {
+  font-size: 16pt;
+  letter-spacing: -0.01em;
+  margin: 11mm 0 3mm;
+  padding-bottom: 2mm;
+  border-bottom: 1.5px solid var(--ink);
+  page-break-after: avoid;
+}
+
+h2:first-of-type { margin-top: 0; }
+
+h3 {
+  font-size: 12pt;
+  margin: 7mm 0 2mm;
+  page-break-after: avoid;
+}
+
+h4 {
+  font-size: 10pt;
+  margin: 5mm 0 1.5mm;
+  color: var(--accent);
+  page-break-after: avoid;
+}
+
+p { margin: 0 0 3mm; orphans: 3; widows: 3; }
+
+ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+li { margin-bottom: 1.2mm; }
+
+a { color: var(--accent); text-decoration: none; }
+
+strong { font-weight: 600; }
+
+/* ── Code ── */
+
+code {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.86em;
+  background: var(--code);
+  border-radius: 2px;
+  /* Horizontal padding on an inline element renders as a visible gap before the
+     next word in Chromium's print path, so keep it vertical only. */
+  padding: 0.4mm 0;
+  box-shadow: 0.9mm 0 0 var(--code), -0.9mm 0 0 var(--code);
+}
+
+pre {
+  background: var(--wash);
+  border: 1px solid var(--rule);
+  border-left: 2.5px solid var(--accent);
+  border-radius: 3px;
+  padding: 3mm 4mm;
+  margin: 0 0 4mm;
+  overflow: visible;
+  page-break-inside: avoid;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 8.2pt;
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Tables ── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 4mm;
+  font-size: 9pt;
+}
+
+/* Keep individual rows intact but let long tables flow across a page break;
+   avoiding the break on the whole table leaves half-empty pages. */
+tr { page-break-inside: avoid; }
+thead { display: table-header-group; }
+
+th {
+  text-align: left;
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 7.6pt;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1.2px solid var(--ink);
+  padding: 1.5mm 2mm 1.5mm 0;
+  vertical-align: bottom;
+}
+
+td {
+  border-bottom: 0.5px solid var(--rule);
+  padding: 1.6mm 2mm 1.6mm 0;
+  vertical-align: top;
+}
+
+td code { font-size: 8pt; }
+
+tbody tr:last-child td { border-bottom: none; }
+
+/* ── Callouts ── */
+
+.note {
+  background: var(--wash);
+  border-left: 2.5px solid var(--accent);
+  padding: 3mm 4mm;
+  margin: 0 0 4mm;
+  font-size: 9.5pt;
+  page-break-inside: avoid;
+}
+
+.note .label {
+  display: block;
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 7.6pt;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 1.5mm;
+}
+
+.note p:last-child { margin-bottom: 0; }
+
+.verdict {
+  border: 1.5px solid var(--ink);
+  border-radius: 3px;
+  padding: 4mm 5mm;
+  margin: 0 0 4mm;
+  page-break-inside: avoid;
+}
+
+.verdict h4 { margin-top: 0; }
+
+.figure {
+  margin: 0 0 5mm;
+  page-break-inside: avoid;
+}
+
+.figure .caption {
+  font-size: 8.5pt;
+  color: var(--muted);
+  margin-top: 1.5mm;
+}
+
+.transcript {
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  font-size: 7.4pt;
+  line-height: 1.45;
+  background: #1c1f26;
+  color: #dfe3ea;
+  border-radius: 3px;
+  padding: 3.5mm 4mm;
+  margin: 0 0 4mm;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.transcript .who { color: #8b95a6; }
+.transcript .tool { color: #e0c46c; }
+.transcript .spawn { color: #d78fd1; }
+.transcript .ok { color: #7fc98a; }
+
+hr {
+  border: none;
+  border-top: 0.5px solid var(--rule);
+  margin: 7mm 0;
+}
+
+.small { font-size: 8.8pt; color: var(--muted); }
+
+.pagebreak { page-break-before: always; }

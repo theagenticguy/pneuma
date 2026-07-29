@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Strands AI Functions, and an object-oriented agent built on it</title>
+<style>{{CSS}}</style>
+</head>
+<body>
+
+<section class="cover">
+  <div class="eyebrow">Library review &amp; proof of concept</div>
+  <h1>Functions that an agent evaluates</h1>
+  <p class="deck">A read of <code>strands-ai-functions</code> down to its protocols, and <code>pneuma</code>: an object-oriented agent layer where a running agent hires its own subagents, on Claude Opus 5 at extra-high thinking effort.</p>
+  <dl>
+    <dt>Library</dt><dd><code>strands-ai-functions</code> (AWS strands-labs), commit <code>e47dc94</code>, ~22k LOC</dd>
+    <dt>Proof of concept</dt><dd><code>pneuma</code> — <code>~/bonk-fs/projects/pneuma</code></dd>
+    <dt>Model</dt><dd><code>global.anthropic.claude-opus-5</code> on Amazon Bedrock, adaptive thinking, effort <code>xhigh</code></dd>
+    <dt>Stack</dt><dd>uv, Python 3.14, pytest, ruff</dd>
+    <dt>Result</dt><dd>Oracle {{ORACLE}} · {{TURNS}} agent turns · {{TOKENS_OUT}} output tokens · {{WALL}} wall clock</dd>
+  </dl>
+</section>
+
+<h2>1. What the library actually is</h2>
+
+<p><code>strands-ai-functions</code> takes one idea further than most agent frameworks do: a function whose body is empty, whose docstring is the task, and whose return annotation is the contract. The library builds the prompt, runs an agent, and parses a typed result. The interesting part is what it does when the result is wrong.</p>
+
+<pre><code>@ai_function
+def translate_text(text: str, lang: str) -&gt; str:
+    """Translate the text below to the following language: {lang}.
+    ---
+    {text}
+    """
+
+print(translate_text.run_sync("It was the best of times", lang="fr"))</code></pre>
+
+<p>Four design decisions distinguish it, and each has a consequence you feel when building on it.</p>
+
+<h3>Post-conditions replace hoping</h3>
+
+<p><code>post_conditions</code> are ordinary Python callables, or other AI functions, that validate the output. A failure re-prompts the model with the specific errors, up to <code>max_attempts</code> times, defaulting to 10 (<code>src/ai_functions/ai_thread/config.py:115-120</code>). The feedback is injected as a new user turn tagged <code>[VALIDATION ERROR]</code>, so the model revises rather than restarting cold.</p>
+
+<p>This is the feature that makes the library worth using. It also means a broken run reads as a silent hang and an unexplained token bill rather than a traceback — every post-condition failure is a retry, and 10 retries of an xhigh-thinking Opus call is a real amount of money.</p>
+
+<h3>Threads are a protocol, not a class</h3>
+
+<p>The load-bearing seam is <code>Spawnable</code> (<code>src/ai_functions/protocols.py:299-315</code>): two synchronous members, <code>to_thread()</code> and an <code>input_shape</code> property. Anything satisfying it gets hosted as a thread with a handle, a lifecycle, an event log, and token rollup. That is why a Claude Code session (<code>src/ai_functions/claude_code/claude_code.py:247</code>) and a Kiro session (<code>src/ai_functions/kiro/kiro.py:190</code>) are indistinguishable from a native AI function to the runtime.</p>
+
+<p>The obligation weight sits on the <code>Thread</code> that <code>to_thread()</code> returns (<code>src/ai_functions/protocols.py:128-293</code>): seven members, four async. An implementor owes the runtime cancel checks, pause awaits, result serialization, fork semantics, and teardown.</p>
+
+<div class="note">
+  <span class="label">Undeclared part of the contract</span>
+  <p><code>Spawnable</code> has no <code>name</code> member, yet both spawn paths default the thread's display name from <code>getattr(target, "name", None)</code> (<code>src/ai_functions/runtime/coordinator.py:236</code>, <code>src/ai_functions/runtime/worker.py:443</code>). A spawnable without <code>name</code> silently loses attribution in event logs and optimizer graphs.</p>
+</div>
+
+<h3>Teams discover each other at runtime</h3>
+
+<p>Every thread is handed two tools it did not ask for: <code>list_threads</code> to enumerate peers and <code>send_message</code> to delegate to one (<code>src/ai_functions/ai_thread/tools.py:101-249</code>). Three send modes: <code>wait</code> blocks on the reply, <code>fire_and_forget</code> discards it, <code>continue_then_receive</code> ends the current cycle and resumes when the reply lands.</p>
+
+<p><code>wait</code> carries a waits-for-graph deadlock guard that refuses an edge which would close a cycle. The check-and-register step runs with no intervening <code>await</code>, which is what makes it atomic on a single event loop — of two peers waiting on each other, exactly one registers and the other is refused.</p>
+
+<h3>Backpropagation over natural language</h3>
+
+<p>Named parameters — prompt fragments, learned facts, reusable Python code — live in a pluggable memory backend and are passed to functions as ordinary arguments. After a run, <code>optimizer.step(result, feedback, backends=[...])</code> walks the computation graph backward and updates only the parameters responsible (<code>src/ai_functions/optimizer/textgrad.py:307</code>). The graph is reconstructed post-hoc from the coordinator's event log, not tracked during execution.</p>
+
+<p>Passing a recalled parameter object preserves the graph edge. Interpolating it into an f-string silently drops it — the value is correct and the gradient never arrives.</p>
+
+<h2 class="pagebreak">2. The gap we found, and filled</h2>
+
+<p>The runtime lets an agent <em>talk to</em> peers. It does not let an agent <em>create</em> one. Grep confirms only <code>list_threads</code> and <code>send_message</code> are ever injected.</p>
+
+<p>The hook exists and is unused. <code>ThreadConfig.config_hook</code> is documented as the place to inject "<code>spawn_thread</code> closed over the current runtime and <code>thread_id</code>" (<code>src/ai_functions/ai_thread/config.py:166</code>), called at the start of every cycle with the live <code>ThreadContext</code>. Nothing in the library ships that tool.</p>
+
+<p><code>pneuma</code> ships it. Three tools bound to the cycle context, so the agent doing the hiring is the one the runtime records as parent:</p>
+
+<pre><code>hire(role, name, mandate)   # spawn a roster class as a child thread
+delegate(name, request)     # run it and read the answer back
+dismiss(name)               # terminate it</code></pre>
+
+<p>Each <code>hire</code> passes <code>parent_id=ctx.thread_id</code>. That single argument writes a <code>ThreadSpawnedEvent</code> into the hiring agent's log, and that edge is the only thing <code>subtree_token_usage</code> walks — so cost attribution up an agent-built tree is a free consequence of hiring correctly rather than bookkeeping we maintain.</p>
+
+<div class="note">
+  <span class="label">What the library will not do for you</span>
+  <p>No depth limit, no breadth limit, and cancellation does not propagate to children. <code>coordinator.cancel</code> sets one thread's signal and cancels its own task; nothing walks <code>parent_id</code>. A hiring cap and a <code>finally</code> that retires the tree are the caller's job, so <code>pneuma</code> enforces both.</p>
+</div>
+
+<h2>3. An object-oriented layer over a decorator-first library</h2>
+
+<p>The library's surface is decorator-first: <code>@ai_function</code> wraps a module-level function, its docstring is the template, its signature fixes the input shape. An agent is therefore a <em>function</em>, and two agents differing only in private data must be two functions.</p>
+
+<p><code>pneuma.Agent</code> inverts it. A subclass declares the static parts in its class body and carries the varying parts as instance attributes; each instance compiles itself into one <code>AIFunction</code> whose <code>prompt_fn</code> closes over <code>self</code>.</p>
+
+<pre><code>class Specialist(Agent):
+    role = "specialist"
+    result_type = Finding
+    effort = "xhigh"
+
+    def __init__(self, plane: str) -&gt; None:
+        super().__init__(name=f"{plane}-analyst")
+        self.plane = plane
+        self.evidence = incident.render_plane(plane)   # private to this instance
+
+    def brief(self, request: str) -&gt; str:
+        return f"{request}\n\nYour private {self.plane} evidence:\n{self.evidence}"
+
+specialists = [Specialist(p) for p in ("deploys", "metrics", "logs", "traces")]</code></pre>
+
+<p>One class, four live threads, four disjoint views of the evidence. Two library details make this work.</p>
+
+<p><strong>Returning a string bypasses the template.</strong> <code>render_prompt</code> calls <code>prompt_fn</code> first; if the return is not <code>None</code>, that value is the prompt verbatim, and the docstring path is never consulted. So the prompt can be computed from instance state instead of interpolated from a literal.</p>
+
+<p><strong>The generated signature must be exactly one <code>str</code> parameter.</strong> <code>_infer_input_shape</code> yields <code>STR_PROMPT</code> only in that case, and <code>STR_PROMPT</code> is the only shape <code>send_message</code> can reach. <code>Agent.build()</code> therefore synthesizes that signature whatever the subclass does, and asserts the result:</p>
+
+<pre><code>fn = AIFunction(prompt_fn, self.result_type, config)
+if fn.input_shape is not InputShape.STR_PROMPT:
+    raise RuntimeError(f"{self.name} compiled to {fn.input_shape}, not str_prompt")</code></pre>
+
+<div class="note">
+  <span class="label">Why not decorate a method</span>
+  <p><code>AIFunction</code> is not a descriptor, so <code>self</code> is never bound. A decorated method gets <code>input_shape == STRUCTURED</code> (unreachable by peers), and handing it to another agent as a tool fails with <code>missing 1 required positional argument: 'self'</code>. This breaks the library's own <code>examples/compose_research_team.py:103-109</code>. Compiling from a closure in <code>build()</code> avoids it.</p>
+</div>
+
+<h2 class="pagebreak">4. The demo: an incident nobody can solve alone</h2>
+
+<p>A war room investigates a fabricated production incident. Four specialists each hold one telemetry plane — deploys, metrics, logs, traces — and cannot read each other's data. The incident lead holds <em>nothing</em>: every fact in its verdict has to be obtained from someone else, by interrogating peers or by hiring help.</p>
+
+<p>The dataset is built so that convergence is mandatory rather than encouraged. Each plane alone leaves at least two mechanisms open; only the intersection of three or more narrows it to one. A module-level <code>self_check()</code> asserts that the four-way intersection is exactly the planted mechanism <em>and</em> that every <em>pair</em> of planes still leaves two or more candidates. "You need at least three planes" is machine-checked, not asserted in prose.</p>
+
+<table>
+  <thead><tr><th>Plane</th><th>Open</th><th>Mechanisms that plane alone cannot rule out</th></tr></thead>
+  <tbody>{{FINDINGS_ROWS}}</tbody>
+</table>
+
+<p>Two decoys are planted to punish single-plane confidence: an <code>auth-svc</code> cache-key change with a textbook collision shape that lands 11 minutes <em>after</em> symptom onset, and <code>pricing-svc</code>, which has the loudest metrics in the fleet and has not been deployed in three days.</p>
+
+<h3>Three layers of orchestration in one run</h3>
+
+<p>The war room itself is a <code>Spawnable</code> with no LLM in its control flow — a plain-Python thread that gets a handle, a lifecycle, and token rollup like any agent. Its <code>execute</code> fans out the specialists in parallel with <code>asyncio.gather</code>, barriers on the results, then spawns the lead. The fan-out order is ordinary asyncio, and therefore reproducible in a way a prompt-driven orchestrator is not.</p>
+
+<table>
+  <thead><tr><th>Layer</th><th>Who decides</th><th>Mechanism</th></tr></thead>
+  <tbody>
+    <tr><td>Deterministic</td><td>Our Python</td><td><code>WarRoom.execute</code> — parallel fan-out and barrier</td></tr>
+    <tr><td>Peer-to-peer</td><td>The lead, at runtime</td><td><code>list_threads</code> + <code>send_message</code>, injected by the library</td></tr>
+    <tr><td>Self-staffing</td><td>The lead, at runtime</td><td><code>hire</code> / <code>delegate</code> / <code>dismiss</code>, injected by us</td></tr>
+  </tbody>
+</table>
+
+<h3>The oracle is a post-condition</h3>
+
+<p>The lead's verdict is graded by the library's own retry machinery. The post-condition checks the mechanism against a closed vocabulary, requires citations from at least three planes, requires that decoys were explicitly dismissed, and finally calls <code>incident.verify</code>. A failure names the shortfall without leaking the answer, and the model gets another attempt:</p>
+
+<pre><code>raise AssertionError(
+    "the verdict does not match the evidence: " + "; ".join(problems)
+    + ". Re-interrogate the specialists whose planes you leaned on least."
+)</code></pre>
+
+<h2>5. What the run did</h2>
+
+<div class="verdict">
+  <h4>Verdict</h4>
+  <table>
+    <tbody>
+      <tr><td style="width:32mm"><strong>Culprit</strong></td><td><code>{{CULPRIT}}</code></td></tr>
+      <tr><td><strong>Mechanism</strong></td><td><code>{{MECHANISM}}</code></td></tr>
+      <tr><td><strong>Confidence</strong></td><td>{{CONFIDENCE}}</td></tr>
+      <tr><td><strong>Oracle</strong></td><td>{{ORACLE}}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h4>Causal chain the lead reconstructed</h4>
+<ol>{{CAUSAL_CHAIN}}</ol>
+
+<h4>Decoys dismissed</h4>
+<ul>{{RULED_OUT}}</ul>
+
+<h4>Evidence cited, by plane</h4>
+<table>
+  <thead><tr><th>Plane</th><th>Records</th></tr></thead>
+  <tbody>{{EVIDENCE_ROWS}}</tbody>
+</table>
+
+<h4>Subagents the lead hired for itself</h4>
+<table>
+  <thead><tr><th>Name</th><th>Role</th><th>Mandate it wrote</th></tr></thead>
+  <tbody>{{HIRE_ROWS}}</tbody>
+</table>
+
+<table>
+  <thead><tr><th>Measure</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Agent turns</td><td>{{TURNS}}</td></tr>
+    <tr><td>Tokens</td><td>{{TOKENS_IN}} in / {{TOKENS_OUT}} out</td></tr>
+    <tr><td>Subagents hired</td><td>{{HEADCOUNT}}</td></tr>
+    <tr><td>Delegations</td><td>{{DELEGATIONS}}</td></tr>
+    <tr><td>Wall clock</td><td>{{WALL}}</td></tr>
+  </tbody>
+</table>
+
+<div class="figure">
+  <div class="transcript">{{TRANSCRIPT}}</div>
+  <div class="caption">Live event stream from the coordinator's log. Every thread appears here, including ones the lead created that no line of our code named.</div>
+</div>
+
+<h2 class="pagebreak">6. Configuring Opus 5 at extra-high effort</h2>
+
+<p>Opus 5 on Bedrock rejects the <code>thinking</code> configuration that earlier Claude models accept. Verified against the live API:</p>
+
+<pre><code>BedrockModel(
+    model_id="global.anthropic.claude-opus-5",
+    region_name="us-east-1",
+    max_tokens=24_000,
+    streaming=True,
+    additional_request_fields={
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": "xhigh"},
+    },
+)</code></pre>
+
+<table>
+  <thead><tr><th>Setting</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><code>reasoning_effort: "xhigh"</code></td><td><code>Extra inputs are not permitted</code></td></tr>
+    <tr><td><code>thinking.type: "enabled"</code></td><td>Rejected; the error names <code>adaptive</code> + <code>output_config.effort</code> as the replacement</td></tr>
+    <tr><td><code>thinking.budget_tokens</code></td><td><code>Extra inputs are not permitted</code> — <code>max_tokens</code> is the only ceiling</td></tr>
+    <tr><td><code>temperature: 0.7</code></td><td>Rejected; adaptive thinking permits temperature 1 only</td></tr>
+    <tr><td><code>effort: "extra_high"</code></td><td>Enum is exactly <code>low | medium | high | xhigh | max</code></td></tr>
+  </tbody>
+</table>
+
+<p>Effort scales thinking depth measurably. On a fixed prompt at <code>max_tokens=16000</code>: <code>low</code> produced 114 characters of reasoning in 10.5s, <code>high</code> 260 in 19.4s, <code>xhigh</code> 662 in 17.4s, <code>max</code> 968 in 22.6s. Thinking tokens are drawn from the same budget as the answer, so a tight <code>max_tokens</code> truncates the answer rather than the thinking.</p>
+
+<div class="note">
+  <span class="label">Interaction with structured output</span>
+  <p>Strands strips the <code>thinking</code> field whenever <code>tool_choice</code> forces a tool, citing a Bedrock restriction. That restriction no longer holds for Opus 5 — forced tool use succeeds with adaptive thinking — so the strip is now a silent capability loss on structured-output retries. <code>output_config</code> survives.</p>
+</div>
+
+<h2>7. Testing agents without calling an agent</h2>
+
+<p>The library ships a scripted-model harness, which is what makes 15 offline tests possible: no Bedrock, no network, 1.3 seconds. <code>Turn</code> objects script the model's replies and tool calls; <code>RuntimeHarness</code> wires a real coordinator and worker.</p>
+
+<pre><code>fn = Echo(name="boss").build().replace(
+    model=ScriptedModel([
+        Turn(tool_calls=(("hire", {"role": "scripted-helper", "name": "h1", ...}),)),
+        Turn(tool_calls=(("delegate", {"name": "h1", "request": "when did it start"}),)),
+        Turn(tool_calls=(("dismiss", {"name": "h1"}),)),
+        Turn(text="done"),
+    ]),
+    config_hook=staffing_tools(staff, allow=["scripted-helper"]),
+)</code></pre>
+
+<p>The suite asserts the properties that would otherwise only fail in production: that two instances of one class produce different prompts, that every compiled agent lands on <code>STR_PROMPT</code>, that specialists' evidence is genuinely disjoint, that <code>hire</code> writes a parent edge into the hiring agent's log, that the hiring cap holds, and that a bad tool call comes back as recoverable text rather than an exception.</p>
+
+<p>Writing them forced a real design change. Testing <code>delegate</code> meant a hired subagent had to run on a scripted model, which meant <code>Agent</code> needed a <code>model()</code> method rather than hard-coding <code>opus5()</code> inside <code>build()</code>. The test suite found the missing seam.</p>
+
+<h2>8. Defects found in the library</h2>
+
+<p>A sixteen-agent documentation pass over the codebase, one agent per perspective, surfaced these. Each is cited in the document that found it.</p>
+
+<table>
+  <thead><tr><th>Defect</th><th>Why it matters</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>generate_signature_from_model</code> is defined twice; the copy with zero callers sorts required parameters before optional, the reachable copy does not</td>
+      <td>Any local-code-execution user whose output model declares an optional field before a required one crashes. The two-line fix is already written, in a file nothing imports.</td>
+    </tr>
+    <tr>
+      <td>The Claude Code mirror of <code>send_message</code> has no deadlock guard</td>
+      <td>The Strands path refuses a mutual blocking <code>wait</code>; two Claude sessions waiting on each other hang with no refusal.</td>
+    </tr>
+    <tr>
+      <td><code>ThreadStatus.TERMINATED</code> and <code>FAILED</code> are declared but never assigned</td>
+      <td>Termination deregisters the thread instead, so a caller polling <code>handle.is_done()</code> gets <code>ThreadNotFoundError</code> rather than <code>True</code>.</td>
+    </tr>
+    <tr>
+      <td>Malformed wire frames are dropped by <code>except Exception: continue</code> with no log line at any level</td>
+      <td>The library's one completely silent failure path, four lines below a transport-close bug that was fixed for exactly this reason.</td>
+    </tr>
+    <tr>
+      <td><code>@ai_function</code> on a method leaves <code>self</code> unbound</td>
+      <td>Breaks <code>examples/compose_research_team.py</code> when that method is handed to another agent as a tool.</td>
+    </tr>
+    <tr>
+      <td>A <code>--url</code> flag is documented in three docstrings and does not exist; the parameter is accepted and immediately <code>del</code>eted</td>
+      <td>Documented CLI behavior that silently does nothing.</td>
+    </tr>
+    <tr>
+      <td><code>config.py</code> instructs users to install a <code>[procedural]</code> extra that is not declared</td>
+      <td><code>smolagents</code> is already a hard dependency; the instruction is stale.</td>
+    </tr>
+    <tr>
+      <td>Returning a t-string from a prompt body, which the tutorial calls "the preferred way", raises <code>TypeError</code></td>
+      <td>The documented happy path for Python 3.14 templates does not run.</td>
+    </tr>
+    <tr>
+      <td>Remote <code>resolve_approval</code> returns <code>True</code> unconditionally after scheduling under <code>suppress(Exception)</code></td>
+      <td>Its docstring promises "True iff a matching pending future was resolved".</td>
+    </tr>
+    <tr>
+      <td><code>ThreadContext.metadata</code> is passed by reference from worker state</td>
+      <td>A thread mutating it mutates worker state for every later cycle.</td>
+    </tr>
+    <tr>
+      <td><code>claude_code/</code> and <code>kiro/</code> — 1,930 LOC across the two external-process boundaries — have zero test references</td>
+      <td>The two riskiest integration surfaces are the two untested ones.</td>
+    </tr>
+    <tr>
+      <td><code>hatch run check-spec</code> is a required gate in <code>CONTRIBUTING.md</code> and absent from CI</td>
+      <td>A hand-maintained 10,618-LOC stub tree has no machine gate.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="small">Also worth knowing when building: PyPI <code>0.3.0</code> predates <code>runtime/usage.py</code>, so the subtree token-rollup helpers exist only on the git HEAD. <code>pneuma</code> pins the clone.</p>
+
+<h2>9. Assessment</h2>
+
+<p>The abstraction earns its keep. Post-conditions turn "the model usually gets this right" into a loop that either satisfies a check or fails loudly, and that alone justifies the dependency for any workflow where a wrong answer propagates. The <code>Spawnable</code> protocol is the better idea: making a Claude Code session and a decorated Python function interchangeable to the runtime is a genuine architectural result, and the cost of implementing it is two methods.</p>
+
+<p>The rough edges are alpha-stage rough. Cancellation not propagating to children, no depth or breadth limits on spawning, two declared statuses that are never assigned, and a silent frame-drop path are the kind of thing you discover by reading the source rather than the README — which is what the documentation pass was for. The 22k LOC are unusually well commented, with a repo-root <code>INVARIANTS.md</code> naming twelve runtime invariants and their enforcement sites, and that made the defects findable.</p>
+
+<p>Building an object-oriented layer on top was easier than expected, for one reason: <code>prompt_fn</code> returning a string bypasses the template machinery entirely. That single escape hatch is what lets an agent's prompt be a method on an object rather than a docstring on a module-level function, and everything <code>pneuma</code> does follows from it.</p>
+
+<p>The self-staffing tools are the part we would upstream. The hook is already documented, the parent-edge plumbing already produces correct cost rollup, and roughly 90 lines closes the gap between an agent that can talk to its peers and an agent that can build a team.</p>
+
+</body>
+</html>

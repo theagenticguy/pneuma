@@ -1,0 +1,44 @@
+[project]
+name = "pneuma"
+version = "0.1.0"
+description = "Object-oriented AI agents with self-staffing subagent hierarchies, on strands-ai-functions"
+requires-python = ">=3.14"
+dependencies = [
+    "strands-ai-functions",
+    "strands-agents>=1.50.0",
+    "pydantic>=2.4.0",
+    "rich>=13.7",
+]
+
+# PyPI 0.3.0 predates runtime/usage.py (the subtree token-rollup helpers), so we
+# build against the upstream commit we actually documented.
+[tool.uv.sources]
+strands-ai-functions = { git = "https://github.com/strands-labs/ai-functions.git", rev = "e47dc94e7b8e4b1e3f3e85587d0bc60e78c30296" }
+
+[project.scripts]
+pneuma = "pneuma.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pneuma"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
