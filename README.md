@@ -12,6 +12,8 @@ Runs on `global.anthropic.claude-opus-5` on Amazon Bedrock with adaptive thinkin
 
 **Agents as typed functions, on a class.** `pneuma.method` is the same object-oriented idea taken back to the library's own paradigm. `@ai_method` decorates a *method*: Python drops `self` from a bound method's signature, so `analyze(window: str, focus: Focus = "errors", max_records: int = 12)` is what the model sees, while `self` stays reachable inside the docstring template. That keeps three things `Agent` gives up — the typed tool schema (enums, defaults, required fields), the docstring as declarative prompt, and learnable parameters, since `TextGradOptimizer` finds gradient targets in call arguments and cannot see state hidden on `self`. `typed_cast.Analyst` is the incident cast rewritten this way, and one agent holds another as a typed tool with no message bus in between.
 
+**Functions whose body is executed code.** An AI function does not have to generate prose. `typed_cast.Quant` runs with `code_execution_mode=LOCAL`, so it writes Python, runs it in the sandbox, and returns a typed `Burst`. Its `toolbox` parameter is annotated `Procedural`: the helpers it has accumulated get defined in that sandbox and advertised to the model by signature and docstring, and the same code is a gradient target an optimizer step can rewrite. Reusable code, not a reusable prompt.
+
 **Self-staffing subagents.** The library injects `list_threads` and `send_message` into every thread, so an agent can talk to peers that already exist. It cannot create one. `ThreadConfig.config_hook` is documented as the place to inject a spawn tool, and nothing ships it. `pneuma.staffing` does: `hire(role, name, mandate)`, `delegate(name, request)`, `dismiss(name)`, each bound to the live cycle context so the hiring agent is recorded as parent — which is what makes the library's own token rollup work across a tree the agent built itself.
 
 **Three layers of orchestration in one run.** A deterministic plain-Python `Spawnable` fans out specialists with `asyncio.gather`; the lead delegates to peers at runtime through the library's tools; the lead also builds its own team through ours.
@@ -24,7 +26,7 @@ Runs on `global.anthropic.claude-opus-5` on Amazon Bedrock with adaptive thinkin
 uv sync
 uv run pneuma                    # live Bedrock run, writes artifacts/
 uv run pneuma --truth            # print the planted ground truth and exit
-uv run pytest                    # 34 offline tests, scripted models, no network
+uv run pytest                    # 38 offline tests, scripted models, no network
 ```
 
 `pneuma` exits non-zero when the oracle rejects the verdict.

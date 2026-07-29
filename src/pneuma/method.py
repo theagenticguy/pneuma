@@ -131,7 +131,13 @@ def compile_ai_method(instance: object, name: str, **overrides: Any) -> AIFuncti
     # only resolve against *its* module's globals, not this module's, so leaving them
     # as strings raises `NameError` on any type declared beside the agent. Resolving
     # them here stores real objects, which `get_type_hints` then returns untouched.
-    resolved = typing.get_type_hints(method.__func__)
+    #
+    # `include_extras=True` is load-bearing: markers like `Procedural` are
+    # `Annotated[str, ProceduralMarker(), ...]`, and the runtime reads that metadata
+    # to decide whether a parameter is reusable code it should define in the
+    # execution environment. Resolving without extras flattens it to plain `str`
+    # and the code silently becomes an ordinary prompt argument.
+    resolved = typing.get_type_hints(method.__func__, include_extras=True)
     resolved.pop("self", None)
     prompt_fn.__annotations__ = resolved
 
