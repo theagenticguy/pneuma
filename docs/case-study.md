@@ -44,6 +44,36 @@ pair, keep the edges walked by at least 25 distinct cases, drop the rest.
 
 **Result: 11 activities, 20 handoffs, replays 89.8% of all real cases.**
 
+### How that compares to the standard tools
+
+Measured with pm4py's own evaluators on the identical log, so every row is scored by
+the same code. **Fitness** = can the model replay the log. **Precision** = does it
+permit *only* what was observed. F-score is their harmonic mean.
+
+| Model | Transitions | Fitness | Precision | F-score | Verifiable |
+| --- | --- | --- | --- | --- | --- |
+| pm4py Inductive Miner | 74 | 1.000 | 0.167 | 0.286 | no |
+| pm4py IM infrequent (20%) | 69 | 0.945 | 0.266 | 0.415 | no |
+| pm4py Heuristics Miner | 87 | 0.921 | 0.681 | **0.783** | no (**unsound**) |
+| pm4py Alpha Miner | 27 | 0.455 | 0.298 | 0.360 | no |
+| **ours (threshold 100)** | **11** | 0.897 | 0.666 | **0.764** | **yes** |
+| ours (threshold 25) | 20 | 0.812 | 0.597 | 0.688 | yes |
+| ours (threshold 5) | 40 | 0.727 | 0.584 | 0.648 | yes |
+
+Read it this way. The Inductive Miner replays the log perfectly and scores 0.167 on
+precision: its model permits a vast amount of behaviour that never happened, which is
+the classic spaghetti result. It also needs 47 silent transitions — constructs with no
+counterpart in the business.
+
+Heuristics Miner wins on F-score by 0.019, with 87 transitions and 60 silent ones,
+and pm4py's own soundness check reports it **unsound**: it can deadlock, so it cannot
+be deployed as a workflow at any score.
+
+Ours is second on F-score with **8× fewer transitions than the winner**, zero silent
+transitions, and it is the only model in the table a model-checker will accept. That
+is the trade, stated plainly: we give up a little replay accuracy to get a model a
+person can read and a machine can prove.
+
 That last number is the one to insist on. It is a testable claim, not a drawing.
 The 6.3% of traffic we dropped is stated openly rather than hidden — it is the
 long tail of one-off exceptions, and a model that included all of it would be a

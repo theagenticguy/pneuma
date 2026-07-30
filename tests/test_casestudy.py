@@ -309,3 +309,150 @@ def test_pressured_framing_is_genuinely_adversarial() -> None:
     assert pipeline.CHECK_ACTIVITY not in PRESSURED
     assert "T02" not in PRESSURED
     assert len(PRESSURED) > len(NEUTRAL)
+
+
+# ── Benchmark against the standard miners ──
+
+
+def test_ir_converts_to_a_petri_net_without_silent_transitions(
+    discovery: miner.Discovery,
+) -> None:
+    """Comparability: our model is scored by pm4py's own evaluators, not ours.
+
+    Every baseline miner needs dozens of silent transitions — constructs with no
+    counterpart in the business process. Ours needs none, which is why the same
+    model can be handed to TLC.
+    """
+    pytest.importorskip("pm4py")
+    from pneuma.casestudy.ir_petri import ir_to_petri
+
+    net, initial, final = ir_to_petri(discovery.process)
+    assert len(net.transitions) == len(discovery.process.transitions)
+    assert len(net.places) == len(discovery.process.states)
+    assert all(t.label is not None for t in net.transitions)
+    assert len(initial) == 1
+    assert len(final) == sum(1 for s in discovery.process.states if s.terminal)
+
+
+def test_higher_threshold_trades_fitness_for_precision(events: pl.DataFrame) -> None:
+    """The benchmark's shape, asserted cheaply without re-running every miner.
+
+    A tighter threshold keeps only the well-travelled edges, so the model permits
+    less unobserved behaviour (precision up) while replaying fewer whole cases.
+    """
+    loose = miner.mine(events, name="Loose", min_edge_cases=5)
+    tight = miner.mine(events, name="Tight", min_edge_cases=100)
+    assert len(tight.process.transitions) < len(loose.process.transitions)
+    assert tight.coverage < loose.coverage
+
+
+# ── Per-state handlers: the work inside a step ──
+
+
+def test_handlers_are_wired_to_real_mined_activities(discovery: miner.Discovery) -> None:
+    """`agent_method` was declared and never read; this asserts it now resolves."""
+    from pneuma.casestudy import handlers
+
+    handled, total = handlers.coverage(discovery.process)
+    assert handled > 0, "no mined state resolves to a handler"
+    assert handled < total, "not every state should need an agent; some are control points"
+
+    check = discovery.process.state_map[miner._identifier(pipeline.CHECK_ACTIVITY)]
+    bound = handlers.handler_for(check)
+    assert bound is not None
+    assert bound[0] == "check_confirmation"
+
+
+def test_each_capability_has_its_own_typed_result() -> None:
+    """One typed function per capability, which is the decorator paradigm's point."""
+    from pneuma.casestudy import handlers
+
+    worker = handlers.Caseworker(handlers.CaseFile(reference="C", facts="f"))
+    assert set(worker.ai_methods()) == {"check_confirmation", "determine", "draft_advice"}
+    outputs = {worker.compiled(name).output_type for name in worker.ai_methods()}
+    assert outputs == {handlers.CheckResult, handlers.Determination, handlers.AdviceDraft}
+
+
+async def test_dispatch_records_handler_output_on_the_case_file() -> None:
+    """The paperwork accumulates, separately from the verified process state."""
+    from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
+
+    from pneuma.casestudy import handlers
+    from pneuma.process.ir import State
+
+    case = handlers.CaseFile(reference="C-1", facts="Site plan attached; no structural calc.")
+    worker = handlers.Caseworker(case)
+    state = State(name="T02CheckConfirmationOfReceipt", agent_method="check_confirmation")
+
+    async with RuntimeHarness():
+        model = ScriptedModel(
+            [
+                Turn(
+                    tool_calls=(
+                        (
+                            "CheckResult",
+                            {
+                                "verdict": "incomplete",
+                                "findings": ["site plan present"],
+                                "missing": ["structural calculations"],
+                            },
+                        ),
+                    )
+                )
+            ]
+        )
+        result = await handlers.dispatch(worker, state, model=model)
+
+    assert result.verdict == "incomplete"
+    assert "site plan present" in case.findings
+    assert any("structural calculations" in f for f in case.findings)
+
+
+async def test_a_state_with_no_handler_costs_nothing() -> None:
+    """Most mined activities are recording steps; calling a model for them is waste."""
+    from pneuma.casestudy import handlers
+    from pneuma.process.ir import State
+
+    worker = handlers.Caseworker(handlers.CaseFile(reference="C", facts="f"))
+    assert await handlers.dispatch(worker, State(name="Unmapped", agent_method=None)) is None
+    assert await handlers.dispatch(worker, State(name="NotInTable", agent_method="x")) is None
+
+
+# ── The learnable playbook (backprop wiring) ──
+
+
+def test_playbook_arrives_as_a_call_argument_not_instance_state() -> None:
+    """The whole reason backprop can reach it.
+
+    `collect_nodes` discovers gradient targets in call arguments. Hide the playbook
+    on `self` and the optimizer has nothing to route feedback into.
+    """
+    from pneuma.casestudy.learning import LearningNavigator
+
+    process = miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+    compiled = LearningNavigator(process).compiled("choose")
+    assert "playbook" in compiled.prompt_fn.__annotations__
+    schema_keys = set(compiled.prompt_fn.__annotations__) - {"return"}
+    assert schema_keys == {"playbook", "state", "options", "facts"}
+
+
+def test_feedback_names_the_observed_failure_and_protects_compliance() -> None:
+    """Vague feedback teaches nothing, and feedback that ignores what already works
+    invites the optimizer to trade it away."""
+    from pneuma.casestudy.learning import TrainingRound, feedback_for
+
+    looping = feedback_for(TrainingRound(index=0, completed=1, looped=4, steps=[12, 12, 12, 12, 6]))
+    assert "4 of 5" in looping
+    assert "terminal state" in looping
+    assert "Compliance was already perfect" in looping
+
+    clean = feedback_for(TrainingRound(index=1, completed=5, looped=0, steps=[6] * 5))
+    assert "Every case reached a terminal state" in clean
+
+
+def test_playbook_is_prose_not_executable_code() -> None:
+    """A `Procedural` playbook would force `code_execution_mode='local'`: the runtime
+    rejects the function outright, because Procedural means code for the sandbox."""
+    from pneuma.casestudy.learning import Playbook
+
+    assert Playbook.model_fields["guidance"].annotation is str
