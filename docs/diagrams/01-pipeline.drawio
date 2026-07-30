@@ -1,0 +1,134 @@
+<mxfile host="app.diagrams.net" agent="Claude">
+  <diagram id="pneuma-pipeline" name="Pipeline">
+    <mxGraphModel dx="1434" dy="759" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="1450" pageHeight="740">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ============ TITLE ============ -->
+        <mxCell id="2" value="Pneuma &#8212; process-governance pipeline" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="650" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ LEGEND ============ -->
+        <mxCell id="3" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#6C8EBF&quot;&gt;&#9473;&#9473;&lt;/font&gt; data flow, stage to stage&lt;br&gt;&lt;font color=&quot;#999999&quot;&gt;- - -&lt;/font&gt; persistence write into libSQL" style="text;html=1;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontColor=#666666;fillColor=#FAFAFA;strokeColor=#E0E0E0;rounded=1;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="270" height="70" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ EDGES (back layer) ============ -->
+        <!-- pipeline: S1 -> S2 -> S3 -> IR -->
+        <mxCell id="30" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#6C8EBF;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="10" target="11">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="31" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#6C8EBF;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="11" target="12">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="32" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#D79B00;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="12" target="13">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- fan-out: IR -> three consumers -->
+        <mxCell id="33" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#82B366;strokeWidth=2;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="13" target="15">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="34" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#9673A6;strokeWidth=2;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="13" target="16">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="35" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#82B366;strokeWidth=2;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="13" target="17">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- dashed persistence writes: stages -> store -->
+        <mxCell id="40" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.072;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="10" target="20">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="41" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.254;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="11" target="20">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="42" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.436;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="12" target="20">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="43" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.636;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="13" target="20">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- dashed persistence writes: consumers -> store (right-hand bus) -->
+        <mxCell id="44" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="15" target="20">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1410" y="120"/>
+              <mxPoint x="1410" y="598"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="45" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="16" target="20">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1410" y="260"/>
+              <mxPoint x="1410" y="598"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="46" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=blockThin;endFill=1;strokeColor=#999999;strokeWidth=1.5;dashed=1;dashPattern=6 6;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.886;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="17" target="20">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- note tether: caption 14 -> IR 13 -->
+        <mxCell id="47" style="edgeStyle=none;html=1;endArrow=none;strokeColor=#D6B656;strokeWidth=1.5;dashed=1;dashPattern=3 3;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="14" target="13">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ PIPELINE STAGES ============ -->
+        <mxCell id="10" value="&lt;font style=&quot;font-size: 10px;&quot; color=&quot;#6C8EBF&quot;&gt;&lt;b&gt;1 &#183; SOURCE&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;b style=&quot;font-size: 14px;&quot;&gt;receipt.xes&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 10px;&quot;&gt;public XES event log&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;1,434 permit cases /&lt;br&gt;8,577 events / 27 activities&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=6;spacingRight=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="205" width="190" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="11" value="&lt;font style=&quot;font-size: 10px;&quot; color=&quot;#6C8EBF&quot;&gt;&lt;b&gt;2 &#183; PARSE&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;b style=&quot;font-size: 14px;&quot;&gt;Polars DataFrame&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;one row per event,&lt;br&gt;timestamps normalised to UTC&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=6;spacingRight=6;" vertex="1" parent="1">
+          <mxGeometry x="280" y="205" width="190" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="12" value="&lt;font style=&quot;font-size: 10px;&quot; color=&quot;#6C8EBF&quot;&gt;&lt;b&gt;3 &#183; MINE&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;b style=&quot;font-size: 14px;&quot;&gt;Process discovery&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;directly-follows graph&lt;br&gt;threshold = edges walked by&lt;br&gt;&#8805;&#8202;25 distinct cases&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=6;spacingRight=6;" vertex="1" parent="1">
+          <mxGeometry x="520" y="205" width="190" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ CENTRAL ARTIFACT: TYPED IR ============ -->
+        <mxCell id="14" value="&lt;i&gt;The model emits DATA, never code.&lt;/i&gt;" style="rounded=1;arcSize=30;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=12;fontColor=#7F6000;" vertex="1" parent="1">
+          <mxGeometry x="760" y="110" width="240" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="13" value="&lt;font style=&quot;font-size: 10px;&quot; color=&quot;#B07000&quot;&gt;&lt;b&gt;4 &#183; CENTRAL ARTIFACT&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;b style=&quot;font-size: 17px;&quot;&gt;Typed IR (Pydantic)&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;font style=&quot;font-size: 12px;&quot;&gt;11 states&#160;/&#160;20 edges&lt;br&gt;guards&#160;/&#160;invariants&lt;/font&gt;" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;strokeWidth=3;fontSize=12;fontColor=#333333;verticalAlign=middle;spacingLeft=8;spacingRight=8;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="760" y="175" width="240" height="170" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ THREE CONSUMERS ============ -->
+        <mxCell id="15" value="&lt;b style=&quot;font-size: 13px;&quot;&gt;TLA+ renderer &#8594; TLC model-checker&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;exhausts the bounded state space;&lt;br&gt;returns a counterexample path&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="60" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="16" value="&lt;b style=&quot;font-size: 13px;&quot;&gt;Interpreter (hand-written)&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;walks the IR, dispatches each&lt;br&gt;state to an @ai_method&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="200" width="300" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="17" value="&lt;b style=&quot;font-size: 13px;&quot;&gt;Hypothesis state machine&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;drives the real interpreter with&lt;br&gt;adversarial input; shrinks failures&lt;/font&gt;" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2;fontSize=11;fontColor=#333333;verticalAlign=middle;spacingLeft=8;spacingRight=8;" vertex="1" parent="1">
+          <mxGeometry x="1060" y="340" width="300" height="120" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ PERSISTENCE STORE ============ -->
+        <mxCell id="20" value="&lt;b style=&quot;font-size: 15px;&quot;&gt;libSQL (Turso engine), WAL mode&lt;/b&gt;" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F0F0F0;strokeColor=#999999;strokeWidth=2;fontSize=13;fontColor=#444444;verticalAlign=top;spacingTop=12;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="520" width="1320" height="155" as="geometry"/>
+        </mxCell>
+        <mxCell id="21" value="events" style="rounded=1;arcSize=30;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B3B3B3;fontSize=12;fontColor=#444444;fontStyle=0;" vertex="1" parent="1">
+          <mxGeometry x="240" y="572" width="210" height="42" as="geometry"/>
+        </mxCell>
+        <mxCell id="22" value="mined_models" style="rounded=1;arcSize=30;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B3B3B3;fontSize=12;fontColor=#444444;fontStyle=0;" vertex="1" parent="1">
+          <mxGeometry x="480" y="572" width="210" height="42" as="geometry"/>
+        </mxCell>
+        <mxCell id="23" value="verifications" style="rounded=1;arcSize=30;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B3B3B3;fontSize=12;fontColor=#444444;fontStyle=0;" vertex="1" parent="1">
+          <mxGeometry x="720" y="572" width="210" height="42" as="geometry"/>
+        </mxCell>
+        <mxCell id="24" value="runs" style="rounded=1;arcSize=30;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B3B3B3;fontSize=12;fontColor=#444444;fontStyle=0;" vertex="1" parent="1">
+          <mxGeometry x="960" y="572" width="210" height="42" as="geometry"/>
+        </mxCell>
+        <mxCell id="25" value="&lt;i&gt;one auditable file: what was live, what proved it safe, what it refused&lt;/i&gt;" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="240" y="628" width="930" height="30" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

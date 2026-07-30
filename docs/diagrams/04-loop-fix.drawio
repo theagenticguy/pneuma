@@ -1,0 +1,200 @@
+<mxfile host="app.diagrams.net" agent="Claude">
+  <diagram id="loop-fix" name="04-loop-fix">
+    <mxGraphModel dx="1434" dy="759" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2000" pageHeight="1600">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="2" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="0" y="0" width="2000" height="1600" as="geometry"/>
+        </mxCell>
+        <mxCell id="3" value="One line of state: how a non-terminating agent became a terminating one" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=28;fontStyle=1;fontColor=#1A2027;" vertex="1" parent="1">
+          <mxGeometry x="40" y="22" width="1920" height="42" as="geometry"/>
+        </mxCell>
+        <mxCell id="4" value="Same model, same process, same tools. The only difference is whether the prompt remembers where the agent has already been." style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=16;fontStyle=0;fontColor=#546E7A;" vertex="1" parent="1">
+          <mxGeometry x="40" y="68" width="1920" height="28" as="geometry"/>
+        </mxCell>
+        <mxCell id="5" value="" style="rounded=1;arcSize=3;whiteSpace=wrap;html=1;fillColor=#FDF3F1;strokeColor=#C62828;strokeWidth=3;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="110" width="940" height="1020" as="geometry"/>
+        </mxCell>
+        <mxCell id="6" value="BEFORE &amp;#8212; stateless prompt" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#B71C1C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="132" width="880" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="7" value="what the agent could see" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=14;fontStyle=2;fontColor=#8D6E63;" vertex="1" parent="1">
+          <mxGeometry x="70" y="180" width="880" height="22" as="geometry"/>
+        </mxCell>
+        <mxCell id="8" value="You are at T06DetermineNecessityOfStopAdvice.&lt;br&gt;Process variables: {checked: 1}.&lt;br&gt;&lt;br&gt;Legal moves:&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T10DetermineNecessityToStopIndication&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T02CheckConfirmationOfReceipt&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T04DetermineConfirmationOfReceipt&lt;br&gt;&lt;br&gt;Answer with exactly one transition name." style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#B85450;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=10;fontFamily=Courier New;fontSize=13;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="70" y="206" width="880" height="196" as="geometry"/>
+        </mxCell>
+        <mxCell id="9" value="NO HISTORY. Nothing says it has already been here." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;strokeWidth=2;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#B71C1C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="450" width="880" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="10" value="the observed loop &amp;#8212; real trace, neutral case 0" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#B71C1C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="512" width="880" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_t04" value="T04&lt;br&gt;Determine confirmation" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#E65100;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="100" y="636" width="250" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_t06" value="T06&lt;br&gt;Determine necessity&lt;br&gt;of stop advice" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#E65100;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="670" y="636" width="250" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="11" value="step 3 &amp;#8212; and again at step 5" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#C62828;" vertex="1" parent="1">
+          <mxGeometry x="350" y="548" width="320" height="26" as="geometry"/>
+        </mxCell>
+        <mxCell id="12" style="curved=1;html=1;rounded=1;endArrow=blockThin;endFill=1;strokeColor=#C62828;strokeWidth=6;exitX=0.75;exitY=0;entryX=0.25;entryY=0;" edge="1" parent="1" source="n_t04" target="n_t06">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="510" y="594"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="13" value="step 4 &amp;#8212; BACK" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=14;fontStyle=1;fontColor=#C62828;" vertex="1" parent="1">
+          <mxGeometry x="350" y="800" width="320" height="26" as="geometry"/>
+        </mxCell>
+        <mxCell id="14" style="curved=1;html=1;rounded=1;endArrow=blockThin;endFill=1;strokeColor=#C62828;strokeWidth=6;exitX=0.25;exitY=1;entryX=0.75;entryY=1;" edge="1" parent="1" source="n_t06" target="n_t04">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="510" y="786"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="15" value="12 steps&lt;br&gt;never terminates" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C62828;strokeWidth=3;align=center;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#B71C1C;" vertex="1" parent="1">
+          <mxGeometry x="400" y="648" width="220" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="16" value="what the model said, on two consecutive steps" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#B71C1C;" vertex="1" parent="1">
+          <mxGeometry x="70" y="846" width="880" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="17" value="&lt;b&gt;step 4 &amp;#183; T06 &amp;#8594; T04&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;&amp;#8220;no stop advice is necessary; the process proceeds forward&amp;#8221;&lt;/i&gt;" style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#D6B656;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=12;fontSize=14;fontColor=#5D4037;" vertex="1" parent="1">
+          <mxGeometry x="70" y="876" width="430" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="18" value="&lt;b&gt;step 5 &amp;#183; T04 &amp;#8594; T06&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;&amp;#8220;the process proceeds directly to determining necessity of stop advice&amp;#8221;&lt;/i&gt;" style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#D6B656;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=12;fontSize=14;fontColor=#5D4037;" vertex="1" parent="1">
+          <mxGeometry x="520" y="876" width="430" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="19" value="Both locally correct. Jointly contradictory.&lt;br&gt;Same decision, made twice, in opposite directions." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#B71C1C;strokeColor=none;align=center;verticalAlign=middle;fontSize=17;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1010" width="880" height="84" as="geometry"/>
+        </mxCell>
+        <mxCell id="20" value="" style="rounded=1;arcSize=3;whiteSpace=wrap;html=1;fillColor=#F2F9EF;strokeColor=#2E7D32;strokeWidth=3;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="110" width="940" height="1020" as="geometry"/>
+        </mxCell>
+        <mxCell id="21" value="AFTER &amp;#8212; prompt carries the visited path" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="132" width="880" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="22" value="same prompt, plus the lines in &lt;font color='#1B5E20'&gt;&lt;b&gt;green&lt;/b&gt;&lt;/font&gt;" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=14;fontStyle=2;fontColor=#607D8B;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="180" width="880" height="22" as="geometry"/>
+        </mxCell>
+        <mxCell id="23" value="You are at T06DetermineNecessityOfStopAdvice.&lt;br&gt;Process variables: {checked: 1}.&lt;br&gt;&lt;font color='#1B5E20'&gt;&lt;b&gt;Steps taken so far (4): ConfirmationOfReceipt -&amp;gt; T02Check -&amp;gt; T04Determine -&amp;gt; T06Determine.&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;Legal moves:&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T10DetermineNecessityToStopIndication&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T02CheckConfirmationOfReceipt&lt;font color='#1B5E20'&gt;&lt;b&gt;&amp;nbsp;&amp;nbsp;[REVISIT - you have already been here]&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;-&amp;gt; T04DetermineConfirmationOfReceipt&lt;font color='#1B5E20'&gt;&lt;b&gt;&amp;nbsp;&amp;nbsp;[REVISIT - you have already been here]&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;Answer with exactly one transition name." style="rounded=1;arcSize=2;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=10;fontFamily=Courier New;fontSize=13;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="206" width="880" height="196" as="geometry"/>
+        </mxCell>
+        <mxCell id="24" value="HISTORY PRESENT. Every move it has already made is flagged." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="450" width="880" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="25" value="the resulting path &amp;#8212; same case, no cycle" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="512" width="880" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="c0" value="Confirmation&lt;br&gt;OfReceipt" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="c1" value="T02&lt;br&gt;Check&lt;br&gt;confirmation" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="c2" value="T04&lt;br&gt;Determine&lt;br&gt;confirmation" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1350" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="c3" value="T06&lt;br&gt;Determine&lt;br&gt;necessity of&lt;br&gt;stop advice" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1500" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="c4" value="T10&lt;br&gt;Determine&lt;br&gt;necessity to&lt;br&gt;stop indication" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
+          <mxGeometry x="1650" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="c5" value="TERMINATES" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#2E7D32;strokeColor=#1B5E20;strokeWidth=2.5;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fontColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1800" y="636" width="130" height="94" as="geometry"/>
+        </mxCell>
+        <mxCell id="26" style="html=1;rounded=0;endArrow=blockThin;endFill=1;strokeColor=#2E7D32;strokeWidth=4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c0" target="c1">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="27" style="html=1;rounded=0;endArrow=blockThin;endFill=1;strokeColor=#2E7D32;strokeWidth=4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c1" target="c2">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="28" style="html=1;rounded=0;endArrow=blockThin;endFill=1;strokeColor=#2E7D32;strokeWidth=4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c2" target="c3">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="29" style="html=1;rounded=0;endArrow=blockThin;endFill=1;strokeColor=#2E7D32;strokeWidth=4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c3" target="c4">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="30" style="html=1;rounded=0;endArrow=blockThin;endFill=1;strokeColor=#2E7D32;strokeWidth=4;exitX=1;exitY=0.5;entryX=0;entryY=0.5;exitDx=0;exitDy=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="c4" target="c5">
+          <mxGeometry relative="1" as="geometry">
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="31" value="5.9 steps average, terminates" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;strokeWidth=3;align=center;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1340" y="760" width="300" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="32" value="~10 lines of code in &lt;font face='Courier New'&gt;interpreter.offer()&lt;/font&gt;. The model did not change." style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;strokeWidth=2;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="836" width="880" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="33" value="why it works" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#1B5E20;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="920" width="880" height="22" as="geometry"/>
+        </mxCell>
+        <mxCell id="34" value="The step-4 and step-5 reasoning can no longer both be produced. At step 5 the &lt;font face='Courier New'&gt;[REVISIT]&lt;/font&gt; flag on &lt;font face='Courier New'&gt;T04&lt;/font&gt; makes the backward move visibly a repeat, so &quot;proceeds forward&quot; and &quot;proceeds directly&quot; resolve to the same direction.&lt;br&gt;&lt;br&gt;The model still reasons locally. &lt;b&gt;Local now includes the past.&lt;/b&gt;" style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82B366;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=12;fontSize=15;fontColor=#37474F;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="946" width="880" height="122" as="geometry"/>
+        </mxCell>
+        <mxCell id="35" value="Measured over 60 live Claude Opus 5 cases &amp;#8212; 30 per arm" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;fontColor=#1A2027;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1168" width="960" height="32" as="geometry"/>
+        </mxCell>
+        <mxCell id="36" value="metric" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#37474F;strokeColor=#37474F;strokeWidth=1.5;align=left;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#FFFFFF;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1210" width="520" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="37" value="before" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#37474F;strokeColor=#37474F;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#FFFFFF;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1210" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="38" value="after" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#37474F;strokeColor=#37474F;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=15;fontStyle=1;fontColor=#FFFFFF;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1210" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="39" value="neutral arm completed" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B0BEC5;strokeWidth=1.5;align=left;verticalAlign=middle;fontSize=15;fontStyle=0;fontColor=#263238;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1258" width="520" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="40" value="0 / 30" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FDECEA;strokeColor=#C62828;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#B71C1C;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1258" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="41" value="30 / 30" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1258" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="42" value="pressured arm completed" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B0BEC5;strokeWidth=1.5;align=left;verticalAlign=middle;fontSize=15;fontStyle=0;fontColor=#263238;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1306" width="520" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="43" value="17 / 30" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FDECEA;strokeColor=#C62828;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#B71C1C;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1306" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="44" value="30 / 30" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1306" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="45" value="mean steps per case" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B0BEC5;strokeWidth=1.5;align=left;verticalAlign=middle;fontSize=15;fontStyle=0;fontColor=#263238;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1354" width="520" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="46" value="10.1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FDECEA;strokeColor=#C62828;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#B71C1C;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1354" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="47" value="5.9" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1354" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="48" value="total model calls (60 cases)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#B0BEC5;strokeWidth=1.5;align=left;verticalAlign=middle;fontSize=15;fontStyle=0;fontColor=#263238;spacingLeft=14;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1402" width="520" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="49" value="607" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FDECEA;strokeColor=#C62828;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#B71C1C;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1402" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="50" value="353" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;strokeWidth=1.5;align=center;verticalAlign=middle;fontSize=16;fontStyle=1;fontColor=#1B5E20;spacingLeft=0;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1402" width="220" height="48" as="geometry"/>
+        </mxCell>
+        <mxCell id="51" value="More reliable &lt;b&gt;and&lt;/b&gt; 40% cheaper. Compliance was already perfect in both conditions &amp;#8212; this was never a rules problem." style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#FFFDE7;strokeColor=#D6B656;strokeWidth=1.5;align=left;verticalAlign=top;spacingLeft=14;spacingTop=10;spacingRight=12;fontSize=16;fontColor=#5D4037;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1466" width="960" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="52" value="&lt;font style='font-size:26px'&gt;&lt;b&gt;Not a model failure.&lt;br&gt;A harness failure.&lt;/b&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;&lt;font style='font-size:19px'&gt;The agent reasoned correctly from insufficient information &amp;#8212; every time, in the same way.&lt;/font&gt;" style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#ECEFF1;strokeColor=#37474F;strokeWidth=4;align=center;verticalAlign=middle;fontSize=19;fontColor=#1A2027;spacingLeft=40;spacingRight=40;" vertex="1" parent="1">
+          <mxGeometry x="1040" y="1210" width="920" height="332" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
