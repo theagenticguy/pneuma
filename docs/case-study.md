@@ -305,3 +305,43 @@ evidence, violations were zero and a majority of cases still failed.
 
 *Reproduce: `uv run pytest tests/test_casestudy.py` (17 tests over the real log).
 Requires `java` and `tools/tla2tools.jar` for the model-checking step.*
+
+
+## 9. Letting the model write the miner
+
+`miner.py` encodes one person's decision about what discovery means: count
+directly-follows pairs, keep the frequent ones, drop the rest. `aimine.py` removes the
+decision. The agent gets the log as CSV, a sandbox with polars and numpy in it, and the
+shape of the answer. It writes the analysis itself and chooses its own threshold.
+
+Verified working: polars and numpy both import inside the sandbox, so the agent can do
+real dataframe work rather than string manipulation. Its output is a Pydantic object,
+so the structure it returns goes through the same model-checker and the same
+interpreter as a hand-mined one. **Generated analysis code is sandboxed; generated
+structure is verified. Neither is trusted.**
+
+### It works, and it loses
+
+| Log | Agent | vs baseline default | vs baseline at the agent's own threshold |
+| --- | --- | --- | --- |
+| permits | thr 5 · 17 states · 93.2% | 11 / 89.8% — agent ahead | 22 / **96.4%** — baseline ahead |
+| road fines | thr 4 · 6 states · 91.0% | 6 / **92.0%** — baseline ahead | 6 / **96.0%** — baseline ahead |
+
+TLC verified the agent's model on both logs. No unreachable states, no deadlock.
+
+The first comparison is the one to distrust, and it is the one I nearly reported. The
+agent beat the baseline's *default setting* on permits, and a looser threshold buys
+coverage mechanically. Run the hand-written miner at the agent's own cutoff and the
+baseline is ahead on both logs.
+
+So the honest reading: **the agent reproduced the standard algorithm competently and
+did not improve on it.** Its stated method was a directly-follows count ranked by
+distinct cases, which is what `miner.py` already does. On road fines it noticed a
+genuine gap in the support distribution between 4 cases and 1, and cut there, which is
+better reasoning than a hardcoded constant even though the resulting coverage was
+lower.
+
+What this buys, then, is not accuracy. It is that the threshold is chosen per log with
+a stated rationale instead of being a constant someone picked once, and that the
+scoring harness now reports method-versus-setting separately so a future attempt
+cannot claim a win it did not earn.
