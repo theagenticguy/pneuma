@@ -8,6 +8,8 @@ dependencies = [
     "strands-agents>=1.50.0",
     "pydantic>=2.4.0",
     "rich>=13.7",
+    "polars>=1.43.1",
+    "libsql>=0.1.11",
 ]
 
 # PyPI 0.3.0 predates runtime/usage.py (the subtree token-rollup helpers), so we
