@@ -1,0 +1,677 @@
+[
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:29.445",
+  "tool_name": "Skill",
+  "tool_use_id": "toolu_fixture_0000",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:32.808",
+  "tool_name": "Read",
+  "tool_use_id": "toolu_fixture_0001",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:33.028",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0002",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:38.345",
+  "tool_name": "TaskCreate",
+  "tool_use_id": "toolu_fixture_0003",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:39.485",
+  "tool_name": "TaskCreate",
+  "tool_use_id": "toolu_fixture_0004",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:40.353",
+  "tool_name": "TaskCreate",
+  "tool_use_id": "toolu_fixture_0005",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:41.351",
+  "tool_name": "TaskCreate",
+  "tool_use_id": "toolu_fixture_0006",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:45.941",
+  "tool_name": "TaskUpdate",
+  "tool_use_id": "toolu_fixture_0007",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:46.895",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0008",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:47:52.341",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0009",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:48:02.944",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0010",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:48:02.956",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0011",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-01",
+  "ts": "2026-07-22 13:48:07.559",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0012",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:15.672",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0013",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:18.266",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0014",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:23.723",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0015",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:29.451",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0016",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:31.702",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0017",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:33.441",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0018",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:53.986",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0019",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:30:58.342",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0020",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:05.340",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_search",
+  "tool_use_id": "toolu_fixture_0021",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:06.134",
+  "tool_name": "mcp__gateway__slack-mcp_get_thread",
+  "tool_use_id": "toolu_fixture_0022",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:13.942",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_read",
+  "tool_use_id": "toolu_fixture_0023",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:17.087",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0024",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:29.582",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0025",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:33.770",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0026",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:36.041",
+  "tool_name": "mcp__gateway__slack-mcp_get_channel_tabs",
+  "tool_use_id": "toolu_fixture_0027",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:38.251",
+  "tool_name": "mcp__gateway__slack-mcp_get_canvas_content",
+  "tool_use_id": "toolu_fixture_0028",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:45.117",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_calendar_view",
+  "tool_use_id": "toolu_fixture_0029",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:46.770",
+  "tool_name": "mcp__gateway__amazon-sharepoint-mcp_sharepoint_resolve_url",
+  "tool_use_id": "toolu_fixture_0030",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:31:51.610",
+  "tool_name": "mcp__gateway__amazon-sharepoint-mcp_sharepoint_read_file",
+  "tool_use_id": "toolu_fixture_0031",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-02",
+  "ts": "2026-07-27 17:32:00.947",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0032",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:44:44.675",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0033",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:44:44.753",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0034",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:44:53.298",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_calendar_view",
+  "tool_use_id": "toolu_fixture_0035",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:44:53.442",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_inbox",
+  "tool_use_id": "toolu_fixture_0036",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:44:53.470",
+  "tool_name": "mcp__gateway__slack-mcp_list_dms",
+  "tool_use_id": "toolu_fixture_0037",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:00.138",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0038",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:02.080",
+  "tool_name": "mcp__gateway__slack-mcp_get_unreads",
+  "tool_use_id": "toolu_fixture_0039",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:19.361",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0040",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:27.289",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0041",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:36.087",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0042",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:44.751",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0043",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:50.359",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0044",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:45:58.531",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0045",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:46:06.467",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0046",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:46:14.619",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0047",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:46:23.374",
+  "tool_name": "mcp__bonk__list_runs",
+  "tool_use_id": "toolu_fixture_0048",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-03",
+  "ts": "2026-07-22 13:46:25.510",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_read",
+  "tool_use_id": "toolu_fixture_0049",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:12.230",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0050",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:17.612",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0051",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:22.822",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0052",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:30.943",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0053",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:36.144",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0054",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:43.016",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0055",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:30:56.220",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0056",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:31:20.246",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0057",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:31:44.040",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0058",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:31:59.836",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0059",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:32:14.029",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0060",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:32:23.498",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0061",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:32:25.986",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_calendar_view",
+  "tool_use_id": "toolu_fixture_0062",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:33:11.247",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_fixture_0063",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:33:37.164",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0064",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:33:40.340",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_search",
+  "tool_use_id": "toolu_fixture_0065",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-04",
+  "ts": "2026-07-30 17:33:44.287",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_read",
+  "tool_use_id": "toolu_fixture_0066",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:01.699",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0067",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:02.116",
+  "tool_name": "ToolSearch",
+  "tool_use_id": "toolu_fixture_0068",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:07.164",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_calendar_view",
+  "tool_use_id": "toolu_fixture_0069",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:07.191",
+  "tool_name": "mcp__gateway__aws-outlook-mcp_email_inbox",
+  "tool_use_id": "toolu_fixture_0070",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:07.202",
+  "tool_name": "mcp__gateway__slack-mcp_get_unreads",
+  "tool_use_id": "toolu_fixture_0071",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:18.165",
+  "tool_name": "mcp__gateway__slack-mcp_get_unread_counts",
+  "tool_use_id": "toolu_fixture_0072",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:25.981",
+  "tool_name": "mcp__gateway__slack-mcp_get_messages",
+  "tool_use_id": "toolu_fixture_0073",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ },
+ {
+  "session_id": "session-05",
+  "ts": "2026-07-22 13:47:26.761",
+  "tool_name": "mcp__gateway__slack-mcp_search",
+  "tool_use_id": "toolu_fixture_0074",
+  "model": "claude-opus-4-8",
+  "cwd": "/home/lalsaado/bonk-fs/bonk-runtime",
+  "git_branch": "HEAD"
+ }
+]
