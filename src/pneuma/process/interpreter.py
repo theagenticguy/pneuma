@@ -171,20 +171,42 @@ def _assert_invariants(process: Process, current: str, variables: dict[str, int 
             raise InvariantViolated(invariant, current, dict(variables))
 
 
-def offer(state: str, enabled: list[Transition], variables: dict[str, int | str]) -> str:
+def offer(
+    state: str,
+    enabled: list[Transition],
+    variables: dict[str, int | str],
+    visited: list[str] | None = None,
+) -> str:
     """Render the choice as prose for an agent's prompt.
 
     Each option carries the natural-language condition its guards came from, so the
     model sees why an option is available rather than only that it is.
+
+    `visited` is what stops the agent going in circles. Without it every decision is
+    made from scratch: the model re-derives the same "this moves the case forward"
+    reasoning at a state it has already left, picks the same edge, and oscillates
+    between two valid states until the step budget runs out. It is not a model
+    failure — the prompt genuinely contained no evidence the state was a repeat.
+    Marking already-visited targets converts an invisible cycle into a visible one.
     """
-    lines = [f"You are at `{state}`. Process variables: {variables}.", "", "Legal moves:"]
+    header = f"You are at `{state}`. Process variables: {variables}."
+    lines = [header]
+    if visited:
+        lines += [
+            "",
+            f"Steps taken so far ({len(visited)}): " + " → ".join(visited) + ".",
+        ]
+    lines += ["", "Legal moves:"]
+    seen = set(visited or [])
     for transition in enabled:
         reasons = [g.stated_as or str(g) for g in transition.guards]
         because = f" (available because {'; '.join(reasons)})" if reasons else ""
-        lines.append(f"- `{transition.name}` → `{transition.target}`{because}")
+        repeat = " [REVISIT — you have already been here]" if transition.target in seen else ""
+        lines.append(f"- `{transition.name}` → `{transition.target}`{because}{repeat}")
     lines += [
         "",
-        "Answer with exactly one transition name from the list. Any other answer is rejected.",
+        "Prefer a move that advances the case toward completion. Answer with exactly "
+        "one transition name from the list. Any other answer is rejected.",
     ]
     return "\n".join(lines)
 

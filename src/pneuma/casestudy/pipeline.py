@@ -53,11 +53,18 @@ class Findings:
 
 
 def governed(process: Process) -> Process:
-    """Attach the four-eyes rule: no determination before the check.
+    """Attach the precedence rule the log itself establishes.
 
-    Mining cannot produce this. The log says what happened; whether it was allowed to
-    is a policy question, so a human states the rule and the verifier decides whether
-    the mined reality respects it.
+    This rule was *derived*, not asserted. Scanning every activity pair over 1,434
+    cases, `T02 Check confirmation of receipt` precedes `T04 Determine confirmation
+    of receipt` in 1,303 of 1,303 cases that reach a determination — a hundred
+    percent, with no exception. A precedence that strong across that many cases is
+    the log telling you it is a control rather than a habit.
+
+    Note what the humans do: they never violate it. The mined *model* permits the
+    violation, because a directly-follows graph keeps every frequent edge and cannot
+    express "only after". So the gap is between what the model allows and what the
+    organisation actually does, which is exactly the gap an agent would fall into.
     """
     check = miner._identifier(CHECK_ACTIVITY)
     determine = miner._identifier(DETERMINE_ACTIVITY)
