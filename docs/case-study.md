@@ -309,9 +309,17 @@ Requires `java` and `tools/tla2tools.jar` for the model-checking step.*
 
 ## 9. Letting the model write the miner
 
-`miner.py` encodes one person's decision about what discovery means: count
-directly-follows pairs, keep the frequent ones, drop the rest. `aimine.py` removes the
-decision. The agent gets the log as CSV, a sandbox with polars and numpy in it, and the
+One clarification first, because it changes what the comparison means. `miner.py` is
+not a hand-written baseline. **Nothing in this repository is hand-written.** A model
+produced that file too, in one pass, early in the session — and it then froze into a
+constant applied to every log thereafter.
+
+So this is not human versus machine. It is **written once in advance** versus **written
+per log, with the data in front of it**. `miner.py` cannot inspect the support
+distribution of a log it has never seen. The agent can look first. Whether looking
+helps is the measurement.
+
+`aimine.py` removes the frozen decision. The agent gets the log as CSV, a sandbox with polars and numpy in it, and the
 shape of the answer. It writes the analysis itself and chooses its own threshold.
 
 Verified working: polars and numpy both import inside the sandbox, so the agent can do
@@ -320,7 +328,7 @@ so the structure it returns goes through the same model-checker and the same
 interpreter as a hand-mined one. **Generated analysis code is sandboxed; generated
 structure is verified. Neither is trusted.**
 
-### It works, and it loses
+### It works, and it ties the frozen implementation
 
 | Log | Agent | vs baseline default | vs baseline at the agent's own threshold |
 | --- | --- | --- | --- |
@@ -334,9 +342,11 @@ agent beat the baseline's *default setting* on permits, and a looser threshold b
 coverage mechanically. Run the hand-written miner at the agent's own cutoff and the
 baseline is ahead on both logs.
 
-So the honest reading: **the agent reproduced the standard algorithm competently and
-did not improve on it.** Its stated method was a directly-follows count ranked by
-distinct cases, which is what `miner.py` already does. On road fines it noticed a
+So the honest reading: **the agent reproduced the frozen implementation's algorithm
+and did not improve on it.** Its stated method was a directly-follows count ranked by
+distinct cases, which is exactly what `miner.py` does — unsurprising, since the same
+model family wrote both, and the prompt named that algorithm as the obvious starting
+point. On road fines it noticed a
 genuine gap in the support distribution between 4 cases and 1, and cut there, which is
 better reasoning than a hardcoded constant even though the resulting coverage was
 lower.
@@ -345,3 +355,97 @@ What this buys, then, is not accuracy. It is that the threshold is chosen per lo
 a stated rationale instead of being a constant someone picked once, and that the
 scoring harness now reports method-versus-setting separately so a future attempt
 cannot claim a win it did not earn.
+
+
+## 10. Optimising the miner's instructions, and three ways to get the objective wrong
+
+The first `aimine` run reproduced the frozen implementation's algorithm. The obvious
+next move: stop rewriting the code and rewrite the *instructions*. `minelearn.py` makes
+the miner's guidance a text parameter and backpropagates measured feedback into it.
+
+The mechanism worked on the first attempt. The objective took three tries, and none of
+the failures raised anything — each looked like a training loop reporting rounds.
+
+### Attempt one: coverage alone
+
+| Round | Threshold | Coverage |
+| --- | --- | --- |
+| 0 | 2 | 96.9% |
+| 1 | **1** | **98.6%** |
+| 2–3 | 1 | 98.6% |
+
+A jump from 93.2% to 98.6% in one round, and the optimizer wrote real methodological
+guidance including a genuine subtlety about counting a repeated pair once per case.
+
+It also found the degenerate optimum. Threshold 1 keeps 69 of the log's 99 distinct
+handoffs, 30 of which are walked by exactly one case out of 1,434. **Coverage was
+maximised by refusing to generalise.** A model containing every one-off deviation
+replays the log perfectly and describes no process.
+
+### Attempt two: balanced score, one-sided feedback
+
+Scoring became the harmonic mean of coverage and selectivity, where selectivity is the
+share of handoffs *not* kept.
+
+| Round | Threshold | Kept | Coverage | Score |
+| --- | --- | --- | --- | --- |
+| 0 | 5 | 29% | 93.2% | **0.804** |
+| 1 | 5 | 29% | 93.2% | 0.804 |
+| 2 | 3 | 38% | 95.6% | 0.749 |
+| 3 | 2 | 44% | 96.9% | **0.706** |
+
+Coverage rose every round and the score being optimised fell every round. The agent
+walked away from its own best attempt, obediently.
+
+The feedback only complained about memorisation above 60% edge share. At 29% the agent
+heard nothing but "you are behind on coverage", so the only lever it reached for was a
+looser threshold. **The metric was never shown to the thing being optimised.**
+
+### Attempt three: a crash, and a real finding
+
+Feedback now reported the score, the best so far, and the direction of travel. Pushed
+toward tighter models, the agent returned a graph where every activity had a successor —
+cycles among the frequent activities with no exit at all. The IR rejected it correctly
+("no terminal state: the process could never complete") and the compile step raised,
+losing the round.
+
+That is a genuine property of tightening a directly-follows graph: drop enough rare
+edges and you can remove every path out of the model. The compile step now falls back to
+the agent's declared terminals, then to the lowest-support destination.
+
+### Attempt four: stable, and still short of the peak
+
+| Round | Threshold | Kept | Coverage | Score |
+| --- | --- | --- | --- | --- |
+| 0 | 9 | 19% | 86.5% | 0.836 |
+| 1 | 9 | 21% | 87.1% | 0.827 |
+| 2 | 10 | 17% | 86.3% | **0.845** |
+| 3 | 9 | 21% | 87.1% | 0.827 |
+
+No collapse and no runaway. The agent invented its own scoring formula —
+`coverage x (1 - edges_kept/total_edges)` — which peaks at the same threshold as the
+harmonic mean, so it was climbing the right hill.
+
+It settled around threshold 9–10 scoring 0.845. The frozen implementation peaks at
+threshold 50 with **0.856**. The agent reported sweeping thresholds 1 through 24, so the
+optimum sat outside a range it chose for itself. It optimised correctly inside a window
+that was too narrow.
+
+Its stated reason for stopping at 9 is worth quoting, because it is an argument the
+metric cannot represent: the threshold *"retains two meaningful subprocesses (the T07-5
+intern advice loop and the Report Y subprocess T16 → T17 → T19 → T20) that represent
+clear process paths."* It traded two points of balanced score for a coherent subprocess.
+Whether that is better judgement or motivated reasoning, the scoring function cannot
+say — which is itself the limit of optimising against a number.
+
+### What transfers
+
+The mechanism was never the hard part. Every failure lived in the objective or the
+feedback, and every one produced a confident, well-argued, monotonically worsening
+result that looked exactly like training.
+
+So if you let agents evolve their own harness, **the scoring function is the artifact
+that needs adversarial review.** Three properties earned their place here: no degenerate
+optimum, feedback that reports the score being optimised rather than one component of
+it, and a compile step that degrades instead of raising when the agent returns something
+structurally impossible.

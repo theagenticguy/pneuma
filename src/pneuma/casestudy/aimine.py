@@ -1,13 +1,16 @@
-"""Let the model write the mining code, and grade it against a hand-written baseline.
+"""Let the model write the mining code, and grade it against the fixed implementation.
 
-`miner.py` encodes one person's decision about what discovery means: count
-directly-follows pairs, keep the frequent ones, drop the rest. That is a defensible
-choice and it is still a choice, made once, in advance, for every process.
+`miner.py` is not a hand-written baseline. Nothing in this repository is hand-written —
+a model produced that file too, in one pass, and it then froze into a constant that
+applies to every log. So the comparison here is not human versus machine. It is
+**written once in advance** versus **written per log, with the data in front of it**.
 
-This module removes the choice. The agent gets the log, a sandbox with polars and
-numpy in it, and the shape of the answer. It writes the analysis itself, so it can
-decide what "frequent enough" means for the log in front of it, and whether to weight
-by cases or events, or to look at anything else it can compute.
+That framing changes what a win would even look like. `miner.py` cannot inspect the
+support distribution of a log it has never seen; it applies whatever threshold the
+caller passes. The agent can look first. Whether looking helps is the measurement.
+
+The agent gets the log, a sandbox with polars and numpy in it, and the shape of the
+answer. It writes the analysis itself and chooses its own cutoff.
 
 The safety property is unchanged, and it is the reason this is worth doing at all.
 The agent produces *data* — a list of states and edges validated by Pydantic — and the
@@ -15,9 +18,11 @@ IR it produces goes through the same model-checker and the same interpreter as a
 hand-mined one. Generated analysis code is sandboxed; generated structure is verified.
 Neither is trusted.
 
-`grade` is what keeps this honest. A model-written miner is only interesting if you
-can say whether it beat the baseline, so every run is scored on the same conformance
-measure the hand-written miner reports.
+`grade` is what keeps this honest, and it scores twice. Against the fixed
+implementation at its default setting, which flatters the agent because the agent also
+picked its threshold. And against the fixed implementation re-run at the agent's own
+threshold, which isolates the analysis from the setting. Only the second is a claim
+about method.
 """
 
 from __future__ import annotations
@@ -186,6 +191,24 @@ def to_process(discovered: Discovered, name: str) -> Process:
     # An activity nobody continues from is terminal whether or not the agent said so;
     # without this the IR can have no terminal state and is rejected outright.
     terminals = declared_terminal or {a for a in activities if a not in has_successor}
+
+    if not terminals:
+        # Every activity has a successor, so nothing is structurally terminal. A live run
+        # produced exactly this once the agent was pushed toward tighter models: cycles
+        # among the frequent activities and no exit. The IR rejects it, correctly, and
+        # raising there loses the whole training round. Trust the agent's declared
+        # terminals instead, since a state that is reachable and marked terminal at least
+        # gives the interpreter somewhere to stop.
+        terminals = {a for a in discovered.terminal_activities if a in identifiers}
+    if not terminals:
+        # Nothing usable was declared either. Fall back to the target of the
+        # lowest-support edge: the least-travelled destination is the best available
+        # guess at where cases drain, and any terminal beats a rejected process.
+        ranked = sorted(
+            (e for e in discovered.edges if e.target in identifiers), key=lambda e: e.cases
+        )
+        if ranked:
+            terminals = {ranked[0].target}
 
     states = [
         State(

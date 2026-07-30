@@ -173,3 +173,35 @@ def test_an_agent_written_model_goes_through_the_same_checker() -> None:
     """The safety claim: generated structure is verified, not trusted."""
     result = tla.check(aimine.to_process(discovered(), "AgentWritten"), timeout=120)
     assert result.ok, result.raw[-1200:]
+
+
+def test_a_fully_cyclic_discovery_still_compiles() -> None:
+    """A live run crashed here once the agent was pushed toward tighter models: it
+    returned cycles among the frequent activities with no exit, so nothing was
+    structurally terminal and the IR rejected the whole process. Raising loses the
+    training round, so the compile step falls back rather than failing."""
+    cyclic = discovered(
+        terminal_activities=[],
+        edges=[
+            aimine.Edge(source="A", target="B", cases=10),
+            aimine.Edge(source="B", target="C", cases=5),
+            aimine.Edge(source="C", target="A", cases=2),
+        ],
+    )
+    process = aimine.to_process(cyclic, "Cyclic")
+    assert any(s.terminal for s in process.states)
+
+
+def test_a_declared_terminal_is_preferred_over_the_fallback() -> None:
+    """When the agent names a terminal and the graph offers none, believe the agent
+    before guessing from edge support."""
+    cyclic = discovered(
+        terminal_activities=["C"],
+        edges=[
+            aimine.Edge(source="A", target="B", cases=10),
+            aimine.Edge(source="B", target="C", cases=5),
+            aimine.Edge(source="C", target="A", cases=2),
+        ],
+    )
+    process = aimine.to_process(cyclic, "Declared")
+    assert [s.name for s in process.states if s.terminal] == ["C"]
