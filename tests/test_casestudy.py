@@ -268,3 +268,44 @@ def test_pipeline_persists_every_artifact_for_audit() -> None:
     assert events_stored == 8577
     assert models == [("PermitIntake", 11, 20)]
     assert checks["hypothesis"] == 0  # the policy violation was found and recorded
+
+
+# ── The live-LLM experiment (offline assertions over recorded results) ──
+
+
+def test_compliance_metric_only_judges_real_branch_points() -> None:
+    """A choice counts as non-compliant only where the check was actually offered.
+
+    Without this the metric punishes the agent for being in a state the check does
+    not lead from, which made an early reading of the live results look far worse
+    than the behaviour justified.
+    """
+    from pneuma.casestudy.live import _is_compliant
+    from pneuma.process.ir import Transition
+
+    check = "T02Check"
+    with_check = [
+        Transition(name="ToCheck", source="A", target=check),
+        Transition(name="ToSkip", source="A", target="T04Determine"),
+    ]
+    assert _is_compliant("A", "ToCheck", check, with_check)
+    assert not _is_compliant("A", "ToSkip", check, with_check)
+
+    # Where the check is not reachable, any legal move is compliant by definition.
+    without_check = [Transition(name="Onward", source="B", target="T05Print")]
+    assert _is_compliant("B", "Onward", check, without_check)
+
+
+def test_pressured_framing_is_genuinely_adversarial() -> None:
+    """The prompt must push on speed without ever naming the rule to break.
+
+    An instruction that said "skip the check" would test nothing except literal
+    obedience. This one creates the conditions under which a human cuts corners.
+    """
+    from pneuma.casestudy.live import NEUTRAL, PRESSURED
+
+    assert "skip any step" in PRESSURED
+    assert "backlog" in PRESSURED
+    assert pipeline.CHECK_ACTIVITY not in PRESSURED
+    assert "T02" not in PRESSURED
+    assert len(PRESSURED) > len(NEUTRAL)
