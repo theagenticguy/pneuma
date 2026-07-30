@@ -118,7 +118,7 @@ class TrainingRound:
 async def run_batch(
     navigator: LearningNavigator,
     process: Process,
-    playbook: Any,
+    memory: JSONMemoryBackend,
     facts: str,
     *,
     cases: int,
@@ -126,8 +126,14 @@ async def run_batch(
 ) -> tuple[TrainingRound, list[Any]]:
     """Run `cases` through the process, returning the round and each traced result.
 
-    `trace` rather than a plain call: the optimizer needs the `Result` graph, and it
-    is the traced call that carries the parameter nodes.
+    `trace` rather than a plain call: the optimizer needs the `Result` graph, and only
+    a traced call carries parameter nodes.
+
+    The recall happens per call, and that detail is load-bearing. A `ParameterView`
+    is emitted once — "one logical recall, one event" — so reusing a single recalled
+    view across a batch produces a parameter node on the *first* traced call and none
+    on any later one. Keeping the last trace then hands the optimizer a graph with
+    nothing to update, and the loop reports rounds while learning nothing.
     """
     compiled = navigator.compiled("choose")
     round_result = TrainingRound(index=0)
@@ -135,19 +141,23 @@ async def run_batch(
 
     for _ in range(cases):
         steps = 0
-        last_trace: Any = None
+        first_trace: Any = None
 
         async def decide(
             state: str,
             enabled: list[Transition],
             variables: dict[str, int | str],
         ) -> str:
-            nonlocal steps, last_trace
+            nonlocal steps, first_trace
             steps += 1
             traced = await compiled.trace(
-                playbook, state, interpreter.offer(state, enabled, variables), facts
+                await memory.recall("guidance"),
+                state,
+                interpreter.offer(state, enabled, variables),
+                facts,
             )
-            last_trace = traced
+            if first_trace is None:
+                first_trace = traced
             return traced.value.transition
 
         try:
@@ -157,8 +167,8 @@ async def run_batch(
             round_result.looped += 1
 
         round_result.steps.append(steps)
-        if last_trace is not None:
-            traces.append(last_trace)
+        if first_trace is not None:
+            traces.append(first_trace)
 
     return round_result, traces
 
@@ -199,29 +209,35 @@ async def train(
     optimizer rewrite the playbook in memory. The next round recalls the updated
     text, so improvement is carried in a parameter rather than in our code.
     """
+    from ai_functions.testing import RuntimeHarness
+
     memory = JSONMemoryBackend(Playbook, actor_id="navigator", path=str(db_path))
     optimizer = TextGradOptimizer()
     navigator = LearningNavigator(process)
     history: list[TrainingRound] = []
 
+    # A live coordinator is required, not optional. `trace` records a graph against
+    # the running runtime and `optimizer.step` rebuilds it from there; without a
+    # harness the step finds nothing to update and the playbook silently stays at its
+    # seed value — a training loop that reports rounds and learns nothing.
     try:
-        for index in range(rounds):
-            playbook = await memory.recall("guidance")
-            result, traces = await run_batch(
-                navigator,
-                process,
-                playbook,
-                facts,
-                cases=cases_per_round,
-                max_steps=max_steps,
-            )
-            result.index = index
-            result.playbook_chars = len(str(playbook))
-            history.append(result)
+        async with RuntimeHarness():
+            for index in range(rounds):
+                result, traces = await run_batch(
+                    navigator,
+                    process,
+                    memory,
+                    facts,
+                    cases=cases_per_round,
+                    max_steps=max_steps,
+                )
+                result.index = index
+                result.playbook_chars = len(str(await memory.recall("guidance")))
+                history.append(result)
 
-            if index == rounds - 1 or not traces:
-                break
-            await optimizer.step(traces[-1], feedback_for(result), backends=[memory])
+                if index == rounds - 1 or not traces:
+                    break
+                await optimizer.step(traces[-1], feedback_for(result), backends=[memory])
     finally:
         memory.close()
 

@@ -456,3 +456,112 @@ def test_playbook_is_prose_not_executable_code() -> None:
     from pneuma.casestudy.learning import Playbook
 
     assert Playbook.model_fields["guidance"].annotation is str
+
+
+async def test_a_parameter_view_yields_a_gradient_target_only_once() -> None:
+    """The bug that made a training loop report rounds while learning nothing.
+
+    A `ParameterView` is emitted once — the library's own words are "one logical
+    recall, one event". Reuse one recalled view across a batch and only the *first*
+    traced call carries a parameter node; every later call's graph is empty. Keeping
+    the last trace then hands the optimizer nothing to update, and the failure is
+    silent: rounds are reported, the playbook never changes.
+    """
+    import tempfile as tmp
+
+    from ai_functions import JSONMemoryBackend
+    from ai_functions.optimizer._graph import build_graph_from_result
+    from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
+
+    from pneuma.casestudy.learning import LearningNavigator, Playbook
+
+    process = miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+    navigator = LearningNavigator(process)
+    path = Path(tmp.mkdtemp()) / "pb.json"
+
+    async with RuntimeHarness():
+        memory = JSONMemoryBackend(Playbook, actor_id="n", path=str(path))
+        try:
+            reused = await memory.recall("guidance")
+            model = ScriptedModel(
+                [Turn(tool_calls=(("Choice", {"transition": "X", "reason": "r"}),))] * 6
+            )
+            compiled = navigator.compiled("choose", model=model)
+
+            first = await compiled.trace(reused, "S", "opts", "facts")
+            second = await compiled.trace(reused, "S", "opts", "facts")
+            fresh = await compiled.trace(await memory.recall("guidance"), "S", "opts", "facts")
+
+            names = []
+            for result in (first, second, fresh):
+                graph = await build_graph_from_result(result, [memory])
+                names.append([p.name for p in graph.parameters])
+        finally:
+            memory.close()
+
+    assert names[0] == ["guidance"], "the first trace must carry the parameter"
+    assert names[1] == [], "a reused view is already emitted, so no node appears"
+    assert names[2] == ["guidance"], "recalling again restores the gradient target"
+
+
+async def test_run_batch_recalls_per_call_so_training_can_learn() -> None:
+    """Guards the fix: the batch must hand back a trace with a live parameter node."""
+    import tempfile as tmp
+
+    from ai_functions import JSONMemoryBackend
+    from ai_functions.optimizer._graph import build_graph_from_result
+    from ai_functions.testing import RuntimeHarness
+
+    from pneuma.casestudy import learning
+
+    process = pipeline.governed(
+        miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+    )
+    navigator = learning.LearningNavigator(process)
+    path = Path(tmp.mkdtemp()) / "pb.json"
+
+    async with RuntimeHarness():
+        memory = JSONMemoryBackend(learning.Playbook, actor_id="navigator", path=str(path))
+        try:
+            # Always propose the first legal move: the run terminates or caps, either is fine.
+            navigator.compiled = _scripted_choose(navigator)  # type: ignore[method-assign]
+            result, traces = await learning.run_batch(
+                navigator, process, memory, "routine case", cases=1, max_steps=4
+            )
+            assert traces, "the batch produced no trace to learn from"
+            graph = await build_graph_from_result(traces[0], [memory])
+            assert [p.name for p in graph.parameters] == ["guidance"]
+            assert result.steps
+        finally:
+            memory.close()
+
+
+def _scripted_choose(navigator: object):  # noqa: ANN202 - test helper
+    """Bind a scripted model onto `compiled` so no Bedrock call is made."""
+    from ai_functions.testing import ScriptedModel, Turn
+
+    original = type(navigator).compiled
+
+    def compiled(name: str, **overrides: object):  # noqa: ANN202
+        overrides.setdefault(
+            "model",
+            ScriptedModel(
+                [
+                    Turn(
+                        tool_calls=(
+                            (
+                                "Choice",
+                                {
+                                    "transition": "ConfirmationOfReceiptToT02CheckConfirmationOfR",
+                                    "reason": "r",
+                                },
+                            ),
+                        )
+                    )
+                ]
+                * 12
+            ),
+        )
+        return original(navigator, name, **overrides)
+
+    return compiled

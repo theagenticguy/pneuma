@@ -251,6 +251,48 @@ The looping traces are in the database. Every decision, its reasoning, and wheth
 the runtime accepted it is recorded in `llm_decisions`, so this is auditable rather
 than anecdotal.
 
+## 8. Fixing the looping with backpropagation
+
+Verification cannot fix looping, because looping is legal — the model-checker
+correctly proves the process permits it. That makes it a prompt problem, and the
+library ships a mechanism for prompt problems: `TextGradOptimizer` rewrites a text
+parameter from natural-language feedback.
+
+The wiring that matters: the navigator takes its guidance as a **call argument**, not
+as instance state. Gradient targets are discovered in call arguments, so a playbook
+hidden on the object is invisible to the optimizer.
+
+The loop is: run a batch, count how many looped, phrase that in plain English, let
+the optimizer rewrite the guidance, run again. Live Opus 5, 4 cases per round.
+
+| Round | Completed | Looped | Completion | Mean steps | Playbook |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 0 | 4 | **0%** | 12.0 | 27 chars (seed) |
+| 1 | 4 | 0 | **100%** | 5.5 | 794 chars |
+| 2 | 2 | 2 | 50% | 7.0 | 793 chars |
+
+Round 0 → 1 is the result: **0% to 100% completion, and mean steps halved from 12 to
+5.5.** Nobody edited a prompt. The feedback said "4 of 4 cases failed to finish, the
+agent revisited states it had already passed through", and the optimizer wrote:
+
+> *"Never re-enter a state that has already been visited in the current case
+> execution. If a candidate transition would lead back to a previously visited state,
+> skip it and choose an alternative that moves forward."*
+
+The model diagnosed its own failure mode and wrote the fix into a parameter.
+
+**Round 2 fell back to 50%, and that matters more than the headline.** Four cases per
+round is far too small to call a trend, so treat round 1 as a demonstration that the
+mechanism works, not as evidence of a stable 100%. A real deployment needs dozens of
+cases per round and a held-out set, exactly as it would for any other learned
+component.
+
+**The safety property throughout: the rules were never touched.** The playbook is
+advice the model reads before choosing; the verified process still decides what is
+legal. So no rewrite — however wrong — can widen what the runtime permits. The worst
+a bad rewrite can do is make the agent slower, which is precisely the failure the
+loop is measuring.
+
 ### What this changes about the rollout plan
 
 The guardrail earns its place regardless: it is the reason a loop ends in a clean
