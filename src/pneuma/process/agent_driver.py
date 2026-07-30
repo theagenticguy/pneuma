@@ -55,7 +55,11 @@ class Navigator(MethodAgent):
         """
 
     def decider(self, facts: str) -> interpreter.Decide:
-        """Adapt `choose` into the callable `interpreter.run` expects."""
+        """Adapt `choose` into the callable `interpreter.run` expects.
+
+        `offer` reads the run's visit history itself, so nothing here has to track
+        where the case has already been.
+        """
         compiled = self.compiled("choose")
 
         async def decide(

@@ -128,7 +128,6 @@ async def run_arm(
             sink: list[dict[str, object]] = captured, this_trial: int = trial
         ) -> interpreter.Decide:
             step = 0
-            visited: list[str] = []
 
             async def choose_next(
                 state: str,
@@ -137,10 +136,11 @@ async def run_arm(
             ) -> str:
                 nonlocal step
                 step += 1
-                visited.append(state)
+                # No local visit list: `offer` reads the interpreter's own history,
+                # which includes the states stepped through without a model call.
                 choice = await compiled(
                     state,
-                    interpreter.offer(state, enabled, variables, visited=visited),
+                    interpreter.offer(state, enabled, variables),
                     facts,
                 )
                 legal = {t.name for t in enabled}

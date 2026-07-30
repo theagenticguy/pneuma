@@ -453,9 +453,12 @@ def test_feedback_names_the_observed_failure_and_protects_compliance() -> None:
 def test_playbook_is_prose_not_executable_code() -> None:
     """A `Procedural` playbook would force `code_execution_mode='local'`: the runtime
     rejects the function outright, because Procedural means code for the sandbox."""
+    from ai_functions.memory.procedural import ProceduralMarker
+
     from pneuma.casestudy.learning import Playbook
 
-    assert Playbook.model_fields["guidance"].annotation is str
+    metadata = Playbook.model_fields["guidance"].metadata
+    assert not any(isinstance(marker, ProceduralMarker) for marker in metadata)
 
 
 async def test_a_parameter_view_yields_a_gradient_target_only_once() -> None:

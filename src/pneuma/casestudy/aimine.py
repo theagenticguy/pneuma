@@ -20,9 +20,16 @@ Neither is trusted.
 
 `grade` is what keeps this honest, and it scores twice. Against the fixed
 implementation at its default setting, which flatters the agent because the agent also
-picked its threshold. And against the fixed implementation re-run at the agent's own
-threshold, which isolates the analysis from the setting. Only the second is a claim
-about method.
+picked its threshold. And against the fixed implementation re-run at the setting the
+agent's *edges* imply, which isolates the analysis from the setting. Only the second is
+a claim about method.
+
+That second threshold is derived from the log, never read off the agent's report. The
+agent reports a cutoff in `threshold_used` and that number is worth keeping, since the
+stated rationale is the artifact, but it is a claim the agent makes about itself, and
+using it to configure the baseline lets it set its opponent's handicap. Claiming a loose
+cutoff cripples the baseline while leaving the agent's own edges, and so its own
+coverage, untouched. So the claim is reported and the measurement is derived.
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ from pydantic import BaseModel, Field
 
 from ..method import MethodAgent, ai_method
 from ..process.ir import Process, State, Transition
-from .miner import _identifier, conformance, mine
+from .miner import _identifier, conformance, directly_follows, mine
 
 # The sandbox allowlist. Pure computation only: the executor blocks `os` and `open`
 # regardless, so this widens what the agent can compute with, never what it can reach.
@@ -67,8 +74,12 @@ class Graded:
 
     Comparing against the baseline's *default* threshold flatters the agent, because
     the agent also chose its threshold and a looser cut mechanically buys coverage.
-    The comparison that means something is against the baseline run at whatever
-    threshold the agent picked: that isolates the method from the setting.
+    The comparison that means something is against the baseline run at the setting the
+    agent's edges imply: that isolates the method from the setting.
+
+    `matched_threshold` is derived from the log, and `claimed_threshold` is what the
+    agent said it did. They are separate fields because the agent can only be trusted
+    with the second one, and an evaluation the agent can configure measures nothing.
     """
 
     process: Process
@@ -78,10 +89,27 @@ class Graded:
     matched_coverage: float
     matched_states: int
     matched_edges: int
+    matched_threshold: int
     states: int
     edges: int
     baseline_states: int
     baseline_edges: int
+
+    @property
+    def claimed_threshold(self) -> int:
+        """The cutoff the agent said it used. A self-report, not a measurement."""
+        return self.discovered.threshold_used
+
+    @property
+    def threshold_misreported(self) -> bool:
+        """The claim is impossible given the edges returned.
+
+        One-sided on purpose. Keeping an edge only five real cases walked while
+        claiming a cutoff of 300 cannot both be true, so that is flagged. Claiming a
+        cutoff *below* the tightest edge kept is merely conservative, since the log may
+        simply hold no edge in between, so it is not.
+        """
+        return self.claimed_threshold > self.matched_threshold
 
     @property
     def beat_default(self) -> bool:
@@ -90,20 +118,68 @@ class Graded:
 
     @property
     def beat_method(self) -> bool:
-        """Beat the baseline algorithm at the agent's own threshold. The real claim."""
+        """Beat the baseline algorithm at the threshold its own edges imply.
+
+        The real claim, and the reason the threshold is derived rather than read off
+        the agent's report: this comparison decides who won.
+        """
         return self.coverage > self.matched_coverage
 
     @property
     def summary(self) -> str:
+        claim = f"claimed thr={self.claimed_threshold}"
+        if self.threshold_misreported:
+            claim += f", contradicted by its own edges (support implies {self.matched_threshold})"
         return (
-            f"agent (thr={self.discovered.threshold_used}): {self.states} states / "
+            f"agent ({claim}): {self.states} states / "
             f"{self.edges} edges / {100 * self.coverage:.1f}% coverage\n"
             f"  vs baseline default:  {self.baseline_states} / {self.baseline_edges} / "
             f"{100 * self.baseline_coverage:.1f}%  -> "
             f"{'agent ahead' if self.beat_default else 'baseline ahead'}\n"
-            f"  vs baseline at thr={self.discovered.threshold_used}: {self.matched_states} / "
+            f"  vs baseline at the threshold those edges imply "
+            f"({self.matched_threshold}): {self.matched_states} / "
             f"{self.matched_edges} / {100 * self.matched_coverage:.1f}%  -> "
             f"{'agent ahead' if self.beat_method else 'baseline ahead'}  (the honest comparison)"
+        )
+
+
+def rejects_a_disconnected_model(response: Discovered) -> None:
+    """Post-condition: every activity in an edge must be reachable from the start.
+
+    The prompt tells the agent an unreachable state "will be rejected and you will be
+    asked again". Until this existed nothing performed that rejection, so the prompt was
+    asserting a property of code that was not there. `to_process` prunes islands rather
+    than raising, which is right for the compile step and wrong as the only response:
+    pruning silently discards analysis the agent thought it was submitting.
+    """
+    stranded = unreachable_activities(response)
+    if stranded:
+        raise AssertionError(
+            f"unreachable from start_activity {response.start_activity!r}: "
+            f"{', '.join(sorted(stranded))}. Every activity in an edge must be reachable "
+            "from the start activity by following edges. Either connect them or drop them."
+        )
+
+
+def rejects_a_misreported_threshold(response: Discovered) -> None:
+    """Post-condition: `threshold_used` must describe the edges actually returned.
+
+    The report is kept rather than derived away because the agent's stated cutoff and
+    rationale are the interesting artifact. Keeping it means checking it: a cutoff
+    higher than the support of an edge the agent kept cannot be the cutoff it applied.
+
+    One-sided deliberately, and this only checks the claim against the agent's own
+    `cases` numbers, which the agent also authored. Both fields agreeing is a
+    consistency check, not proof. `grade` counts the real support from the log.
+    """
+    if not response.edges:
+        return
+    weakest = min(edge.cases for edge in response.edges)
+    if response.threshold_used > weakest:
+        raise AssertionError(
+            f"threshold_used is {response.threshold_used} but you kept an edge walked by "
+            f"{weakest} cases, so that is not the cutoff you applied. Report the cutoff "
+            "your own edges reflect."
         )
 
 
@@ -123,6 +199,7 @@ class Miner(MethodAgent):
         code_execution_mode="local",
         code_executor_additional_imports=ANALYSIS_IMPORTS,
         max_attempts=3,
+        post_conditions=[rejects_a_disconnected_model, rejects_a_misreported_threshold],
     )
     def discover(self, log_csv: str, activity_count: int, case_count: int) -> Discovered:
         """Discover the process behind this event log.
@@ -146,9 +223,18 @@ class Miner(MethodAgent):
           too little describes neither.
         - Which activities start and end a case. Look at first and last positions.
 
-        The model you return must be connected: every activity in an edge is reachable
-        from `start_activity`, and at least one terminal activity is reachable. A model
-        with an unreachable state will be rejected and you will be asked again.
+        Two things are checked, and failing either sends this back to you:
+
+        - The model must be connected. Every activity in an edge is reachable from
+          `start_activity` by following edges, and at least one terminal activity is
+          reachable. An unreachable island is rejected.
+        - `threshold_used` must match the edges you return. Claiming a cutoff higher
+          than the support of an edge you kept is rejected.
+
+        `threshold_used` does not set the bar you are measured against. Your model is
+        compared to a fixed implementation run at the cutoff your edges actually imply,
+        counted from the log, so a loose claim buys you nothing. Report the number you
+        used and say why.
 
         In `method`, say what you actually computed. Return via `final_answer`.
         """
@@ -167,6 +253,64 @@ def to_csv(events: pl.DataFrame, *, sample_cases: int | None = None) -> str:
     return frame.write_csv()
 
 
+def unreachable_activities(discovered: Discovered) -> set[str]:
+    """Activities in the agent's edges that no path from `start_activity` reaches.
+
+    Works on the `Discovered` rather than the compiled IR because the compile step
+    prunes them, and something has to see them in order to reject them.
+    """
+    successors: dict[str, list[str]] = {}
+    activities: set[str] = set()
+    for edge in discovered.edges:
+        activities.update((edge.source, edge.target))
+        successors.setdefault(edge.source, []).append(edge.target)
+
+    reached = {discovered.start_activity}
+    frontier = [discovered.start_activity]
+    while frontier:
+        for target in successors.get(frontier.pop(), ()):
+            if target not in reached:
+                reached.add(target)
+                frontier.append(target)
+    return activities - reached
+
+
+def observed_threshold(events: pl.DataFrame, discovered: Discovered) -> int:
+    """The tightest cutoff under which every edge the agent kept survives.
+
+    This is the setting to run the baseline at, and it is measured against `events`
+    rather than read from the agent. `Discovered.threshold_used` is the agent's own
+    account of itself and `Edge.cases` is too: both are fields the agent fills in, so
+    trusting either lets it choose the handicap its opponent runs under. The support
+    of an edge is a fact about the log, so it is counted here.
+
+    An edge the log does not contain has support zero, which floors the result at 1:
+    a model containing a handoff nobody walked is not a thresholded model at all, and
+    it then faces the baseline at its most permissive, which is its strongest.
+
+    Islands are counted before the compile step prunes them, so an invented edge that
+    is also unreachable still floors the threshold. Reading the pruned graph instead
+    would let one manipulation hide behind another.
+
+    What this does not close: the derived threshold still moves if the agent drops its
+    own weakest edges, and a higher threshold is a weaker baseline. That channel is not
+    free the way the self-report was: the dropped edges leave the agent's model too, so
+    its own coverage falls alongside the baseline's, and on this log the gap widens
+    rather than narrows. Measured in `test_raising_the_derived_threshold_costs_what_it_buys`.
+    """
+    if not discovered.edges:
+        return 1
+
+    support = {
+        (row["activity"], row["next_activity"]): row["cases"]
+        for row in directly_follows(events).iter_rows(named=True)
+    }
+    real = [edge for edge in discovered.edges if edge.source != edge.target]
+    if not real:
+        return 1
+    return max(1, min(support.get((edge.source, edge.target), 0) for edge in real))
+
+
 def to_process(discovered: Discovered, name: str) -> Process:
     """Compile a `Discovered` into the same IR a hand-written miner produces.
 
@@ -175,8 +319,20 @@ def to_process(discovered: Discovered, name: str) -> Process:
     start activity absent from its own edges. Each of those yields an IR that fails
     validation with a confusing message, so they are normalised or dropped here.
     """
+    # An island no path from the start reaches contributes no replayable case, so
+    # keeping it would grow the model's edge count at no cost to its coverage. That is
+    # the wrong incentive under any score that trades the two off, and `minelearn`
+    # scores exactly that trade. Dropping it cannot lower coverage either: a case that
+    # replays from the initial state never enters an unreachable state.
+    unreachable = unreachable_activities(discovered)
+    edges = [
+        edge
+        for edge in discovered.edges
+        if edge.source not in unreachable and edge.target not in unreachable
+    ]
+
     activities: list[str] = []
-    for edge in discovered.edges:
+    for edge in edges:
         for end in (edge.source, edge.target):
             if end not in activities:
                 activities.append(end)
@@ -184,7 +340,7 @@ def to_process(discovered: Discovered, name: str) -> Process:
         activities.insert(0, discovered.start_activity)
 
     identifiers = {activity: _identifier(activity) for activity in activities}
-    has_successor = {edge.source for edge in discovered.edges if edge.source != edge.target}
+    has_successor = {edge.source for edge in edges if edge.source != edge.target}
     declared_terminal = {
         a for a in discovered.terminal_activities if a in identifiers and a not in has_successor
     }
@@ -204,9 +360,7 @@ def to_process(discovered: Discovered, name: str) -> Process:
         # Nothing usable was declared either. Fall back to the target of the
         # lowest-support edge: the least-travelled destination is the best available
         # guess at where cases drain, and any terminal beats a rejected process.
-        ranked = sorted(
-            (e for e in discovered.edges if e.target in identifiers), key=lambda e: e.cases
-        )
+        ranked = sorted((e for e in edges if e.target in identifiers), key=lambda e: e.cases)
         if ranked:
             terminals = {ranked[0].target}
 
@@ -222,7 +376,7 @@ def to_process(discovered: Discovered, name: str) -> Process:
 
     seen: set[str] = set()
     transitions: list[Transition] = []
-    for edge in discovered.edges:
+    for edge in edges:
         if edge.source == edge.target:
             continue  # a self-loop is a rework marker, not a handoff the IR can use
         source, target = identifiers[edge.source], identifiers[edge.target]
@@ -234,7 +388,7 @@ def to_process(discovered: Discovered, name: str) -> Process:
 
     return Process(
         name=name,
-        description=f"Discovered by an agent at threshold {discovered.threshold_used}",
+        description=f"Discovered by an agent, which reported threshold {discovered.threshold_used}",
         initial_state=identifiers[discovered.start_activity],
         states=states,
         transitions=transitions,
@@ -248,12 +402,20 @@ def grade(
     name: str = "AgentMined",
     baseline_threshold: int = 25,
 ) -> Graded:
-    """Score a discovered model against the hand-written miner on the same log."""
+    """Score a discovered model against the hand-written miner on the same log.
+
+    The matched threshold comes from `observed_threshold`, not from
+    `discovered.threshold_used`. Reading it off the agent's self-report made the agent
+    the author of its own handicap: on the permit log, one model that scored 96.4%
+    coverage went from losing (baseline 97.6% at the honest cutoff of 5) to winning by
+    38 points (baseline 59.1%) purely by claiming it had cut at 300, with its own edges
+    and coverage untouched. Nothing detected it, and the summary line printed that win
+    labelled "the honest comparison".
+    """
     process = to_process(discovered, name)
     baseline = mine(events, name="Baseline", min_edge_cases=baseline_threshold)
-    # The baseline run at the agent's own cutoff. Without this the score rewards the
-    # agent for choosing a looser threshold rather than for analysing better.
-    matched = mine(events, name="Matched", min_edge_cases=max(1, discovered.threshold_used))
+    matched_threshold = observed_threshold(events, discovered)
+    matched = mine(events, name="Matched", min_edge_cases=matched_threshold)
     identifiers = {state.description: state.name for state in process.states}
 
     return Graded(
@@ -264,6 +426,7 @@ def grade(
         matched_coverage=matched.coverage,
         matched_states=len(matched.process.states),
         matched_edges=len(matched.process.transitions),
+        matched_threshold=matched_threshold,
         states=len(process.states),
         edges=len(process.transitions),
         baseline_states=len(baseline.process.states),

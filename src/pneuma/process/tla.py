@@ -14,33 +14,104 @@ a violation names the stuck state.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 from .ir import Process, _render_tla
 
 TLA_JAR = Path(__file__).resolve().parents[3] / "tools" / "tla2tools.jar"
 
+Outcome = Literal["verified", "violated", "vacuous", "failed"]
+
+_SUCCESS_LINE = "Model checking completed. No error has been found."
+
+# TLC narrates a counterexample on lines that also begin with `Error:`. They are
+# part of a violation report, not an independent failure.
+_NARRATION = (
+    "Error: The behavior up to this point is:",
+    "Error: The following behavior constitutes a counter-example:",
+    "Error: The error occurred when TLC was evaluating the nested",
+)
+
+# TLC's documented exit codes for "the spec is fine, the property is not". Measured
+# against tla2tools 2.19: everything else means the run itself did not complete.
+_TLC_INVARIANT_VIOLATED = 12
+_TLC_DEADLOCK = 11
+_TLC_TEMPORAL = 13
+
+_INVARIANT_VIOLATED = re.compile(r"Invariant\s+(\S+)\s+is violated")
+_COUNTS = re.compile(r"([\d,]+) states generated, ([\d,]+) distinct states found")
+_INITIAL_COUNT = re.compile(r"Finished computing initial states: ([\d,]+) distinct state")
+
 
 @dataclass(frozen=True)
 class CheckResult:
-    """What TLC concluded."""
+    """What TLC concluded, and whether that verdict can be trusted.
 
-    ok: bool
+    `ok` is derived rather than stored. A pass has to survive every gate at once:
+    TLC exited cleanly, printed its success line, reported no violation, no error
+    of any kind, and actually explored some states. Reading a broken run as a clean
+    one is the worst failure this project has, so no single string decides it.
+    """
+
+    outcome: Outcome
+    returncode: int
     states_found: int
     distinct_states: int
+    initial_states: int
     violated: str | None
+    failure: str | None
     trace: list[str]
     raw: str
+    witness_counts: tuple[tuple[str, int], ...] | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "verified"
+
+    @property
+    def witnesses(self) -> dict[str, int] | None:
+        """Per-invariant count of states that actually exercised its condition."""
+        return None if self.witness_counts is None else dict(self.witness_counts)
+
+    @property
+    def vacuous_invariants(self) -> tuple[str, ...]:
+        """Invariants that held only because nothing ever reached their condition."""
+        if self.witness_counts is None:
+            return ()
+        return tuple(sorted(name for name, count in self.witness_counts if count <= 0))
+
+    def with_witnesses(self, counts: Mapping[str, int]) -> CheckResult:
+        """Attach per-invariant witness counts, downgrading a vacuous pass.
+
+        The seam for reachability-vacuity analysis: TLC's own verdict says only
+        that no invariant was violated, which a process can satisfy by never
+        reaching the condition at all. An invariant with zero witnesses is not
+        verified, so the pass is withdrawn.
+        """
+        attached = tuple(counts.items())
+        starved = any(count <= 0 for _, count in attached)
+        outcome = "vacuous" if starved and self.outcome == "verified" else self.outcome
+        return replace(self, witness_counts=attached, outcome=outcome)
 
     @property
     def summary(self) -> str:
-        if self.ok:
+        if self.outcome == "verified":
             return f"verified: {self.distinct_states} distinct states, no violation"
-        return f"VIOLATED {self.violated}: trace of {len(self.trace)} states"
+        if self.outcome == "violated":
+            return f"VIOLATED {self.violated}: trace of {len(self.trace)} states"
+        if self.outcome == "vacuous":
+            if self.vacuous_invariants:
+                names = ", ".join(self.vacuous_invariants)
+                return f"NOT VERIFIED: no witness state for {names}"
+            return "NOT VERIFIED: TLC explored 0 distinct states, so nothing was checked"
+        return f"CHECKER FAILED (exit {self.returncode}): {self.failure}"
 
 
 def render(process: Process) -> str:
@@ -202,34 +273,72 @@ def check(process: Process, *, timeout: int = 180) -> CheckResult:
             timeout=timeout,
             cwd=directory,
         )
-    return _parse(completed.stdout + completed.stderr)
+    return _parse(completed.stdout + completed.stderr, returncode=completed.returncode)
 
 
-def _parse(output: str) -> CheckResult:
+def _parse(output: str, *, returncode: int) -> CheckResult:
+    """Turn TLC's stdout plus its exit status into a verdict.
+
+    Both are needed. TLC prints its success line before the JVM can still die, and
+    it exits non-zero for failures it describes only in prose, so neither the text
+    nor the status is sufficient alone.
+    """
     violated: str | None = None
-    states_found = distinct = 0
+    failure: str | None = None
+    states_found = distinct = initial = 0
     trace: list[str] = []
 
     for line in output.splitlines():
         stripped = line.strip()
-        if "Invariant" in stripped and "is violated" in stripped:
-            violated = stripped.split("Invariant", 1)[1].split("is violated")[0].strip()
+        match = _INVARIANT_VIOLATED.search(stripped)
+        if match:
+            violated = match.group(1).rstrip(".")
+        elif "Error: Deadlock reached" in stripped:
+            violated = "Deadlock"
+        elif "Error: Temporal properties were violated" in stripped:
+            violated = violated or "TemporalProperty"
+        elif stripped.startswith("Error:") and stripped not in _NARRATION:
+            failure = failure or stripped.removeprefix("Error:").strip()
         elif stripped.startswith("State ") and ":" in stripped:
             trace.append(stripped)
-        elif "states generated" in stripped and "distinct states found" in stripped:
-            words = stripped.replace(",", "").split()
-            states_found = int(words[0])
-            for index, word in enumerate(words):
-                if word == "distinct":
-                    distinct = int(words[index - 1])
-                    break
 
-    ok = violated is None and "Model checking completed. No error has been found." in output
+        counts = _COUNTS.search(stripped)
+        if counts and not stripped.startswith("Progress("):
+            states_found = int(counts.group(1).replace(",", ""))
+            distinct = int(counts.group(2).replace(",", ""))
+        starting = _INITIAL_COUNT.search(stripped)
+        if starting:
+            initial = int(starting.group(1).replace(",", ""))
+
+    outcome: Outcome
+    property_codes = (0, _TLC_INVARIANT_VIOLATED, _TLC_DEADLOCK, _TLC_TEMPORAL)
+    if failure is not None or returncode not in property_codes:
+        # A checker that broke reports neither "holds" nor "violated". Reporting it
+        # as a violation would blame the process for the harness's failure.
+        outcome = "failed"
+        if failure is None:
+            failure = f"TLC exited {returncode} without an Error: line"
+        violated = None
+    elif violated is not None:
+        outcome = "violated"
+    elif returncode != 0 or _SUCCESS_LINE not in output:
+        outcome = "failed"
+        failure = f"TLC exited {returncode} without reporting completion"
+    elif distinct <= 0 or initial <= 0:
+        # No error found because nothing was explored: an unsatisfiable Init, or a
+        # spec whose state space is empty. Green here means untested, not safe.
+        outcome = "vacuous"
+    else:
+        outcome = "verified"
+
     return CheckResult(
-        ok=ok,
+        outcome=outcome,
+        returncode=returncode,
         states_found=states_found,
         distinct_states=distinct,
+        initial_states=initial,
         violated=violated,
+        failure=failure,
         trace=trace,
         raw=output,
     )

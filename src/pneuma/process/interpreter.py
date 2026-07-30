@@ -18,12 +18,26 @@ bug in this file or in the IR, caught immediately rather than in production.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 from .ir import Invariant, Process, Transition
 
 Decide = Callable[[str, list[Transition], dict[str, int | str]], Awaitable[str]]
+
+# The states this run has occupied, oldest first, current last. Owned by `run` and
+# read by `offer`, because `run` is the only thing that knows the whole path: a state
+# with one enabled transition is stepped through without consulting the decider, so a
+# history a decider maintains for itself is missing exactly those steps. A ContextVar
+# rather than an argument keeps the `Decide` signature unchanged, and gives each
+# asyncio task its own copy so concurrent runs cannot see each other's paths.
+_HISTORY: ContextVar[tuple[str, ...]] = ContextVar("pneuma_process_history", default=())
+
+
+def history() -> list[str]:
+    """The states the enclosing `run` has occupied so far, current state last."""
+    return list(_HISTORY.get())
 
 
 class ProcessError(RuntimeError):
@@ -106,32 +120,37 @@ async def run(
 
     _assert_invariants(process, current, variables)
 
-    for index in range(max_steps):
-        if states[current].terminal:
-            trace.final_state = current
-            return trace
+    token = _HISTORY.set((current,))
+    try:
+        for index in range(max_steps):
+            if states[current].terminal:
+                trace.final_state = current
+                return trace
 
-        enabled = [t for t in process.outgoing(current) if t.enabled(variables)]
-        if not enabled:
-            raise Deadlock(f"{current} has no enabled transition with {variables}")
+            enabled = [t for t in process.outgoing(current) if t.enabled(variables)]
+            if not enabled:
+                raise Deadlock(f"{current} has no enabled transition with {variables}")
 
-        chosen, rejected = await _elicit(decide, current, enabled, variables, max_rejections)
+            chosen, rejected = await _elicit(decide, current, enabled, variables, max_rejections)
 
-        for effect in chosen.effects:
-            variables[effect.variable] = effect.apply(variables)
-        current = chosen.target
+            for effect in chosen.effects:
+                variables[effect.variable] = effect.apply(variables)
+            current = chosen.target
+            _HISTORY.set((*_HISTORY.get(), current))
 
-        trace.steps.append(
-            Step(
-                index=index,
-                state=chosen.source,
-                transition=chosen.name,
-                target=current,
-                variables=dict(variables),
-                rejected=rejected,
+            trace.steps.append(
+                Step(
+                    index=index,
+                    state=chosen.source,
+                    transition=chosen.name,
+                    target=current,
+                    variables=dict(variables),
+                    rejected=rejected,
+                )
             )
-        )
-        _assert_invariants(process, current, variables)
+            _assert_invariants(process, current, variables)
+    finally:
+        _HISTORY.reset(token)
 
     raise ProcessError(f"exceeded {max_steps} steps without reaching a terminal state")
 
@@ -182,22 +201,26 @@ def offer(
     Each option carries the natural-language condition its guards came from, so the
     model sees why an option is available rather than only that it is.
 
-    `visited` is what stops the agent going in circles. Without it every decision is
-    made from scratch: the model re-derives the same "this moves the case forward"
-    reasoning at a state it has already left, picks the same edge, and oscillates
-    between two valid states until the step budget runs out. It is not a model
-    failure — the prompt genuinely contained no evidence the state was a repeat.
+    The visit history is what stops the agent going in circles. Without it every
+    decision is made from scratch: the model re-derives the same "this moves the case
+    forward" reasoning at a state it has already left, picks the same edge, and
+    oscillates between two valid states until the step budget runs out. It is not a
+    model failure; the prompt genuinely contained no evidence the state was a repeat.
     Marking already-visited targets converts an invisible cycle into a visible one.
+
+    `visited` defaults to the enclosing `run`'s own history, which is the only
+    complete one. Pass a list to override it; pass `[]` to suppress the history.
     """
+    path = history() if visited is None else visited
     header = f"You are at `{state}`. Process variables: {variables}."
     lines = [header]
-    if visited:
+    if path:
         lines += [
             "",
-            f"Steps taken so far ({len(visited)}): " + " → ".join(visited) + ".",
+            f"Steps taken so far ({len(path)}): " + " → ".join(path) + ".",
         ]
     lines += ["", "Legal moves:"]
-    seen = set(visited or [])
+    seen = set(path)
     for transition in enabled:
         reasons = [g.stated_as or str(g) for g in transition.guards]
         because = f" (available because {'; '.join(reasons)})" if reasons else ""

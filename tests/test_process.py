@@ -231,6 +231,214 @@ def test_tlc_catches_the_shortcut_that_skips_senior_approval() -> None:
     assert any("Expedite" in line for line in result.trace)
 
 
+# ── The verdict parser: a broken run must never look like a clean one ──
+#
+# Every fixture below is real TLC 2.19 output, trimmed, captured with the
+# `returncode` java actually exited with. The whole safety argument rests on this
+# verdict, so the parser is tested against the checker's own vocabulary rather
+# than against a paraphrase of it.
+
+
+def _tlc(body: str) -> str:
+    """Prepend the banner every real TLC run prints."""
+    return "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)\n" + body
+
+
+_CLEAN = _tlc("""Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-07-30 17:29:31.
+Model checking completed. No error has been found.
+3 states generated, 2 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-07-30 17:29:31)
+""")
+
+# Init is unsatisfiable: TLC explores nothing, finds no error, and exits 0.
+_NO_STATES = _tlc("""Computing initial states...
+Finished computing initial states: 0 distinct states generated at 2026-07-30 17:29:11.
+Model checking completed. No error has been found.
+0 states generated, 0 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-07-30 17:29:11)
+""")
+
+_VIOLATED = _tlc("""Finished computing initial states: 1 distinct state generated.
+Error: Invariant Inv is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+pc = 0
+
+State 2: <Next line 6, col 13 to line 6, col 29 of module Bad>
+pc = 1
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+""")
+
+_PARSE_FAILED = _tlc("""Lexical error at line 4, column 17.  Encountered: "?"
+Fatal errors while parsing TLA+ spec in file Broken
+Error: Parsing or semantic analysis failed.
+""")
+
+_EVAL_FAILED = _tlc("""Finished computing initial states: 1 distinct state generated.
+Error: Evaluating invariant Inv failed.
+The first argument of < should be an integer, but instead it is:
+"x"
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+pc = 0
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+""")
+
+_DEADLOCK = _tlc("""Finished computing initial states: 1 distinct state generated.
+Error: Deadlock reached.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+pc = 0
+
+2 states generated, 2 distinct states found, 0 states left on queue.
+""")
+
+_PROGRESS = (
+    "Progress(2) at 2026-07-30 17:30:40: 4 states generated,"
+    " 2 distinct states found, 0 states left on queue."
+)
+
+_TEMPORAL = _tlc(f"""{_PROGRESS}
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+pc = 0
+
+State 2: Stuttering
+4 states generated, 2 distinct states found, 0 states left on queue.
+""")
+
+_HEAP_AFTER_SUCCESS = _tlc("""Model checking completed. No error has been found.
+14 states generated, 8 distinct states found, 0 states left on queue.
+Error: Java heap space
+""")
+
+
+def test_a_clean_tlc_run_still_reads_as_verified() -> None:
+    """The negative control: tightening the parser must not fail a good run."""
+    result = tla._parse(_CLEAN, returncode=0)
+    assert result.ok
+    assert result.outcome == "verified"
+    assert (result.states_found, result.distinct_states) == (3, 2)
+    assert result.violated is None
+    assert result.failure is None
+
+
+def test_zero_distinct_states_is_never_a_pass() -> None:
+    """TLC finds no error because it checked nothing. That is not verification."""
+    result = tla._parse(_NO_STATES, returncode=0)
+    assert not result.ok
+    assert result.outcome == "vacuous"
+    assert result.distinct_states == 0
+    assert "verified" not in result.summary
+
+
+def test_a_nonzero_exit_is_never_a_pass() -> None:
+    """java crashing after printing the success line must not read as verified."""
+    result = tla._parse(_CLEAN, returncode=1)
+    assert not result.ok
+    assert result.outcome == "failed"
+    assert result.returncode == 1
+    assert "verified" not in result.summary
+
+
+def test_an_error_line_after_the_success_line_is_never_a_pass() -> None:
+    """The success line is printed before the run can still die. Order proves nothing."""
+    result = tla._parse(_HEAP_AFTER_SUCCESS, returncode=0)
+    assert not result.ok
+    assert result.outcome == "failed"
+    assert result.failure is not None
+    assert "heap" in result.failure.lower()
+
+
+def test_a_spec_failure_is_distinguishable_from_a_property_violation() -> None:
+    """A malformed spec is a broken checker, not a broken process."""
+    result = tla._parse(_PARSE_FAILED, returncode=150)
+    assert not result.ok
+    assert result.outcome == "failed"
+    assert result.violated is None
+    assert "VIOLATED" not in result.summary
+    assert "None" not in result.summary
+    assert result.failure is not None
+    assert "Parsing or semantic analysis failed" in result.failure
+
+
+def test_an_invariant_failing_to_evaluate_is_a_checker_failure() -> None:
+    """TLC could not decide the invariant, so it neither held nor was violated."""
+    result = tla._parse(_EVAL_FAILED, returncode=76)
+    assert not result.ok
+    assert result.outcome == "failed"
+    assert result.violated is None
+
+
+def test_an_invariant_violation_is_reported_as_a_violation() -> None:
+    result = tla._parse(_VIOLATED, returncode=12)
+    assert not result.ok
+    assert result.outcome == "violated"
+    assert result.violated == "Inv"
+    assert len(result.trace) == 2
+    assert "VIOLATED Inv" in result.summary
+
+
+def test_tlcs_own_deadlock_report_is_a_violation_not_a_pass() -> None:
+    result = tla._parse(_DEADLOCK, returncode=11)
+    assert not result.ok
+    assert result.outcome == "violated"
+    assert result.violated == "Deadlock"
+
+
+def test_a_temporal_violation_is_not_a_pass() -> None:
+    """Also exercises a `Progress(...)` line, which the old parser crashed on."""
+    result = tla._parse(_TEMPORAL, returncode=13)
+    assert not result.ok
+    assert result.outcome == "violated"
+    assert result.distinct_states == 2
+
+
+def test_progress_lines_do_not_break_the_state_counts() -> None:
+    """`Progress(2) at ...: 4 states generated` starts with a non-numeric token."""
+    noisy = _CLEAN.replace("3 states generated", f"{_PROGRESS}\n3 states generated")
+    result = tla._parse(noisy, returncode=0)
+    assert result.ok
+    # The final totals line wins over any interim progress report.
+    assert (result.states_found, result.distinct_states) == (3, 2)
+
+
+def test_witness_counts_gate_the_pass_for_the_vacuity_detector() -> None:
+    """The seam: an invariant with no witness state cannot be reported as verified."""
+    verified = tla._parse(_CLEAN, returncode=0)
+    assert verified.with_witnesses({"Inv": 4}).ok
+    vacuous = verified.with_witnesses({"Inv": 4, "Unreached": 0})
+    assert not vacuous.ok
+    assert vacuous.vacuous_invariants == ("Unreached",)
+    assert "Unreached" in vacuous.summary
+
+
+@pytest.mark.skipif(not tla.tlc_available(), reason="needs java and tools/tla2tools.jar")
+def test_tlc_run_with_an_unsatisfiable_init_is_not_a_pass() -> None:
+    """End to end through real TLC: `values=[]` renders `e \\in {}`, so `Init` has no
+    solution. TLC exits 0 saying no error was found, having explored nothing."""
+    process = Process(
+        name="Vacuous",
+        initial_state="A",
+        states=[State(name="A"), State(name="B", terminal=True)],
+        variables=[Variable(name="e", values=[])],
+        transitions=[Transition(name="T", source="A", target="B")],
+    )
+    assert "e \\in {}" in tla.render(process)
+    result = tla.check(process, timeout=120)
+    assert "Model checking completed. No error has been found." in result.raw
+    assert result.returncode == 0
+    assert result.distinct_states == 0
+    assert not result.ok
+    assert result.outcome == "vacuous"
+
+
 # ── Consumer 2: the interpreter ──
 
 
@@ -420,6 +628,138 @@ async def test_single_option_states_never_consult_the_model() -> None:
     await interpreter.run(process, counting, start={"approvals": 0, "amount_band": "large"})
     # Intake and Triage each have exactly one enabled move; only Escalated branches.
     assert consulted == ["Escalated"]
+
+
+# ── The history the agent is shown is the path that actually ran ──
+
+
+def revisiting() -> Process:
+    """A process with a real cycle: `A → B → C → B → D`.
+
+    `A` has one enabled move, so the step into `B` is taken without consulting the
+    agent. That deterministic step is the one a caller-maintained history loses.
+    """
+    return Process(
+        name="Revisit",
+        description="A cycle the agent can be talked out of",
+        initial_state="A",
+        states=[
+            State(name="A", description="Start"),
+            State(name="B", description="Branch"),
+            State(name="C", description="Detour"),
+            State(name="D", terminal=True),
+        ],
+        transitions=[
+            Transition(name="AtoB", source="A", target="B"),
+            Transition(name="BtoC", source="B", target="C"),
+            Transition(name="BtoD", source="B", target="D"),
+            Transition(name="CtoB", source="C", target="B"),
+        ],
+    )
+
+
+async def _detour_once(offers: list[str]) -> tuple[interpreter.Run, list[list[str]]]:
+    """Drive `revisiting()` around the cycle exactly once, recording every offer."""
+    histories: list[list[str]] = []
+    calls = 0
+
+    async def wander(state: str, enabled: list[Transition], variables: dict[str, int | str]) -> str:
+        nonlocal calls
+        calls += 1
+        histories.append(interpreter.history())
+        offers.append(interpreter.offer(state, enabled, variables))
+        return "BtoC" if calls == 1 else "BtoD"
+
+    run = await interpreter.run(revisiting(), wander, max_steps=10)
+    return run, histories
+
+
+async def test_the_history_includes_steps_taken_without_the_model() -> None:
+    """`_elicit` skips the agent at a single-option state; the history must not skip it."""
+    offers: list[str] = []
+    run, _ = await _detour_once(offers)
+
+    assert run.path == ["AtoB", "BtoC", "CtoB", "BtoD"]
+    # `AtoB` was deterministic, so `A` never reached a decider that could record it.
+    assert "Steps taken so far (2): A → B." in offers[0]
+    assert "Steps taken so far (4): A → B → C → B." in offers[1]
+
+
+async def test_a_state_the_run_passed_through_is_marked_as_a_revisit() -> None:
+    offers: list[str] = []
+    await _detour_once(offers)
+
+    assert "[REVISIT" not in offers[0]
+    assert "`C` [REVISIT" in offers[1], "C was visited via a detour and is offered again"
+    assert "`D` [REVISIT" not in offers[1]
+
+
+async def test_the_history_equals_the_states_the_run_actually_occupied() -> None:
+    offers: list[str] = []
+    run, histories = await _detour_once(offers)
+
+    occupied = [run.steps[0].state] + [step.target for step in run.steps]
+    assert occupied == ["A", "B", "C", "B", "D"]
+    # One history per decision, each a prefix of the real path ending at the state
+    # the agent was standing in.
+    assert histories == [occupied[:2], occupied[:4]]
+
+
+async def test_a_decider_that_tracks_nothing_still_gets_the_full_history() -> None:
+    """The three-argument `Decide` contract is what `learning.py` and `Navigator` use.
+
+    Both call `offer(state, enabled, variables)` with no history of their own, so the
+    history has to come from the interpreter or those two call sites see a prompt the
+    live experiment does not.
+    """
+    offers: list[str] = []
+
+    async def watching(
+        state: str, enabled: list[Transition], variables: dict[str, int | str]
+    ) -> str:
+        offers.append(interpreter.offer(state, enabled, variables))
+        return enabled[0].name
+
+    await interpreter.run(claims(), watching, start={"approvals": 0, "amount_band": "large"})
+
+    assert len(offers) == 1, "only Escalated branches"
+    assert "Steps taken so far (3): Intake → Triage → Escalated." in offers[0]
+
+
+def test_the_history_is_empty_outside_a_run() -> None:
+    """`offer` is also called standalone, where there is no path to report."""
+    assert interpreter.history() == []
+    offered = interpreter.offer("Triage", claims().outgoing("Triage"), {"amount_band": "large"})
+    assert "Steps taken so far" not in offered
+
+
+async def test_the_run_history_does_not_leak_past_the_run() -> None:
+    """Every exit — completion, step budget, deadlock — has to clear the history."""
+    assert interpreter.history() == []
+
+    await interpreter.run(claims(), _always_first, start={"approvals": 0, "amount_band": "large"})
+    assert interpreter.history() == []
+
+    with pytest.raises(interpreter.ProcessError):
+        await interpreter.run(revisiting(), _prefer("BtoC"), max_steps=4)
+    assert interpreter.history() == []
+
+
+async def test_an_explicit_visited_argument_still_overrides_the_run_history() -> None:
+    """`offer` stays usable standalone, so a caller can supply or suppress the path."""
+    captured: list[str] = []
+
+    async def watching(
+        state: str, enabled: list[Transition], variables: dict[str, int | str]
+    ) -> str:
+        captured.append(interpreter.offer(state, enabled, variables, visited=[]))
+        captured.append(interpreter.offer(state, enabled, variables, visited=["Escalated"]))
+        return enabled[0].name
+
+    await interpreter.run(claims(), watching, start={"approvals": 0, "amount_band": "large"})
+
+    assert "Steps taken so far" not in captured[0]
+    assert "Steps taken so far (1): Escalated." in captured[1]
 
 
 def test_navigator_exposes_a_typed_contract() -> None:
