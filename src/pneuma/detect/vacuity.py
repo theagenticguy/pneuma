@@ -69,6 +69,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
+from .discrimination import Discrimination
+
 Value = int | str
 Assignment = Mapping[str, Value]
 Key = tuple[str, tuple[tuple[str, Value], ...]]
@@ -423,29 +425,56 @@ class RuleVerdict:
         return self.live is False
 
     @property
+    def discrimination(self) -> Discrimination:
+        """This rule as the shared measurement: could it separate compliant from not?
+
+        An observation is a reachable state the rule had an opinion about, and a
+        separating one is a witness: a state that breaks the rule under the model's own
+        initial values. So `discriminates` is exactly the question `vacuous` answers,
+        expressed in the vocabulary `objective` uses for the same question about a
+        scoring term. See `discrimination.py` for why they are the same question.
+
+        The two bounds this module applies both land in `withheld`, so an unsettled
+        verdict names which search gave up rather than reading as a quiet pass.
+        """
+        withheld: list[str] = []
+        if self.truncated:
+            withheld.append(
+                f"the exact sweep stopped at limit={self.limit} after "
+                f"{self.reachable_states} states"
+            )
+        if self.relaxation_truncated:
+            withheld.append(
+                f"the relaxed sweep that would explain it stopped at limit={self.limit}, "
+                "so the level that could earn this rule its pass never ran"
+            )
+        return Discrimination(
+            subject=self.invariant,
+            observations=self.antecedent_states,
+            separating=self.witnesses,
+            withheld=tuple(withheld),
+            unit="reachable state in scope",
+            kind="rule",
+        )
+
+    @property
     def vacuous(self) -> bool:
         """True when a green verdict on this rule would mean nothing.
 
-        Defined as exactly "gates and has no witness", the same test
-        `Audit.witness_counts` feeds a checker, so this flag and the gate can never
-        disagree about a rule. A truncated sweep is not vacuous, because it is not a
-        finding at all.
+        Derived from `discrimination.idle` rather than re-deriving the same conjunction,
+        so the flag, the gate, and the shared primitive can never disagree about a rule.
+        `idle` is "examined in full and never fired", which is exactly "no witness and
+        neither search was truncated".
 
-        `gates` is required. An unfirable wellformedness property means the domains are
-        sound rather than untested, and calling that vacuous would make the word
-        useless: every correct process has a `TypeOK` that cannot fail.
-
-        `relaxation_truncated` is required for the same reason `truncated` is. If the
-        `free_guards` sweep never ran, the evidence that would have earned the pass was
-        never gathered, and reporting that absence as vacuity is a finding the search
-        did not support.
+        `gates` is required and stays outside the primitive, because it is a statement
+        about what a *pass* would mean rather than about discrimination. An unfirable
+        wellformedness property means the domains are sound rather than untested, and
+        calling that vacuous would make the word useless: every correct process has a
+        `TypeOK` that cannot fail. Its `discrimination` still reports honestly, which is
+        what lets a report show a non-gating rule's idleness without withdrawing a pass
+        for it.
         """
-        return (
-            self.gates
-            and not self.truncated
-            and not self.relaxation_truncated
-            and self.witnesses == 0
-        )
+        return self.gates and self.discrimination.idle
 
     @property
     def cause(self) -> Cause | None:

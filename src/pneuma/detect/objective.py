@@ -176,11 +176,35 @@ the candidate and only records a finding if it actually reaches the ceiling, so 
 arithmetic half of adjudication happens here, in code that cannot be argued with. The
 searcher owns the half that is a judgment call: whether the input is *worthless*.
 
+## Naming the cause, not only the symptom, and why it is the same check `vacuity` runs
+
+Every check above is downstream of one thing. `emptying-is-free` and `degenerate-optimum`
+both say *a degenerate input wins*; neither says why. Measured on the transcript log, the
+why is that one term of the metric has no discriminating power on that dataset: whole-trace
+replay coverage through the real `grade` path reads 0.0227 at every threshold from 1 to 44.
+With coverage held constant the score is a monotone function of emptiness by algebra, so the
+winner is whatever the space admits last. A caller told only that a point wins can fix the
+point; a caller told the coverage term never moves knows the fix is the measurement.
+
+`Component` and `_check_components` are that, and they are deliberately the *same primitive*
+`vacuity` reports a rule through. A rule catching zero reachable states cannot tell a
+compliant run from a violation. A term whose value never moves across the swept space cannot
+tell a good answer from a bad one. Both are checks that pass without ever having been in a
+position to fail, both need the verdict to be three-valued so an abandoned measurement is not
+a pass, and `discrimination.py` is the twenty lines they have in common. That module's
+docstring also records where the unification stops, which is a real limit rather than a gap.
+
 ## What this cannot do
 
 `probe_feedback` checks that the feedback text states the quantity selection uses, and
 that it states it on every round rather than some. It cannot check that the prose's
 *advice* points uphill. See that function for the reasoning.
+
+`components` are declared, not decomposed. Splitting an arbitrary callable into terms needs
+its source and an algebra over it, so a caller lists what it wants measured. The declaration
+is auditable in the way a hand-written `Degenerate` list was not — a term is evaluated on the
+same points the objective is, so a term declared wrong reports its own variance rather than
+the score's — but a term nobody declares is a term nobody measured, and the report says so.
 """
 
 from __future__ import annotations
@@ -188,9 +212,11 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from itertools import product
+
+from .discrimination import Discrimination
 
 Point = dict[str, float]
 """One input to the objective, keyed by domain name."""
@@ -333,6 +359,58 @@ class Structure:
         return measured is not None and measured > 0.0
 
 
+Term = Callable[..., float]
+"""Called as `term(**point)`. One named component of the objective's own arithmetic."""
+
+
+@dataclass(frozen=True)
+class Component:
+    """One term of the objective, so the prober can say which term stopped discriminating.
+
+    The reason this exists is a measured gap between a *cause* and a *symptom*. On the
+    transcript log the prober already refuses, with `emptying-is-free` and two enumerated
+    `degenerate-optimum` findings, and every one of those is downstream: they say a
+    degenerate input wins. What none of them says is *why*, and the why is that one term of
+    the metric has no discriminating power on this dataset. Whole-trace replay coverage
+    through the real `grade` path is 0.0227 at every threshold from 1 to 44, so the score
+    reduces to a monotone function of emptiness and the winner is whatever the space admits
+    last. A caller told only "a degenerate input wins" can fix the winning point; a caller
+    told "the coverage term never moves" knows the fix is the measurement.
+
+    This is the same question `vacuity` asks about a rule, and `discrimination.py` is where
+    the two are one primitive. A rule catching zero reachable states cannot tell a compliant
+    run from a violation; a term whose value never moves across the swept space cannot tell a
+    good answer from a bad one. Both are checks that pass without testing anything.
+
+    Declared rather than inferred, and that is a real limit worth naming. The prober cannot
+    decompose an arbitrary callable into terms — that would need the source and an algebra —
+    so a caller lists the ones it wants measured. The declaration is *auditable* in the way a
+    hand-written `Degenerate` list was not: a term is a function of the same point the
+    objective takes, so the prober evaluates it rather than believing anything about it, and
+    a term declared wrong reports its own variance rather than the score's.
+
+    Attributes:
+        name: What this term is, as the report will name it.
+        term: Called as `term(**point)`. Returns the term's value at that point.
+        floor: Variation at or below this counts as no variation. Absolute, because a term
+            is the caller's own quantity on the caller's own scale, and the prober guessing
+            a relative floor would be substituting its opinion for a declared one.
+    """
+
+    name: str
+    term: Term
+    floor: float = 0.0
+
+    def measure(self, point: Point) -> float | None:
+        """The term at a point, or None if it raised. Raising is not a finding here: a
+        term that cannot be evaluated somewhere is measured over where it can be."""
+        try:
+            value = float(self.term(**point))
+        except Exception:  # noqa: BLE001
+            return None
+        return value if math.isfinite(value) else None
+
+
 @dataclass(frozen=True)
 class Sample:
     point: Point
@@ -464,6 +542,20 @@ class Probe:
     sweeps: tuple[Sweep, ...] = ()
     notes: tuple[str, ...] = ()
 
+    discrimination: tuple[Discrimination, ...] = field(default_factory=tuple)
+    """Per-component discrimination, in the shared primitive. Empty when none was declared.
+
+    Carried alongside the findings rather than folded into them because an idle component is
+    a *cause* and a finding is what it caused. A reader looking at a refusal wants both, and
+    a reader looking at a pass wants this anyway: a term that discriminates by a hair today
+    is the one to watch, and that is a number rather than a finding.
+    """
+
+    @property
+    def idle_components(self) -> tuple[Discrimination, ...]:
+        """Declared terms that never moved across the swept space. The named cause."""
+        return tuple(d for d in self.discrimination if d.idle)
+
     @property
     def refusals(self) -> tuple[Finding, ...]:
         return tuple(f for f in self.findings if f.severity is Severity.REFUSE)
@@ -491,6 +583,7 @@ class Probe:
             refined = f", {sweep.refinements} refinements" if sweep.refinements else ""
             lines.append(f"  swept {sweep.label} [{sweep.space.value}]: {grid}{refined}")
         lines.extend(f"  {finding}" for finding in self.findings)
+        lines.extend(f"  component {d}" for d in self.discrimination)
         lines.extend(f"  note: {note}" for note in self.notes)
         claimed = [f for f in self.warnings if f.downgraded_by]
         if self.ok and claimed:
@@ -747,6 +840,7 @@ def probe(
     *,
     space: Space,
     structure: Structure | None = None,
+    components: Sequence[Component] = (),
     degenerate: Sequence[Degenerate] = (),
     search: Search | None = None,
     source: str | None = None,
@@ -767,6 +861,9 @@ def probe(
             and the emptying check is derived from it. Prefer this over `degenerate`: a
             declared list of bad answers is written by the same hand as the scoring formula
             and is wrong in the same direction, which is what this argument replaced.
+        components: Named terms of the objective's own arithmetic, measured for whether they
+            vary across the swept space at all. This is the check that names the *cause* an
+            emptying or degenerate finding is the symptom of; see `Component`.
         degenerate: Inputs the objective must not be maximised by, each with a label. Still
             checked, and merged with whatever `structure` and `search` produce.
         search: Called with a `Brief` and returns candidate degenerate inputs. Every
@@ -817,6 +914,18 @@ def probe(
         objective, declared, refine=refine, growth=growth
     )
     findings.extend(growth_findings)
+
+    # Before the checks that depend on the shape of the answer space, because an idle term is
+    # the cause of what those find and a reader wants the cause first.
+    discrimination, component_findings = _check_components(components, declared)
+    findings.extend(component_findings)
+    if not components:
+        notes.append(
+            "no `components` were declared, so no term of the objective was measured for "
+            "whether it discriminates at all. A term that is constant across the swept space "
+            "cannot contribute to selection, and every downstream finding then reports the "
+            "symptom without naming the cause: see `Component`."
+        )
 
     candidates = list(degenerate)
     if structure is not None:
@@ -899,7 +1008,12 @@ def probe(
             )
         )
 
-    return Probe(findings=tuple(findings), sweeps=tuple(sweeps), notes=tuple(notes))
+    return Probe(
+        findings=tuple(findings),
+        sweeps=tuple(sweeps),
+        notes=tuple(notes),
+        discrimination=tuple(discrimination),
+    )
 
 
 def _undersampled(
@@ -995,6 +1109,22 @@ it makes no assumption about the caller's units. A smooth objective sampled on a
 grid does not produce three orders of magnitude between neighbours.
 """
 
+SPIKE_PEAK_DOMINANCE = True
+"""A spiking grid point must also carry the sweep's largest finite magnitude.
+
+Not a tunable, a documented property of the check, kept named so the report and the tests can
+refer to one thing. It is the fix for a measured false positive, and the reasoning is in
+`_find_spike`.
+
+The rejected alternative is recorded because it is the one that looks right. Flooring the
+ratio's denominator relative to the sweep's peak, instead of at the absolute `TOLERANCE`, was
+tried first and *never changes an outcome*: a relative floor only exceeds `TOLERANCE` once the
+peak passes 1e3, and by then a real spike clears either floor by orders of magnitude. Mutation
+testing is what showed it — reverting the floor to `TOLERANCE` left every test passing, and no
+objective could be constructed where it mattered. So it was removed rather than shipped as an
+unmeasured knob, which is the defect class this package exists to detect.
+"""
+
 
 def _check_poles(
     objective: Objective, sweep: Sweep, *, refine: int, growth: float
@@ -1066,15 +1196,34 @@ def _check_poles(
 def _find_spike(
     sweep: Sweep, grids: Sequence[Sequence[float]], values: Mapping[tuple, Sample]
 ) -> tuple[Sample, tuple[Sample, ...]] | None:
-    """A grid point whose magnitude dwarfs its neighbours along some axis.
+    """A grid point whose magnitude dwarfs its neighbours *and* dominates the whole sweep.
 
     Interior points are compared against both neighbours, and the two ends of each axis
     against their single one. Including the ends matters: a singularity likes to sit
     exactly where a denominator vanishes, and a denominator often vanishes at zero, which
     is where a declared domain tends to start. Skipping the ends would leave the hole in
     the place most likely to hold the defect.
+
+    The neighbour ratio alone is not enough, and that was found by measurement rather than
+    reasoned about. It fires on a three-axis piecewise-linear objective bounded in [0, 1],
+    twice over and for the same underlying reason. Inside the declared box one grid point
+    pairs an exact `0.0` neighbour with an entirely ordinary `-0.0125`, three orders up.
+    Outside it, `0.25*b - 0.25*c` returns `5.551115123125783e-17` where it is algebraically
+    zero, and an ordinary neighbouring `0.05` then reads as fifteen orders. Neither is a
+    singularity; both are two ways of writing zero next to an ordinary value.
+
+    So the spiking point must also carry the sweep's largest finite magnitude. A singularity
+    *dominates* the space it sits in, which is the property that makes it dangerous to a loop
+    climbing the objective; a point that dwarfs its neighbours while something else in the same
+    sweep is larger is a point the objective's own scale already accommodates. Scale-free, like
+    the ratio, because it compares the objective's values only against each other.
+
+    What that costs, stated rather than assumed: with several spikes in one sweep only the
+    largest is named. Nothing is lost, because one pole is a refusal and the finding is the
+    refusal rather than the inventory.
     """
     names = [axis.name for axis in sweep.axes]
+    peak = sweep.peak
     for index in range(len(sweep.axes)):
         length = len(grids[index])
         if length < 2:
@@ -1102,6 +1251,8 @@ def _find_spike(
                 continue
             here = abs(middle.value or 0.0)
             around = max(abs(s.value or 0.0) for s in sides)
+            if here < peak:
+                continue
             if here > max(around, TOLERANCE) * SPIKE_RATIO:
                 return middle, tuple(sides)
     return None
@@ -1447,6 +1598,83 @@ def _check_emptying(
             point=dict(example[1]) if example else None,
         )
     ], []
+
+
+def _check_components(
+    components: Sequence[Component], sweep: Sweep
+) -> tuple[list[Discrimination], list[Finding]]:
+    """Measure each declared term's variation across the swept grid, and name the idle ones.
+
+    The whole check is one sentence: a term whose value is the same everywhere the loop can
+    look cannot contribute to selection, so the score is a function of the remaining terms
+    and whatever that term was supposed to punish is unpunished. Measurable without knowing
+    anything about what the term means.
+
+    An observation is a swept point where the term evaluated finitely; a separating
+    observation is one where it differs from the term's minimum by more than `floor`. That
+    counting choice is deliberate and it is what makes `separating == 0` mean "constant"
+    rather than "we compared adjacent points and they happened to tie": comparing against
+    the extreme rather than against a neighbour cannot be fooled by a term that is flat in
+    patches while still moving overall.
+
+    Three-valued, through the shared primitive. `withheld` carries the two ways this cannot
+    settle: a term that raised or went non-finite on some points was measured over fewer
+    than the sweep visited, and a term measurable at one point or none has no variation to
+    have. Neither is a pass and neither is a finding.
+
+    Space-agnostic, unlike the emptying and enumeration checks, and that asymmetry has a
+    reason. Those two ask about a *direction* in the space, so free metric axes make the move
+    they test always available and the check meaningless there. This asks whether a quantity
+    has any range at all, which is the same question in both spaces: a coverage term reading
+    0.0227 everywhere is dead whether the threshold or coverage itself is the axis.
+    """
+    measured: list[Discrimination] = []
+    findings: list[Finding] = []
+    finite = sweep.finite
+    for component in components:
+        values = [v for v in (component.measure(s.point) for s in finite) if v is not None]
+        withheld: list[str] = []
+        unmeasurable = len(finite) - len(values)
+        if unmeasurable:
+            withheld.append(
+                f"the term did not evaluate finitely at {unmeasurable} of {len(finite)} "
+                "swept points, so it was measured over fewer points than the sweep visited"
+            )
+        if len(values) < 2:
+            withheld.append(
+                f"the term was measurable at {len(values)} point(s), which is too few for it "
+                "to have a range at all"
+            )
+        low = min(values) if values else 0.0
+        separating = sum(1 for v in values if v - low > component.floor)
+        report = Discrimination(
+            subject=component.name,
+            observations=len(values),
+            separating=separating,
+            withheld=tuple(withheld),
+            unit="swept point",
+            kind="objective term",
+        )
+        measured.append(report)
+        if not report.idle:
+            continue
+        span = (max(values) - low) if values else 0.0
+        findings.append(
+            Finding(
+                check="component-does-not-discriminate",
+                severity=Severity.WARN,
+                detail=(
+                    f"the term {component.name!r} is {low:.4g} at all {len(values)} swept "
+                    f"points (range {span:.4g}, at or below the declared floor of "
+                    f"{component.floor:g}), so it cannot contribute to selection anywhere the "
+                    "loop can look. The score reduces to a function of the remaining terms, "
+                    "and whatever this one was supposed to punish is unpunished. This is the "
+                    "cause; a degenerate optimum is what it causes."
+                ),
+                value=low,
+            )
+        )
+    return measured, findings
 
 
 def _check_escape(

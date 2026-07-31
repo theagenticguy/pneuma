@@ -98,6 +98,7 @@ from ai_functions.memory.frozen import Frozen
 from pydantic import BaseModel, Field
 
 from ..detect.objective import (
+    Component,
     Domain,
     Objective,
     Probe,
@@ -624,13 +625,20 @@ check derived from `size` gets it without a call-site change. The finding comes 
 
 def threshold_objective(
     events: pl.DataFrame, *, sample_cases: int | None = 400, baseline_threshold: int = 25
-) -> tuple[Objective, Structure, int]:
+) -> tuple[Objective, Structure, int, tuple[Component, ...]]:
     """The objective as a function of the one variable the loop actually moves.
 
     Composed through the real `grade` and `score_edges` on the real log, not re-derived,
     because a re-implementation would let the probe clear an objective the loop does not use.
-    Returns the callable, the structure the prober enumerates degenerates from, and the
-    highest per-edge case support, which is the feasible upper bound of the threshold.
+    Returns the callable, the structure the prober enumerates degenerates from, the highest
+    per-edge case support (the feasible upper bound of the threshold), and the score's two
+    terms as `Component`s so the prober can say which of them stopped discriminating.
+
+    The components read the values the composed objective recorded while the prober swept it,
+    which is why they are built here rather than by the caller. Measured on the transcript
+    log, `replay coverage` is 0.0227 at every one of the 44 feasible thresholds and reports
+    idle; `selectivity` moves from 0.0 to 0.994 and reports discriminating. That is the cause
+    behind the `emptying-is-free` refusal on the same log, named rather than inferred.
 
     This is the probe that catches the defect the metric-space one structurally cannot. A
     mining threshold is a decision; coverage and selectivity are coupled functions of it. In
@@ -644,6 +652,10 @@ def threshold_objective(
     firsts, lasts = start_and_end_activities(pl.read_csv(io.StringIO(log_csv)))
     top = int(handoffs["cases"].max())
     cache: dict[int, float] = {}
+    # The score's own two inputs, recorded as the composed objective computes them, so the
+    # component probe reads the quantities selection used rather than re-deriving them. A
+    # re-derivation could drift and would then clear a term the loop does not actually use.
+    terms: dict[int, tuple[float, float]] = {}
 
     def surviving(threshold: float) -> pl.DataFrame:
         return handoffs.filter(pl.col("cases") >= max(1, int(round(threshold))))
@@ -668,6 +680,7 @@ def threshold_objective(
         )
         graded = grade(events, model, baseline_threshold=baseline_threshold)
         audit = score_edges(model, visible_handoffs=shown)
+        terms[step] = (graded.coverage, 1.0 - min(max(audit.edge_share, 0.0), 1.0))
         cache[step] = Attempt(
             index=0,
             coverage=graded.coverage,
@@ -685,7 +698,26 @@ def threshold_objective(
         size=lambda threshold: float(surviving(threshold).height),
         units="handoffs kept",
     )
-    return objective, structure, top
+
+    def term(index: int) -> Component:
+        def read(threshold: float) -> float:
+            step = max(1, int(round(threshold)))
+            if step not in terms:
+                objective(threshold)
+            if step not in terms:
+                # No model compiles here, so neither term has a value. Reported as
+                # unmeasurable rather than as zero: a zero would be a value the score never
+                # used, and it would make a dead term look like it moved.
+                raise ValueError(f"no model compiles at threshold {step}")
+            return terms[step][index]
+
+        return read
+
+    components = (
+        Component(name="replay coverage", term=term(0)),
+        Component(name="selectivity (1 - edge share)", term=term(1)),
+    )
+    return objective, structure, top, components
 
 
 def probe_objective(
@@ -726,6 +758,19 @@ def probe_objective(
     declared: the emptiest answer is enumerated from `Structure.size`, which counts surviving
     handoffs.
 
+    The decision probe also names *why*, which is new and is the point of `components`. Those
+    two findings say a degenerate input wins; they do not say that one term of the metric has
+    no discriminating power on this dataset. `component-does-not-discriminate` says exactly
+    that, in the same three-valued vocabulary `detect.vacuity` reports an unfirable rule
+    through. Measured: on this log `replay coverage` is idle over all 44 thresholds while
+    `selectivity` separates 43 of them, and on the permit log both terms discriminate.
+
+    One thing that measurement does *not* say, and conflating the two would be an error this
+    file has made before: `grade`'s coverage is whole-trace conformance of the *mined process*
+    and it is the flat one. `miner.mine(...).coverage` on the same log is not flat, moving
+    0.5795 down to 0.1023 over the same thresholds. Two different quantities, both called
+    coverage, and only the first is the one this score divides.
+
     `events=None` runs the metric probe alone, and the report says the decision-space checks
     did not run rather than passing quietly.
 
@@ -760,7 +805,7 @@ def probe_objective(
             ),
         )
 
-    objective, structure, top = threshold_objective(
+    objective, structure, top, components = threshold_objective(
         events, sample_cases=sample_cases, baseline_threshold=baseline_threshold
     )
     decision = probe(
@@ -768,6 +813,7 @@ def probe_objective(
         (Domain("threshold", 1, top, integral=True, feasible=(1.0, float(top))),),
         space=Space.DECISION,
         structure=structure,
+        components=components,
         source=inspect.getsource(Attempt.score.fget) if Attempt.score.fget else None,
         search=search,
     )
@@ -778,6 +824,7 @@ def probe_objective(
             *(f"metric: {note}" for note in metric.notes),
             *(f"decision: {note}" for note in decision.notes),
         ),
+        discrimination=decision.discrimination,
     )
 
 

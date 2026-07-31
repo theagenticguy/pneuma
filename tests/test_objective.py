@@ -45,6 +45,7 @@ from pneuma.casestudy.aimine import Discovered, Edge, grade, to_csv
 from pneuma.casestudy.minelearn import Attempt, feedback_for, score_edges, visible_handoffs
 from pneuma.casestudy.miner import start_and_end_activities
 from pneuma.detect.objective import (
+    SPIKE_RATIO,
     Brief,
     Degenerate,
     Domain,
@@ -370,6 +371,66 @@ def test_a_singularity_on_the_edge_of_the_domain_is_caught() -> None:
     case, and zero is where a declared domain tends to start."""
     report = probe(
         lambda x: -math.log(x) if x > 0 else 1e300,
+        (Domain("x", 0.0, 1.0),),
+        space=Space.METRIC,
+    )
+
+    assert not report.ok
+    assert "pole" in checks(report, Severity.REFUSE), report.report()
+
+
+def test_a_smooth_piecewise_objective_is_not_a_pole_however_its_zero_is_written() -> None:
+    """A false positive that was live on this file, and the fix, in one place.
+
+    `max(0, min(1, a - 0.5)) + 0.25*b - 0.25*c` is piecewise-linear, bounded in [0, 1], and
+    has no division anywhere. It was refused, twice over, for two float reasons that are the
+    same reason. Inside the declared box one grid point pairs an exact `0.0` neighbour with an
+    ordinary `-0.0125`, three orders up. Outside it, `0.25*b - 0.25*c` returns
+    `5.551115123125783e-17` where it is algebraically zero and an ordinary neighbouring `0.05`
+    reads as fifteen orders. Neither is a singularity; both are ways of writing zero.
+
+    One fix, scale-free and derived from the sweep's own values rather than a constant: the
+    spiking point must also carry the sweep's largest finite magnitude, because a singularity
+    dominates the space it sits in. Flooring the ratio's denominator relative to the peak was
+    tried alongside it and removed, because mutation testing showed it never changes an
+    outcome; see `SPIKE_PEAK_DOMINANCE`.
+
+    The three `escape-rewarded` findings that remain are correct and are the reason this
+    objective is not asserted `ok`: it really does score 1.25 outside its declared box against
+    0.75 inside, which is precisely what the escape check exists to say."""
+
+    def piecewise(a: float, b: float, c: float) -> float:
+        return max(0.0, min(1.0, a - 0.5)) + 0.25 * b - 0.25 * c
+
+    axes = (Domain("a", 0.0, 1.0), Domain("b", 0.0, 1.0), Domain("c", 0.0, 1.0))
+    report = probe(piecewise, axes, space=Space.METRIC)
+
+    assert "pole" not in checks(report), report.report()
+    assert "escape-pole" not in checks(report), report.report()
+    assert checks(report, Severity.REFUSE) == {"escape-rewarded"}, report.report()
+
+    # The residue that used to be read as a denominator, at a grid point the escape sweep
+    # really visits, so this test fails rather than silently stops being a regression if a
+    # platform ever computes it exactly.
+    residue = piecewise(0.55, -0.19999999999999996, 0.0)
+    assert 0.0 < abs(residue) < 1e-15, (
+        f"the float residue this regression is about is now {residue!r}"
+    )
+    assert abs(piecewise(0.55, 0.0, 0.0) / residue) > SPIKE_RATIO, (
+        "and it is still large enough against an ordinary neighbour to have tripped the "
+        "unfloored ratio test"
+    )
+
+
+def test_the_spike_fix_does_not_go_blind_on_a_small_scale_objective() -> None:
+    """The fix must not buy its way out of the false positive by going blind where the whole
+    objective is small.
+
+    An objective whose ordinary values sit near 1e-6 and which has a genuine even-order pole
+    is still refused. Both surviving conditions are scale-free, so this holds without the
+    prober being told anything about the caller's units."""
+    report = probe(
+        lambda x: 1e-6 / abs(x - 0.5) if x != 0.5 else 1e-6 / 1e-30,
         (Domain("x", 0.0, 1.0),),
         space=Space.METRIC,
     )
@@ -1124,7 +1185,7 @@ def test_the_permit_objective_still_passes_with_nothing_declared() -> None:
     from pneuma.casestudy.minelearn import threshold_objective
 
     events = eventlog.parse_xes(LOG)
-    objective, structure, top = threshold_objective(events)
+    objective, structure, top, _components = threshold_objective(events)
 
     report = probe(
         objective,
@@ -1163,7 +1224,7 @@ def test_the_transcript_objective_is_refused_with_nothing_declared() -> None:
     from pneuma.casestudy.minelearn import threshold_objective
 
     events, _ = transcriptlog.load_sample(FLEET)
-    objective, structure, top = threshold_objective(events)
+    objective, structure, top, _components = threshold_objective(events)
 
     report = probe(
         objective,

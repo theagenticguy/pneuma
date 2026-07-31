@@ -379,7 +379,7 @@ def test_live_the_panel_upholds_the_transcript_logs_real_degenerate() -> None:
     from pneuma.model import opus5
 
     events, _ = transcriptlog.load_sample(FLEET)
-    objective, structure, top = threshold_objective(events)
+    objective, structure, top, _components = threshold_objective(events)
     verdicts: list[Verdict] = []
     search = adversarial_search(
         angles=ANGLES[:2], max_per_angle=2, model=opus5("high"), on_verdict=verdicts.append
@@ -414,7 +414,7 @@ def test_live_the_panel_rejects_on_a_sound_objective() -> None:
     from pneuma.model import opus5
 
     events = eventlog.parse_xes(PERMITS)
-    objective, structure, top = threshold_objective(events)
+    objective, structure, top, _components = threshold_objective(events)
     verdicts: list[Verdict] = []
     search = adversarial_search(
         angles=ANGLES, max_per_angle=3, model=opus5("high"), on_verdict=verdicts.append

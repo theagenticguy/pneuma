@@ -1,12 +1,18 @@
 """Mechanical detectors for properties that pass without ever being tested.
 
-`vacuity` is the general mechanism and imports nothing from pneuma. `adapter` binds
-pneuma's `Process` IR to it and is the file to replace when lifting this elsewhere.
+`discrimination` is the one question the two detectors here are both asking: can this check
+tell its two cases apart, or does it pass because it was never in a position to fail? Read
+that file first; it is the twenty lines they share, and its docstring records where the
+shared shape stops being shared.
 
-`objective` is a second, independent mechanism on the same theme: it probes a scoring
-callable for degenerate optima *before* a training loop runs against it, rather than
-after. It also imports nothing from pneuma; the consumer supplies the callable and the
-declared domain.
+`vacuity` asks it about a *rule*, by enumerating reachable states and counting how many break
+it. It imports nothing from pneuma. `adapter` binds pneuma's `Process` IR to it and is the
+file to replace when lifting this elsewhere.
+
+`objective` asks it about a *scoring function*, by sweeping the domain before a training loop
+runs against it rather than after. It also imports nothing from pneuma; the consumer supplies
+the callable and the declared domain. `Component` is where it asks the question about one term
+of the arithmetic, which is what names the cause a degenerate optimum is the symptom of.
 
 The one-liner a checker consumer wants:
 
@@ -45,12 +51,14 @@ from .adapter import (
     verdict_for,
     witness_counts,
 )
+from .discrimination import Discrimination
 from .objective import (
     DEFAULT_REACH,
     DEFAULT_REFINE,
     DEFAULT_RESOLUTION,
     MAX_CORNERS,
     Brief,
+    Component,
     Degenerate,
     Domain,
     Finding,
@@ -62,6 +70,7 @@ from .objective import (
     Severity,
     Space,
     Structure,
+    Term,
     probe,
     probe_feedback,
 )
@@ -101,8 +110,10 @@ __all__ = [
     "TYPE_RULE",
     "Audit",
     "Brief",
+    "Component",
     "Count",
     "Degenerate",
+    "Discrimination",
     "Domain",
     "Finding",
     "Objective",
@@ -120,6 +131,7 @@ __all__ = [
     "Sweep",
     "SweepError",
     "System",
+    "Term",
     "Trace",
     "Visit",
     "audit",
