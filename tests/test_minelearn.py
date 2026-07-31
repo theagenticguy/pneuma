@@ -61,7 +61,7 @@ from ai_functions.types.graph import GradFeedback
 from pydantic import BaseModel, Field
 
 from pneuma.casestudy import eventlog
-from pneuma.casestudy.aimine import ANALYSIS_IMPORTS, Discovered, Edge, to_csv
+from pneuma.casestudy.aimine import ANALYSIS_IMPORTS, Discovered, Edge, grade, to_csv
 from pneuma.casestudy.minelearn import (
     Attempt,
     Guidance,
@@ -549,6 +549,82 @@ def test_the_seed_toolkit_only_beats_the_frozen_miner_by_tuning_its_threshold() 
     assert at_sweep_argmax.score - at_default.score == pytest.approx(0.0064, abs=1e-3)
 
 
+@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+def test_no_cutoff_beats_the_argmax_so_the_live_bar_needs_a_non_uniform_model() -> None:
+    """What `test_live_toolkit_beats_its_own_seed_baseline` is actually asking for.
+
+    That test's bar is >0.8274, and a bar nothing can clear would measure the objective
+    rather than the agent. This pins which it is. Graded the way the loop grades the
+    agent, 0.8274 at threshold 19 is the exact maximum over *every* candidate cutoff —
+    so the agent cannot win by choosing a better threshold, only by leaving the
+    "keep every handoff with support >= k" family altogether.
+
+    Pinned because the live test ties at 0.8274 and the tempting reading is that the bar
+    is impossible. It is not: a greedy search over arbitrary edge subsets reaches 0.8292
+    by keeping the 13 argmax edges and adding one support-7 handoff. What the tie means
+    is that the agent found the argmax and stopped, which is a finding about the agent.
+    """
+    events = eventlog.parse_xes(LOG)
+    log_csv = to_csv(events, sample_cases=400)
+    sample = pl.read_csv(log_csv.encode())
+    shown = visible_handoffs(log_csv)
+    pairs = directly_follows(sample).filter(pl.col("activity") != pl.col("next_activity"))
+    start = (
+        sample.sort(["case_id", "position"])
+        .group_by("case_id")
+        .agg(pl.col("activity").first().alias("a"))["a"]
+        .mode()[0]
+    )
+
+    def graded(edges: list[tuple[str, str, int]]) -> float:
+        built = [Edge(source=s, target=t, cases=c) for s, t, c in edges]
+        targets = {e.target for e in built}
+        sources = {e.source for e in built}
+        model = Discovered(
+            start_activity=start,
+            terminal_activities=sorted(targets - sources) or sorted(targets),
+            edges=built,
+            threshold_used=min(c for _, _, c in edges),
+            method="enumerated",
+        )
+        scored = grade(events, model, baseline_threshold=25)
+        audit = score_edges(model, visible_handoffs=shown)
+        return attempt(
+            coverage=scored.coverage,
+            matched_coverage=scored.matched_coverage,
+            edges=scored.edges,
+            edge_share=audit.edge_share,
+            invented_edges=audit.invented,
+        ).score
+
+    candidates = [
+        (s, t, int(c)) for s, t, c in pairs.select("activity", "next_activity", "cases").rows()
+    ]
+    by_cutoff = {
+        cutoff: graded(kept)
+        for cutoff in sorted({c for _, _, c in candidates})
+        if (kept := [e for e in candidates if e[2] >= cutoff])
+    }
+
+    best_cutoff = max(by_cutoff, key=lambda k: by_cutoff[k])
+    assert best_cutoff == 19
+    assert by_cutoff[19] == pytest.approx(0.8274, abs=5e-4)
+    assert max(v for k, v in by_cutoff.items() if k != 19) < 0.8274
+
+    # Leaving the threshold family does clear the live bar, so it is not impossible.
+    argmax_edges = [e for e in candidates if e[2] >= 19]
+    added = next(
+        e
+        for e in candidates
+        if (e[0], e[1])
+        == (
+            "T06 Determine necessity of stop advice",
+            "T04 Determine confirmation of receipt",
+        )
+    )
+    assert graded([*argmax_edges, added]) > 0.8274
+
+
 def test_the_sweep_finds_the_cutoff_a_gap_alone_would_miss() -> None:
     """The helpers have to earn their place, so the two cutoff methods must disagree.
 
@@ -1001,15 +1077,47 @@ async def test_train_reaches_the_optimizer_with_both_parameters(
 # ── Live: does a real backward model route to the right parameter? ──
 
 
+# A computation no seed helper provides: the distinct ordered activity sequence per
+# case, and how many cases walk each one. The agent hand-rolls it below, which is the
+# trace shape the toolkit parameter exists to absorb.
+_HANDROLLED_VARIANTS = (
+    "frame = load_log(log_csv)\n"
+    "counted = handoff_support(frame)\n"
+    "start = start_activity(frame)\n"
+    "paths = {}\n"
+    "for case, act in frame.select('case_id', 'activity').rows():\n"
+    "    paths.setdefault(case, []).append(act)\n"
+    "freq = {}\n"
+    "for acts in paths.values():\n"
+    "    key = '>'.join(acts)\n"
+    "    freq[key] = freq.get(key, 0) + 1\n"
+    "print('variants', sorted(freq.items(), key=lambda kv: -kv[1]))\n"
+)
+
+
 @_live
 async def test_live_two_parameters_receive_distinct_gradients(tmp_path: Path) -> None:
     """The crosstalk question, which only a real backward model can answer.
 
     `TextGradOptimizer._distribute` shows one model both parameters and asks it to
     attribute. Whether it splits honestly is a property of the model, so this measures
-    it rather than assuming either outcome: feedback that names a missing computation
-    and a misjudged cutoff in the same message should reach both targets, and the code
-    target's gradient should contain code.
+    it rather than assuming either outcome.
+
+    Both halves of the stimulus have to be real or the measurement is not about
+    crosstalk. Measured over 24 live backward passes, an earlier version of this test
+    asserted only that the toolkit node had *some* gradient while feeding a trace in
+    which the agent called no helper at all and feedback claiming it "had no way to
+    count how many cases each cutoff would cost" — a gap `sweep_thresholds` already
+    closes. The backward model answered, correctly, "no code changes needed, the agent
+    failed to use the helpers it has": 24/24 runs put a refusal in the toolkit node and
+    0/24 put code there. The assertion passed on the refusal, so the test was green for
+    the wrong reason and flaked whenever the model declined to say anything at all.
+
+    So the trace now hand-rolls a computation the toolkit genuinely lacks (case
+    variants), the feedback names that gap alongside the cutoff misjudgment, and the
+    code target is asserted to receive *code* rather than merely a gradient. Measured
+    6/6 on this shape, and 5/5 with the prose parameter removed, so routing competition
+    is not what decides it.
 
     A failure here is a finding about the two-parameter design, not a broken test, and
     it should be reported as such rather than worked around.
@@ -1022,7 +1130,7 @@ async def test_live_two_parameters_receive_distinct_gradients(tmp_path: Path) ->
     try:
         async with RuntimeHarness():
             traced: Any = await compiled.replace(
-                model=_script(_ANSWER.replace("{note}", "m"))
+                model=_script(_HANDROLLED_VARIANTS + _ANSWER.replace("{note}", "m"))
             ).trace(
                 await memory.recall("toolkit"),
                 await memory.recall("advice"),
@@ -1032,15 +1140,21 @@ async def test_live_two_parameters_receive_distinct_gradients(tmp_path: Path) ->
             )
             graph = await optimizer.step(
                 traced,
-                "The agent had no way to count how many cases each candidate cutoff would "
-                "cost, so it recomputed coverage by hand and got it wrong; and it then "
-                "chose the loosest cutoff rather than weighing coverage against "
-                "selectivity.",
+                "No helper reports the distinct case variants (the ordered activity "
+                "sequence per case) or how many cases walk each one, so the agent "
+                "hand-wrote that grouping loop inline every round and could not tell a "
+                "dominant happy path from a long tail of rare variants. It then chose "
+                "the loosest cutoff rather than weighing coverage against selectivity.",
                 backends=[memory],
             )
         by_name = {p.name: p for p in graph.parameters}
         assert by_name["toolkit"].gradients, "the code parameter received no gradient"
         assert by_name["advice"].gradients, "the prose parameter received no gradient"
+        code_gradient = " ".join(g.text for g in by_name["toolkit"].gradients)
+        assert "def " in code_gradient, (
+            "the code parameter received a gradient with no code in it, so the "
+            f"`type: code` label routed prose to the sandbox: {code_gradient!r}"
+        )
     finally:
         memory.close()
 
@@ -1055,6 +1169,28 @@ async def test_live_toolkit_beats_its_own_seed_baseline(tmp_path: Path) -> None:
     the toolkit poses is whether an agent *using* these helpers beats the helpers'
     own mechanical argmax, which scores 0.8274 with no model judgment at all. Anything
     at or below that means the model added nothing and the toolkit is doing the work.
+
+    ## The bar is reachable, which is what makes a tie a finding
+
+    A bar nothing can clear measures the objective, not the agent, so it was checked
+    before being trusted. Enumerating every candidate cutoff and grading each the way
+    this loop grades the agent, 0.8274 at threshold 19 is the *exact maximum* of the
+    whole pure-threshold family: the runner-up is 0.8266 at 28 and third is 0.8210 at
+    27. So no choice of cutoff, however well judged, can beat the argmax — by
+    construction, since the argmax is what it is.
+
+    The bar is nevertheless clearable, because the agent is not confined to that family.
+    A greedy search over arbitrary edge subsets, starting from the 13 argmax edges,
+    finds 0.8292 by adding one edge of support 7 (`T06 Determine necessity of stop
+    advice -> T04 Determine confirmation of receipt`). That is +0.0018, and it is
+    the only kind of move that can win: keep the argmax skeleton and add a low-support
+    handoff whose replay gain exceeds its selectivity cost.
+
+    So a tie at 0.8274 is neither a broken test nor a ceiling artifact. It says the
+    agent found the argmax and stopped there, which is the honest negative result and
+    is left failing rather than papered over. Two live 2-round runs measured 0.8274 /
+    0.8274 (agent reported reading the sweep argmax) and 0.7996 / 0.7888 (agent
+    overrode the argmax to get a structural terminal, and lost). Neither cleared it.
     """
     from pneuma.casestudy.minelearn import train
 
@@ -1066,5 +1202,8 @@ async def test_live_toolkit_beats_its_own_seed_baseline(tmp_path: Path) -> None:
     print(training.summary())
     assert best.score > 0.8274, (
         f"the agent scored {best.score} against the seed toolkit's own mechanical 0.8274, "
-        "so the model contributed nothing over an argmax"
+        "so the model contributed nothing over an argmax. The argmax is the maximum of "
+        "the pure-threshold family, so clearing this bar requires leaving that family: "
+        "0.8292 is reachable by keeping the 13 argmax edges and adding one support-7 "
+        "handoff whose replay gain beats its selectivity cost."
     )

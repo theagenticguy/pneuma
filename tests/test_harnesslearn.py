@@ -147,9 +147,9 @@ def test_the_seed_weight_reproduces_attempt_score_exactly() -> None:
         for share in values:
             for invented in (0.0, 0.3, 1.0, 1.5, -0.5):
                 checked += 1
-                assert weighted_score(
-                    coverage, share, invented, weight=SEED_WEIGHT
-                ) == score_of(coverage, share, invented), (
+                assert weighted_score(coverage, share, invented, weight=SEED_WEIGHT) == score_of(
+                    coverage, share, invented
+                ), (
                     f"the seed weight diverges from Attempt.score at coverage={coverage}, "
                     f"edge_share={share}, invented_share={invented}"
                 )
@@ -232,9 +232,7 @@ def test_a_numeric_parameter_does_not_move_without_a_measurement(tmp_path: Path)
         assert memory.numeric_value("coverage_weight") == before
         assert memory.observations("coverage_weight") == []
 
-        memory.consolidate(
-            "coverage_weight", [GradFeedback(text="measured", score=0.4)]
-        )
+        memory.consolidate("coverage_weight", [GradFeedback(text="measured", score=0.4)])
         assert memory.numeric_value("coverage_weight") != before
         assert [round(v, 4) for v, _, _ in memory.observations("coverage_weight")] == [0.5]
     finally:
@@ -508,9 +506,7 @@ def test_the_honest_baseline_and_the_search_horizon_that_bounds_it(
         from pneuma.memory.turso_backend import _EXPLORE_DECAY, _TRUST_FRACTION
 
         span = WEIGHT_CEILING - WEIGHT_FLOOR
-        horizon = SEED_WEIGHT + span * _TRUST_FRACTION * (1 - SEED_QUALITY) / (
-            1 - _EXPLORE_DECAY
-        )
+        horizon = SEED_WEIGHT + span * _TRUST_FRACTION * (1 - SEED_QUALITY) / (1 - _EXPLORE_DECAY)
         assert round(horizon, 4) == 0.6406
         assert all(weight <= horizon for weight, _ in trajectory), (
             "the search left its own geometric horizon, so the stall explanation is wrong"
@@ -544,9 +540,7 @@ def test_the_search_does_reach_the_ceiling_when_the_optimum_is_inside_its_horizo
             weight = memory.numeric_value("coverage_weight")
             verdict = admit(permits, weight, baseline_rules=seed.baseline_rules)
             best = max(best, verdict.quality)
-            memory.consolidate(
-                "coverage_weight", [GradFeedback(text="q", score=verdict.quality)]
-            )
+            memory.consolidate("coverage_weight", [GradFeedback(text="q", score=verdict.quality)])
         assert best == CEILING_QUALITY, (
             "the search failed even with the optimum inside its horizon, so the mechanism "
             "itself is broken rather than merely short-ranged"
@@ -752,9 +746,7 @@ async def test_train_refuses_a_round_that_would_consolidate_nothing(
     optimizer_module.build_graph_from_result = _empty_graph  # type: ignore[assignment]
     try:
         with pytest.raises(RuntimeError, match="no gradient reached"):
-            await harnesslearn.learn(
-                _Silent(), _Traced(), memory, "feedback", quality=0.75
-            )
+            await harnesslearn.learn(_Silent(), _Traced(), memory, "feedback", quality=0.75)
     finally:
         optimizer_module.build_graph_from_result = original  # type: ignore[assignment]
         memory.close()
@@ -928,9 +920,7 @@ def test_rule_liveness_settles_on_the_permit_log_and_reports_the_finding(
 
     # And at a threshold high enough to strand the forbidden states, the same call reports
     # the finding rather than an abstention.
-    stranded = rule_liveness(
-        permits, miner.mine(permits, name="M", min_edge_cases=200).process
-    )
+    stranded = rule_liveness(permits, miner.mine(permits, name="M", min_edge_cases=200).process)
     assert stranded.discriminates is False
     assert stranded.separating == 0
     assert stranded.observations > 0
@@ -970,8 +960,14 @@ async def test_live_the_proposer_recovers_from_a_rejection(
     usable *by a model* is a property of the model, and no scripted stand-in can answer it: a
     script that returns an admissible weight on attempt two proves only that the script does.
 
-    Seeded at a rejected weight so the first attempt must fail, then asserted on the outcome
-    rather than on the path, since how many attempts a model needs is not ours to fix.
+    Seeded at a rejected weight so the model is shown a real refusal, then asserted on the
+    outcome rather than on the path, since how many attempts a model needs is not ours to fix.
+
+    An earlier version also asserted `proposer.rejected` was non-empty, which contradicted
+    that sentence and failed live for the best possible reason: shown the rejection as
+    evidence, the model proposed an admissible weight on its *first* attempt, so the
+    post-condition never had to fire. Requiring a rejection would demand the model be wrong
+    once before being right.
     """
     memory = TursoMemoryBackend(HarnessKnobs, actor_id="harness", path=tmp_path / "h.db")
     try:
@@ -982,16 +978,15 @@ async def test_live_the_proposer_recovers_from_a_rejection(
             rejected = admit(permits, WEIGHT_FLOOR)
             assert not rejected.ok, "the seeded weight must be one the gate refuses"
 
-            result: Any = await compiled.trace(
-                WEIGHT_FLOOR, evidence_for(rejected, SEED_QUALITY)
-            )
+            result: Any = await compiled.trace(WEIGHT_FLOOR, evidence_for(rejected, SEED_QUALITY))
             proposal: HarnessProposal = result.value
 
         final = proposer.gate(proposal.coverage_weight)
-        assert final.ok, (
-            "the proposer never recovered from the rejection:\n" + final.report_text()
+        assert final.ok, "the proposer never recovered from the rejection:\n" + final.report_text()
+        assert proposal.coverage_weight != WEIGHT_FLOOR, (
+            "the proposer returned the seeded weight unchanged, so it did not act on the "
+            "rejection at all"
         )
-        assert proposer.rejected, "no proposal was rejected, so the retry path never ran"
     finally:
         memory.close()
 
