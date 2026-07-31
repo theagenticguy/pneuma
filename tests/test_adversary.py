@@ -56,7 +56,7 @@ PERMITS = ROOT / "data" / "receipt.xes"
 FLEET = ROOT / "data" / "transcripts_fleet.json"
 
 live = pytest.mark.skipif(
-    not os.environ.get("PNEUMA_LIVE"),
+    os.environ.get("PNEUMA_LIVE") != "1",
     reason="needs Bedrock; set PNEUMA_LIVE=1 to run the adversarial search for real",
 )
 

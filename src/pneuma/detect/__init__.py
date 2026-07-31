@@ -7,7 +7,10 @@ shared shape stops being shared.
 
 `vacuity` asks it about a *rule*, by enumerating reachable states and counting how many break
 it. It imports nothing from pneuma. `adapter` binds pneuma's `Process` IR to it and is the
-file to replace when lifting this elsewhere.
+file to replace when lifting this elsewhere; it is imported lazily through this module's
+`__getattr__`, so importing this package does not pull the IR in. `discrimination`, `vacuity`,
+and `objective` are pure stdlib and lift out of this project unchanged, which is a property
+`tests/test_liftability.py` measures rather than asserts.
 
 `objective` asks it about a *scoring function*, by sweeping the domain before a training loop
 runs against it rather than after. It also imports nothing from pneuma; the consumer supplies
@@ -38,19 +41,8 @@ and is imported separately because it is the only file here that needs a model.
 
 from __future__ import annotations
 
-from .adapter import (
-    DEADLOCK_RULE,
-    TYPE_RULE,
-    ProcessSystem,
-    audit_process,
-    contradictions_in,
-    rule_for,
-    rules_for,
-    structural_rules,
-    system_for,
-    verdict_for,
-    witness_counts,
-)
+from typing import TYPE_CHECKING, Any
+
 from .discrimination import Discrimination
 from .objective import (
     DEFAULT_REACH,
@@ -82,7 +74,6 @@ from .vacuity import (
     Relaxation,
     Rule,
     RuleVerdict,
-    Sweep,
     SweepError,
     System,
     Trace,
@@ -91,14 +82,71 @@ from .vacuity import (
     contradictory,
     sweep,
 )
+from .vacuity import Sweep as ReachabilitySweep
 
-# `objective.Sweep` is deliberately not re-exported: `vacuity.Sweep` already owns that
-# name here and the two are unrelated types. Import it from `pneuma.detect.objective`.
+if TYPE_CHECKING:
+    from .adapter import (
+        DEADLOCK_RULE,
+        TYPE_RULE,
+        ProcessSystem,
+        audit_process,
+        contradictions_in,
+        rule_for,
+        rules_for,
+        structural_rules,
+        system_for,
+        verdict_for,
+        witness_counts,
+    )
+
+# Everything `adapter` exports, resolved on first attribute access rather than at import.
+_ADAPTER_EXPORTS = frozenset(
+    {
+        "DEADLOCK_RULE",
+        "TYPE_RULE",
+        "ProcessSystem",
+        "audit_process",
+        "contradictions_in",
+        "rule_for",
+        "rules_for",
+        "structural_rules",
+        "system_for",
+        "verdict_for",
+        "witness_counts",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve the `adapter` names lazily, so importing this package stays liftable.
+
+    `adapter` is the seam that binds `vacuity` to pneuma's `Process` IR, so it is the one
+    file here that imports from `pneuma` and therefore drags in pydantic. Importing it
+    eagerly made `from pneuma.detect import probe` depend on the whole IR, which contradicts
+    the claim the three deterministic modules make: that they are pure stdlib and can be
+    lifted out of this project unchanged. `tests/test_liftability.py` measures that claim.
+
+    `__getattr__` rather than telling callers to import `pneuma.detect.adapter` themselves,
+    because `audit_process` is half of this package's documented one-liner and moving it
+    would be a breaking rename for a property no caller cares about. Callers keep the flat
+    surface; the cost lands on the first attribute access instead of on import.
+    """
+    if name in _ADAPTER_EXPORTS:
+        from . import adapter
+
+        return getattr(adapter, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# `Sweep` is not exported under that name: `vacuity.Sweep` (a reachability sweep over
+# states) and `objective.Sweep` (a grid sweep over a scoring domain) are unrelated types
+# that collide, and the flat re-export silently resolved to whichever module imported last.
+# `vacuity.Sweep` is re-exported as `ReachabilitySweep`; reach `objective.Sweep` through
+# `pneuma.detect.objective`. Neither module needs a rename to become its own package.
 #
-# `adversary` is deliberately not imported here either. It is the only file under `detect`
-# that reaches for a model, and importing it eagerly would make `from pneuma.detect import
-# probe` depend on `ai_functions` and, transitively, on having credentials to do anything
-# interesting. Import it from `pneuma.detect.adversary` when you want the LLM half.
+# `adversary` is deliberately not imported here at all, not even lazily. It is the only file
+# under `detect` that reaches for a model, and it has no place in the flat surface. Import it
+# from `pneuma.detect.adversary` when you want the LLM half.
 __all__ = [
     "DEADLOCK_RULE",
     "DEFAULT_LIMIT",
@@ -120,6 +168,7 @@ __all__ = [
     "ObjectiveRefused",
     "Probe",
     "ProcessSystem",
+    "ReachabilitySweep",
     "Relaxation",
     "Rule",
     "RuleVerdict",
@@ -128,7 +177,6 @@ __all__ = [
     "Severity",
     "Space",
     "Structure",
-    "Sweep",
     "SweepError",
     "System",
     "Term",
