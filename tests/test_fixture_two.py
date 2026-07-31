@@ -48,10 +48,10 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Callable
-from pathlib import Path
 
 import polars as pl
 import pytest
+from paths import FLEET, PERMITS, SAMPLE, needs_fleet, needs_permits, needs_sample
 
 from pneuma import detect
 from pneuma.casestudy import eventlog, miner, rules, transcriptlog
@@ -59,16 +59,6 @@ from pneuma.casestudy.minelearn import Attempt
 from pneuma.detect import vacuity
 from pneuma.detect.objective import Degenerate, Domain, Severity, Space, probe
 from pneuma.process.ir import Guard, Invariant, Process, State, Transition, Variable
-
-ROOT = Path(__file__).resolve().parents[1]
-SAMPLE = ROOT / "data" / "transcripts_sample.json"
-FLEET = ROOT / "data" / "transcripts_fleet.json"
-PERMITS = ROOT / "data" / "receipt.xes"
-
-needs_sample = pytest.mark.skipif(not SAMPLE.is_file(), reason="needs data/transcripts_sample.json")
-needs_fleet = pytest.mark.skipif(not FLEET.is_file(), reason="needs data/transcripts_fleet.json")
-needs_permits = pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
-
 
 # ── The bug this validation found: a truncated relaxed sweep read as vacuity ──
 

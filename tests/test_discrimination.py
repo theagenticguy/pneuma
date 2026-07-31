@@ -51,20 +51,13 @@ shared, which is the negative result this module reports rather than hides.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import pytest
+from paths import FLEET, PERMITS, needs_fleet, needs_permits
 
 from pneuma.detect import Component, Discrimination, Domain, Space, Structure, probe
 from pneuma.detect.objective import Severity
 from pneuma.process.ir import Guard, Invariant, Process, State, Transition, Variable
-
-ROOT = Path(__file__).resolve().parents[1]
-FLEET = ROOT / "data" / "transcripts_fleet.json"
-PERMITS = ROOT / "data" / "receipt.xes"
-
-needs_fleet = pytest.mark.skipif(not FLEET.is_file(), reason="needs data/transcripts_fleet.json")
-needs_permits = pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
 
 
 def checks(report: object, severity: Severity | None = None) -> set[str]:

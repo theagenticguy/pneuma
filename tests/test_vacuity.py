@@ -14,10 +14,9 @@ being reconciled by a reviewer.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
+from paths import FINES, PERMITS, SAMPLE, needs_fines, needs_permits, needs_sample
 
 from pneuma import detect
 from pneuma.casestudy import eventlog, miner, rules
@@ -25,14 +24,9 @@ from pneuma.detect import vacuity
 from pneuma.process import tla
 from pneuma.process.ir import Effect, Guard, Invariant, Process, State, Transition, Variable
 
-ROOT = Path(__file__).resolve().parents[1]
-PERMITS = ROOT / "data" / "receipt.xes"
-FINES = ROOT / "data" / "roadfines.xes"
-
 CHECK = "T02 Check confirmation of receipt"
 DETERMINE = "T04 Determine confirmation of receipt"
 
-needs_permits = pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
 needs_tlc = pytest.mark.skipif(not tla.tlc_available(), reason="needs java and tools/tla2tools.jar")
 
 
@@ -293,6 +287,7 @@ def test_the_sweep_counts_the_same_states_tlc_does(
     assert swept.reachable_states == checked.distinct_states
 
 
+@needs_fines
 def test_the_second_log_derives_no_rule_the_detector_calls_live() -> None:
     """The negative result on roadfines, now with a cause attached to each rule.
 
@@ -300,9 +295,6 @@ def test_the_second_log_derives_no_rule_the_detector_calls_live() -> None:
     precedence topologically. `tests/test_portability.py` passes today over exactly
     these rules, which is the point: a green suite over rules that forbid nothing.
     """
-    if not FINES.is_file():
-        pytest.skip("needs data/roadfines.xes")
-
     fines = eventlog.parse_xes(FINES)
     mined = miner.mine(fines, name="RoadFines", min_edge_cases=5).process
     report = rules.apply_derived_rules(
@@ -828,10 +820,7 @@ def test_rules_liveness_still_returns_the_record_its_callers_read(
 # ── Fixture two: does the sweep survive a structurally messier model? ──
 
 
-@pytest.mark.skipif(
-    not (ROOT / "data" / "transcripts_sample.json").is_file(),
-    reason="needs data/transcripts_sample.json",
-)
+@needs_sample
 def test_the_sweep_handles_the_transcript_fixture() -> None:
     """The second fixture is bigger and messier, and the sweep has to survive it.
 
@@ -842,7 +831,7 @@ def test_the_sweep_handles_the_transcript_fixture() -> None:
     """
     from pneuma.casestudy import transcriptlog
 
-    events, _ = transcriptlog.load_sample(ROOT / "data" / "transcripts_sample.json")
+    events, _ = transcriptlog.load_sample(SAMPLE)
     mined = miner.mine(events, name="TranscriptSample", min_edge_cases=2).process
     report = rules.apply_derived_rules(
         events, mined, min_support=2, max_rules=3, on_vacuous="ignore"

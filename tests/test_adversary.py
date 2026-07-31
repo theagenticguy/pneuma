@@ -34,9 +34,9 @@ from __future__ import annotations
 
 import inspect
 import os
-from pathlib import Path
 
 import pytest
+from paths import FLEET, PERMITS, needs_fleet, needs_permits
 
 from pneuma.detect.adversary import (
     ANGLES,
@@ -50,10 +50,6 @@ from pneuma.detect.adversary import (
     adversarial_search,
 )
 from pneuma.detect.objective import Brief, Domain, Space, Structure, probe
-
-ROOT = Path(__file__).resolve().parents[1]
-PERMITS = ROOT / "data" / "receipt.xes"
-FLEET = ROOT / "data" / "transcripts_fleet.json"
 
 live = pytest.mark.skipif(
     os.environ.get("PNEUMA_LIVE") != "1",
@@ -366,7 +362,7 @@ def test_adversarial_search_returns_a_callable_probe_accepts() -> None:
 
 
 @live
-@pytest.mark.skipif(not FLEET.is_file(), reason="needs data/transcripts_fleet.json")
+@needs_fleet
 def test_live_the_panel_upholds_the_transcript_logs_real_degenerate() -> None:
     """The measurement that fixed the judge prompt, kept as the regression for it.
 
@@ -400,7 +396,7 @@ def test_live_the_panel_upholds_the_transcript_logs_real_degenerate() -> None:
 
 
 @live
-@pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_live_the_panel_rejects_on_a_sound_objective() -> None:
     """The control, and it is the more important of the two. A panel that upheld everything
     would refuse every objective and be worthless in the way a check that cannot fire is.

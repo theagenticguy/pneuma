@@ -20,14 +20,11 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from paths import PERMITS, SAMPLE, needs_permits, needs_sample
 
 from pneuma.casestudy import eventlog, miner, rules, transcriptlog
 
-ROOT = Path(__file__).resolve().parents[1]
-SAMPLE = ROOT / "data" / "transcripts_sample.json"
-PERMITS = ROOT / "data" / "receipt.xes"
-
-pytestmark = pytest.mark.skipif(not SAMPLE.is_file(), reason="needs data/transcripts_sample.json")
+pytestmark = needs_sample
 
 
 @pytest.fixture(scope="module")
@@ -45,7 +42,7 @@ def sample_stats() -> transcriptlog.TranscriptStats:
 # ── The contract: indistinguishable from parse_xes downstream ──
 
 
-@pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_the_adapter_matches_parse_xes_column_for_column(sample: pl.DataFrame) -> None:
     """The whole point of the adapter. Same names, same dtypes, same order.
 

@@ -17,21 +17,19 @@ hand-written miner at a matched threshold — recorded in docs/case-study.md.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
+from paths import PERMITS, needs_permits
 
 from pneuma.casestudy import aimine, eventlog, miner
 from pneuma.process import tla
 
-LOG = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
-pytestmark = pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+pytestmark = needs_permits
 
 
 @pytest.fixture(scope="module")
 def events() -> pl.DataFrame:
-    return eventlog.parse_xes(LOG)
+    return eventlog.parse_xes(PERMITS)
 
 
 def discovered(**overrides: object) -> aimine.Discovered:

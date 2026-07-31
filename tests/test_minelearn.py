@@ -58,6 +58,7 @@ from ai_functions.tools.local_python_executor import (
     procedural_signatures,
 )
 from ai_functions.types.graph import GradFeedback
+from paths import PERMITS, needs_permits
 from pydantic import BaseModel, Field
 
 from pneuma.casestudy import eventlog
@@ -82,8 +83,6 @@ from pneuma.casestudy.toolkit import (
     rehearsal_probe,
 )
 from pneuma.memory import TursoMemoryBackend
-
-LOG = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
 
 _LIVE = os.environ.get("PNEUMA_LIVE_MINE") == "1"
 _live = pytest.mark.skipif(
@@ -210,13 +209,13 @@ def test_the_score_still_punishes_a_model_that_covers_nothing() -> None:
 # ── Numerator and denominator must describe the same population ──
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_edge_share_is_measured_against_handoffs_the_agent_could_see() -> None:
     """The loop sent the agent a 400-case sample but divided by the 1434-case log's 99
     distinct handoffs. The sample contains 69 non-self handoffs, so an agent that returned
     every single handoff it was shown measured 0.697 rather than 1.0 — selectivity was
     systematically overstated by construction, and no input could reach share 1."""
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     shown = visible_handoffs(to_csv(events, sample_cases=400))
     real = shown.filter(pl.col("activity") != pl.col("next_activity"))
     assert real.height == 69
@@ -229,9 +228,9 @@ def test_edge_share_is_measured_against_handoffs_the_agent_could_see() -> None:
     assert scored.invented == 0
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_an_edge_no_case_ever_walked_is_counted_as_invented() -> None:
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     shown = visible_handoffs(to_csv(events, sample_cases=400))
     pairs = shown.filter(pl.col("activity") != pl.col("next_activity"))
     real = [(r["activity"], r["next_activity"]) for r in pairs.iter_rows(named=True)][:10]
@@ -260,7 +259,7 @@ def test_edge_share_is_bounded_even_when_every_edge_is_invented() -> None:
 # ── The feedback must be two-sided ──
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_feedback_does_not_congratulate_a_hallucinating_model() -> None:
     """The recorded string scolded the agent for memorising and told it 319.386 was a
     record, in one message. Whatever it says, it must not claim a hallucinated attempt is
@@ -458,7 +457,7 @@ def test_the_seed_toolkit_loads_and_every_helper_runs() -> None:
     assert report.unrehearsed == ()
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_the_seed_toolkit_reproduces_the_documented_baseline() -> None:
     """The baseline no toolkit number should be reported without.
 
@@ -468,7 +467,7 @@ def test_the_seed_toolkit_reproduces_the_documented_baseline() -> None:
     it is the honest floor for any claim about what the agent does with them — and
     pinning it means a change to a helper that quietly moves the floor is visible.
     """
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     log_csv = to_csv(events, sample_cases=400)
     executor = LocalPythonExecutorTool(
         output_type=Discovered,
@@ -506,7 +505,7 @@ def test_the_seed_toolkit_reproduces_the_documented_baseline() -> None:
     assert scored.score == pytest.approx(0.8274, abs=5e-4)
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_the_seed_toolkit_only_beats_the_frozen_miner_by_tuning_its_threshold() -> None:
     """The negative finding, pinned so nobody reads the baseline as a win.
 
@@ -522,7 +521,7 @@ def test_the_seed_toolkit_only_beats_the_frozen_miner_by_tuning_its_threshold() 
     """
     from pneuma.casestudy.miner import conformance, mine
 
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     log_csv = to_csv(events, sample_cases=400)
     sample = pl.read_csv(log_csv.encode())
     visible = visible_handoffs(log_csv).filter(pl.col("activity") != pl.col("next_activity")).height
@@ -549,7 +548,7 @@ def test_the_seed_toolkit_only_beats_the_frozen_miner_by_tuning_its_threshold() 
     assert at_sweep_argmax.score - at_default.score == pytest.approx(0.0064, abs=1e-3)
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_no_cutoff_beats_the_argmax_so_the_live_bar_needs_a_non_uniform_model() -> None:
     """What `test_live_toolkit_beats_its_own_seed_baseline` is actually asking for.
 
@@ -564,7 +563,7 @@ def test_no_cutoff_beats_the_argmax_so_the_live_bar_needs_a_non_uniform_model() 
     by keeping the 13 argmax edges and adding one support-7 handoff. What the tie means
     is that the agent found the argmax and stopped, which is a finding about the agent.
     """
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     log_csv = to_csv(events, sample_cases=400)
     sample = pl.read_csv(log_csv.encode())
     shown = visible_handoffs(log_csv)
@@ -625,6 +624,7 @@ def test_no_cutoff_beats_the_argmax_so_the_live_bar_needs_a_non_uniform_model() 
     assert graded([*argmax_edges, added]) > 0.8274
 
 
+@needs_permits
 def test_the_sweep_finds_the_cutoff_a_gap_alone_would_miss() -> None:
     """The helpers have to earn their place, so the two cutoff methods must disagree.
 
@@ -633,9 +633,7 @@ def test_the_sweep_finds_the_cutoff_a_gap_alone_would_miss() -> None:
     rather than leverage. On this log they do not: the widest gap is at support 69 and
     the objective peaks at 19.
     """
-    events = eventlog.parse_xes(LOG) if LOG.is_file() else None
-    if events is None:
-        pytest.skip("needs data/receipt.xes")
+    events = eventlog.parse_xes(PERMITS)
     log_csv = to_csv(events, sample_cases=400)
     executor = LocalPythonExecutorTool(
         output_type=Discovered,
@@ -1011,7 +1009,7 @@ def test_the_bootstrap_contract_matches_what_the_probe_actually_builds() -> None
 # ── The loop itself, offline: two rounds with no model call outside the sandbox ──
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 async def test_train_reaches_the_optimizer_with_both_parameters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1061,7 +1059,7 @@ async def test_train_reaches_the_optimizer_with_both_parameters(
     memory = TursoMemoryBackend(Guidance, actor_id="miner", path=tmp_path / "m.db")
     try:
         training = await minelearn.train(
-            eventlog.parse_xes(LOG), tmp_path / "unused.db", rounds=2, memory=memory
+            eventlog.parse_xes(PERMITS), tmp_path / "unused.db", rounds=2, memory=memory
         )
     finally:
         memory.close()
@@ -1160,7 +1158,7 @@ async def test_live_two_parameters_receive_distinct_gradients(tmp_path: Path) ->
 
 
 @_live
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 async def test_live_toolkit_beats_its_own_seed_baseline(tmp_path: Path) -> None:
     """The only comparison that is honest about this parameter.
 
@@ -1194,7 +1192,7 @@ async def test_live_toolkit_beats_its_own_seed_baseline(tmp_path: Path) -> None:
     """
     from pneuma.casestudy.minelearn import train
 
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     training = await train(events, tmp_path / "m.db", rounds=2)
 
     best = training.best

@@ -35,10 +35,10 @@ from __future__ import annotations
 
 import io
 import math
-from pathlib import Path
 
 import polars as pl
 import pytest
+from paths import FLEET, PERMITS, needs_fleet, needs_permits
 
 from pneuma.casestudy import eventlog
 from pneuma.casestudy.aimine import Discovered, Edge, grade, to_csv
@@ -56,9 +56,6 @@ from pneuma.detect.objective import (
     probe,
     probe_feedback,
 )
-
-LOG = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
-
 
 # ── The three objectives under test ──
 
@@ -565,7 +562,7 @@ def test_a_boundary_optimum_that_really_is_optimal_warns_instead_of_refusing() -
     assert "boundary-optimum-at-feasible-limit" in checks(report, Severity.WARN)
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_the_real_pipeline_objective_has_an_interior_optimum_over_the_full_range() -> None:
     """The end-to-end check, on the real log through the real `grade` and `score_edges`.
 
@@ -573,7 +570,7 @@ def test_the_real_pipeline_objective_has_an_interior_optimum_over_the_full_range
     in the interior, so the current harness has no degenerate optimum in the variable the
     loop actually moves. Both endpoints are bad, which is the shape a sound objective has:
     threshold 1 keeps everything and scores 0.0 by memorising."""
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     csv = to_csv(events, sample_cases=400)
     shown = visible_handoffs(csv)
     firsts, lasts = start_and_end_activities(pl.read_csv(io.StringIO(csv)))
@@ -1172,10 +1169,7 @@ def test_the_search_sees_the_objective_rather_than_a_description_of_it() -> None
 # ── The fourth anchor: both fixtures, nothing declared ──
 
 
-FLEET = Path(__file__).resolve().parents[1] / "data" / "transcripts_fleet.json"
-
-
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+@needs_permits
 def test_the_permit_objective_still_passes_with_nothing_declared() -> None:
     """Half of the separation, and the half that has to hold or the prober is unusable.
 
@@ -1184,7 +1178,7 @@ def test_the_permit_objective_still_passes_with_nothing_declared() -> None:
     pre-flight uses, so this is the objective actually in play and not a stand-in."""
     from pneuma.casestudy.minelearn import threshold_objective
 
-    events = eventlog.parse_xes(LOG)
+    events = eventlog.parse_xes(PERMITS)
     objective, structure, top, _components = threshold_objective(events)
 
     report = probe(
@@ -1207,7 +1201,7 @@ def test_the_permit_objective_still_passes_with_nothing_declared() -> None:
     )
 
 
-@pytest.mark.skipif(not FLEET.is_file(), reason="needs data/transcripts_fleet.json")
+@needs_fleet
 def test_the_transcript_objective_is_refused_with_nothing_declared() -> None:
     """The other half, and the whole point of the change.
 
@@ -1245,8 +1239,8 @@ def test_the_transcript_objective_is_refused_with_nothing_declared() -> None:
     assert structure.measure({"threshold": float(top)}) == 1.0
 
 
-@pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
-@pytest.mark.skipif(not FLEET.is_file(), reason="needs data/transcripts_fleet.json")
+@needs_permits
+@needs_fleet
 def test_the_loops_preflight_refuses_the_transcript_log_and_clears_the_permit_log() -> None:
     """The wiring, end to end, through the function `train` actually calls.
 
@@ -1256,7 +1250,7 @@ def test_the_loops_preflight_refuses_the_transcript_log_and_clears_the_permit_lo
     from pneuma.casestudy import transcriptlog
     from pneuma.casestudy.minelearn import probe_objective
 
-    permits = probe_objective(eventlog.parse_xes(LOG))
+    permits = probe_objective(eventlog.parse_xes(PERMITS))
     assert permits.ok, permits.report()
     permits.raise_if_pathological("the miner's balanced score")
 

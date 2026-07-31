@@ -14,18 +14,15 @@ them fails here.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
+from paths import FINES, PERMITS, needs_permits
 
 from pneuma.casestudy import eventlog, miner, rules
 from pneuma.process import tla
 from pneuma.process.ir import Guard, Invariant, Process, State, Transition, Variable
 
-PERMITS = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
-FINES = Path(__file__).resolve().parents[1] / "data" / "roadfines.xes"
-pytestmark = pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
+pytestmark = needs_permits
 
 # The rule the case study is built around: T02 checks, then T04 determines.
 CHECK = "T02 Check confirmation of receipt"

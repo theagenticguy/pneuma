@@ -12,17 +12,17 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from paths import PERMITS, needs_permits
 
 from pneuma.casestudy import eventlog, miner, pipeline
 from pneuma.process import interpreter, tla
 
-LOG = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
-pytestmark = pytest.mark.skipif(not LOG.is_file(), reason="needs data/receipt.xes")
+pytestmark = needs_permits
 
 
 @pytest.fixture(scope="module")
 def events() -> pl.DataFrame:
-    return eventlog.parse_xes(LOG)
+    return eventlog.parse_xes(PERMITS)
 
 
 @pytest.fixture(scope="module")
@@ -257,7 +257,7 @@ def test_round_trip_through_libsql_preserves_the_log(events: pl.DataFrame) -> No
 def test_pipeline_persists_every_artifact_for_audit() -> None:
     """One file holds the log, the model, and each verifier's verdict."""
     database = temp_db()
-    pipeline.run(LOG, database, min_edge_cases=25, with_tlc=False)
+    pipeline.run(PERMITS, database, min_edge_cases=25, with_tlc=False)
 
     connection = eventlog.connect(database)
     events_stored = connection.execute("SELECT count(*) FROM events").fetchone()[0]
@@ -429,7 +429,7 @@ def test_playbook_arrives_as_a_call_argument_not_instance_state() -> None:
     """
     from pneuma.casestudy.learning import LearningNavigator
 
-    process = miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+    process = miner.mine(eventlog.parse_xes(PERMITS), name="P", min_edge_cases=25).process
     compiled = LearningNavigator(process).compiled("choose")
     assert "playbook" in compiled.prompt_fn.__annotations__
     schema_keys = set(compiled.prompt_fn.__annotations__) - {"return"}
@@ -478,7 +478,7 @@ async def test_a_parameter_view_yields_a_gradient_target_only_once() -> None:
 
     from pneuma.casestudy.learning import LearningNavigator, Playbook
 
-    process = miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+    process = miner.mine(eventlog.parse_xes(PERMITS), name="P", min_edge_cases=25).process
     navigator = LearningNavigator(process)
     path = Path(tmp.mkdtemp()) / "pb.json"
 
@@ -518,7 +518,7 @@ async def test_run_batch_recalls_per_call_so_training_can_learn() -> None:
     from pneuma.casestudy import learning
 
     process = pipeline.governed(
-        miner.mine(eventlog.parse_xes(LOG), name="P", min_edge_cases=25).process
+        miner.mine(eventlog.parse_xes(PERMITS), name="P", min_edge_cases=25).process
     )
     navigator = learning.LearningNavigator(process)
     path = Path(tmp.mkdtemp()) / "pb.json"

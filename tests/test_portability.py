@@ -8,16 +8,13 @@ claim that the portability is real rather than asserted.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
+from paths import FINES, PERMITS
 
 from pneuma.casestudy import eventlog, miner, pipeline, rules
 from pneuma.process import interpreter, tla
 
-PERMITS = Path(__file__).resolve().parents[1] / "data" / "receipt.xes"
-FINES = Path(__file__).resolve().parents[1] / "data" / "roadfines.xes"
 pytestmark = pytest.mark.skipif(
     not (PERMITS.is_file() and FINES.is_file()), reason="needs both logs in data/"
 )

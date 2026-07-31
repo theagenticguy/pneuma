@@ -75,6 +75,7 @@ import pytest
 from ai_functions.optimizer._graph import build_graph_from_result
 from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
 from ai_functions.types.graph import GradFeedback, ParameterNode, ThreadNode
+from paths import PERMITS, needs_permits
 
 from pneuma.casestudy import eventlog
 from pneuma.casestudy.harnesslearn import (
@@ -99,11 +100,6 @@ from pneuma.casestudy.harnesslearn import (
 from pneuma.casestudy.minelearn import score_of
 from pneuma.detect.objective import Domain, Space, probe
 from pneuma.memory import TursoMemoryBackend
-
-ROOT = Path(__file__).resolve().parents[1]
-PERMITS = ROOT / "data" / "receipt.xes"
-
-needs_permits = pytest.mark.skipif(not PERMITS.is_file(), reason="needs data/receipt.xes")
 
 _LIVE = os.environ.get("PNEUMA_LIVE_HARNESS") == "1"
 _live = pytest.mark.skipif(

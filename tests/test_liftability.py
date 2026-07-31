@@ -34,8 +34,9 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from paths import SRC
 
-DETECT = Path(__file__).resolve().parents[1] / "src" / "pneuma" / "detect"
+DETECT = SRC / "pneuma" / "detect"
 
 # The seams: files allowed to import from pneuma or from third-party packages. Everything
 # else under detect/ must be liftable. Named here rather than the liftable set so that a new
