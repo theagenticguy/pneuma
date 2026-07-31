@@ -30,7 +30,7 @@ from ai_functions.types import InputShape, ThreadId
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.types.tools import AgentTool
 
-from .model import Effort, opus5
+from ..model import Effort, opus5
 
 ROSTER: dict[str, type[Agent]] = {}
 

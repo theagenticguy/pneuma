@@ -14,9 +14,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 from strands.tools.decorator import tool as strands_tool
 
+from ..model import Effort
 from . import incident
 from .agent import Agent
-from .model import Effort
 
 # ── Result types ──
 

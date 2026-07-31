@@ -144,7 +144,7 @@ def _duration(seconds: float) -> str:
 def _ambiguity() -> dict[str, tuple[str, ...]]:
     """The planted per-plane ambiguity, read from the dataset itself."""
     sys.path.insert(0, str(ROOT / "src"))
-    from pneuma import incident
+    from pneuma.demo import incident
 
     return incident.single_plane_ambiguity()
 

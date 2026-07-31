@@ -27,8 +27,8 @@ from ai_functions import Procedural
 from ai_functions.ai_thread.config import CodeExecutionMode
 from pydantic import BaseModel, Field
 
+from ..method import MethodAgent, ai_method
 from . import incident
-from .method import MethodAgent, ai_method
 
 Plane = Literal["deploys", "metrics", "logs", "traces"]
 Focus = Literal["latency", "errors", "saturation", "ordering"]

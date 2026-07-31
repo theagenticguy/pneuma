@@ -11,10 +11,10 @@ from pydantic import BaseModel
 from rich.console import Console
 from strands.tools.decorator import tool as strands_tool
 
-from pneuma import incident
-from pneuma.agent import ROSTER, Agent
-from pneuma.cast import Historian, IncidentLead, Specialist
-from pneuma.staffing import Staff, staffing_tools
+from pneuma.demo import incident
+from pneuma.demo.agent import ROSTER, Agent
+from pneuma.demo.cast import Historian, IncidentLead, Specialist
+from pneuma.demo.staffing import Staff, staffing_tools
 
 
 class Answer(BaseModel):
@@ -284,7 +284,7 @@ async def test_tape_subscription_uses_the_real_teardown_api() -> None:
     surfaces after the whole investigation has finished, discarding the result."""
     from ai_functions import InMemoryCoordinator
 
-    from pneuma.live import Tape
+    from pneuma.demo.live import Tape
 
     coordinator = InMemoryCoordinator()
     tape = Tape(console=Console(record=True))

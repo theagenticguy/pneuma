@@ -19,7 +19,7 @@ dependencies = [
 strands-ai-functions = { git = "https://github.com/strands-labs/ai-functions.git", rev = "e47dc94e7b8e4b1e3f3e85587d0bc60e78c30296" }
 
 [project.scripts]
-pneuma = "pneuma.cli:main"
+pneuma = "pneuma.demo.cli:main"
 
 [dependency-groups]
 dev = [

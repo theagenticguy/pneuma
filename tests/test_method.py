@@ -20,8 +20,8 @@ from ai_functions.types import InputShape
 from ai_functions.types.graph import ParameterView, collect_nodes
 from pydantic import BaseModel, Field
 
+from pneuma.demo.typed_cast import Analyst, Burst, Quant, Toolbox
 from pneuma.method import MethodAgent, ai_method
-from pneuma.typed_cast import Analyst, Burst, Quant, Toolbox
 
 Mode = Literal["fast", "thorough"]
 
