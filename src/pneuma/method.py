@@ -1,31 +1,29 @@
 """`@ai_method` — the library's decorator paradigm, applied to methods.
 
-`agent.py` takes the object-oriented route to its logical end and pays for it.
-To stay addressable by peers it compiles every agent down to one `str` parameter,
-which costs three things the decorator gives away for free:
+`agent.py` takes the object-oriented route to its logical end and pays for it: to stay
+addressable by peers it compiles every agent down to one `str` parameter, which costs three
+things the decorator gives away free. Rationale: `docs/design/method.md`.
 
-1. **The typed contract.** `AIFunction` is a `ToolProvider`, and `load_tools`
-   builds its schema from `inspect.signature(prompt_fn)`. A decorated function
-   exposes `plane: Literal[...]`, `window: str`, `max_records: int = 20`. An
-   `Agent` subclass exposes `request: string`. Composition is the library's
-   whole point — an agent *is* a typed tool another agent calls — and a single
-   `str` erases the type information that makes the call checkable.
+1. **The typed contract.** `load_tools` builds an `AIFunction`'s schema from
+   `inspect.signature(prompt_fn)`. A decorated function exposes `plane: Literal[...]`,
+   `window: str`, `max_records: int = 20`; an `Agent` subclass exposes `request: string`.
+   Composition is the whole point — an agent *is* a typed tool another agent calls — and a
+   single `str` erases what makes the call checkable.
 
-2. **The docstring as prompt template.** The decorator interpolates the
-   docstring with the call's bound arguments. `Agent.brief()` builds the prompt
-   with string concatenation in Python instead, so the prompt stops being
-   declarative text and becomes control flow.
+2. **The docstring as prompt template.** The decorator interpolates the docstring with the
+   call's bound arguments. `Agent.brief()` concatenates strings in Python instead, so the
+   prompt stops being declarative text and becomes control flow.
 
-3. **Learnable parameters.** `TextGradOptimizer` routes textual gradients into
-   `ParameterNode`s, and those are discovered by `collect_nodes((args, kwargs))`
-   over the *call arguments*. State hidden on `self` is invisible to it, so an
-   `Agent` subclass cannot be optimized at all.
+3. **Learnable parameters.** `TextGradOptimizer` routes gradients into `ParameterNode`s
+   discovered by `collect_nodes((args, kwargs))` over the *call arguments*. State hidden on
+   `self` is invisible, so an `Agent` subclass cannot be optimized at all.
 
-A bound method recovers all three at once. Python removes `self` from a bound
-method's signature, so `inspect.signature(instance.method)` is already the typed
-contract the model should see, while `self` stays reachable for the parts that
-vary per instance. That is the whole trick: the decorator keeps operating on a
-function, and the instance supplies the closure.
+A bound method recovers all three at once, because Python removes `self` from a bound
+method's signature: `inspect.signature(instance.method)` is already the typed contract, while
+`self` stays reachable for what varies per instance. The decorator keeps operating on a
+function; the instance supplies the closure. That split is load-bearing, not stylistic — a
+gradient target must be a call argument to be discoverable, and a fixed input a validator
+needs belongs on `self`, where the optimizer cannot reach it.
 
     class Analyst(MethodAgent):
         def __init__(self, plane):
@@ -34,16 +32,12 @@ function, and the instance supplies the closure.
         @ai_method(Finding, description="Analyze one plane over a window")
         def analyze(self, window: str, max_records: int = 20) -> Finding:
             '''Analyze the {self.plane} plane over {window}.
-
-            Your private evidence:
-            {self.evidence}
-
-            Report at most {max_records} records.
+            Your private evidence: {self.evidence}
             '''
 
-`Analyst("metrics").compiled("analyze")` is an `AIFunction` with
-`input_shape == STRUCTURED`, a tool schema carrying `window` and `max_records`,
-and a prompt rendered from the docstring with this instance's evidence in it.
+`Analyst("metrics").compiled("analyze")` is an `AIFunction` with `input_shape ==
+STRUCTURED`, a tool schema carrying `window` and `max_records`, and a prompt rendered from
+the docstring with this instance's evidence in it.
 """
 
 from __future__ import annotations

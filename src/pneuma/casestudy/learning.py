@@ -1,50 +1,42 @@
 """Backpropagation over the navigator: fix the looping, without touching the rules.
 
 The live experiment found the real defect. The agent never broke a rule; it *dithered*,
-cycling between valid states until the step cap stopped it — 6 of 10 cases. No amount
-of verification helps, because looping is legal. The model-checker proved the process
-permits it, correctly.
+cycling between valid states until the step cap stopped it — 6 of 10 cases. No amount of
+verification helps, because looping is legal, and the model-checker proved the process permits
+it, correctly. That is a prompt problem, and `TextGradOptimizer` is the mechanism for prompt
+problems you do not want to solve by hand-editing a docstring forever. Rationale:
+`docs/design/learning.md`. The loop is: run cases, observe how many looped, phrase that as
+feedback in plain English, let the optimizer rewrite the playbook, run again.
 
-That is a prompt problem, and `TextGradOptimizer` is the mechanism for prompt problems
-that you do not want to solve by hand-editing a docstring forever.
+**The recalled parameter must arrive as a call argument.** `LearningNavigator.choose` takes
+`playbook` as a real parameter, so a recalled `ParameterView` lands where `collect_nodes` can
+find it. Hide the same text on `self` and the gradient has nothing to land on — not a degraded
+gradient, none at all. This is `pneuma.method`'s argument in production form.
 
-The wiring that matters is the shape of the agent. `LearningNavigator.choose` takes
-`playbook` as a **real parameter**, so a recalled `ParameterView` arrives in the call
-arguments where `collect_nodes` can find it. Hide the same text on `self` and the
-gradient has nothing to land on — the exact failure mode `pneuma.method`'s docstring
-describes, in production form.
+**The playbook is a list of addressable entries, not one string, because of gradient
+routing.** A round produces one gradient about one observed failure. Against a single
+`guidance` parameter that gradient is routed to *all* the accumulated advice at once and the
+consolidating model rewrites whatever it likes, so advice that was working is paraphrased or
+dropped for reasons no round measured — invisibly, since the loop reads only completion rate.
+Recalling by *search* fixes the routing: `TursoMemoryBackend.search` puts `{entry_id: value}`
+for the retrieved entries in the recall event's meta, that travels to the reconstructed
+`ParameterNode` and back out as `consolidate`'s `retrieved=`, so consolidation edits those
+entries and leaves the rest byte-identical. `test_turso_memory.py` asserts that a gradient
+about entry A does not modify entry B.
 
-The loop is: run cases, observe how many looped, phrase that as feedback in plain
-English, let the optimizer rewrite the playbook, run again. The rules are never
-touched. Verification stays valid because the process did not change — only the
-advice the agent reads before choosing.
+The query is built from the decision context — the state, the legal moves, whether any of them
+is a revisit — so the agent reads the advice bearing on the choice in front of it rather than
+everything ever learned. The cost is that advice never retrieved is never corrected.
 
-## Why the playbook is a list of entries and not one string
-
-It was one string, and the blob was the limit. A round produces one gradient about
-one observed failure — "the agent revisited states it had already passed through" —
-and against a single `guidance` parameter that gradient is routed to *all* the
-accumulated advice at once. The consolidating model then rewrites whatever it likes.
-Advice that was working is paraphrased or dropped for reasons no round measured, and
-because the loop only reads completion rate it cannot see that happening.
-
-Splitting the playbook into addressable entries and recalling by *search* fixes the
-routing. `TursoMemoryBackend.search` puts `{entry_id: value}` for the retrieved
-entries in the recall event's meta; that travels to the reconstructed
-`ParameterNode` and back out as `consolidate`'s `retrieved=`, so consolidation edits
-those entries and leaves the rest byte-identical. `test_turso_memory.py` asserts
-exactly that: a gradient about entry A does not modify entry B.
-
-The query is built from the decision context — the state, the legal moves, whether
-any of them is a revisit — so what the agent reads is the advice that bears on the
-choice in front of it rather than everything ever learned.
-
-The safety property is unchanged, and it is worth restating because the parameter
-changed shape. The playbook is *advice*. Rules live in the verified IR where a
-checker can see them, and the interpreter rejects any transition the IR does not
-permit. Nothing an optimizer writes here can widen what the runtime allows: the
-worst a bad rewrite can do is make the agent slower. That is why this loop is
-allowed to let a model rewrite its own guidance at all.
+**The playbook is advice, never a rule, and that is structural.** Rules live in the verified
+IR where a checker can see them, and the interpreter rejects any transition the IR does not
+permit. Nothing an optimizer writes here can widen what the runtime allows: the worst a bad
+rewrite can do is make the agent slower. Verification stays valid across rounds without being
+re-run, because the process did not change — only the advice read before choosing. That is why
+this loop is allowed to let a model rewrite its own guidance at all, and it does not depend on
+the advice being good, which matters because the loop's premise is that it starts bad.
+`harnesslearn.py` states the same property for a learned number, where the enforcement has to
+be a schema allowlist instead of an IR.
 """
 
 from __future__ import annotations

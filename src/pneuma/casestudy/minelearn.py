@@ -1,87 +1,43 @@
 """Improve the miner's own instructions *and* its own tools by backpropagation.
 
-An agent asked to write mining analysis with the obvious algorithm named in its prompt
-reproduces that algorithm rather than improving on it. `aimine` loses to the fixed
-implementation by counting directly-follows pairs ranked by distinct cases, which is
-exactly what the frozen code does, because the prompt describes that algorithm as the
-obvious starting point and then asks for a judgment call.
+An agent asked to write mining analysis with the obvious algorithm named in its prompt reproduces
+that algorithm rather than improving on it: `aimine` loses to the fixed implementation by counting
+directly-follows pairs ranked by distinct cases, exactly what the frozen code does. Optimising the
+prompt alone has a ceiling — `advice` is prose the miner reads before analysing and the loop
+rewrites it from measured feedback, but better advice is remembered while better *code* is not,
+since `aimine` has the agent write its analysis fresh in a sandbox every run. Advice accumulates;
+capability does not. Hence two learnable parameters. Rationale: `docs/design/minelearn.md`.
 
-Optimising the prompt alone has a ceiling. `advice` is prose the miner reads before
-analysing and the loop rewrites it from measured feedback, which works as a mechanism,
-but better advice is remembered while better *code* is not: `aimine` has the agent
-write its analysis fresh in a sandbox every run, so a helper it got right in round one
-is retyped from scratch in round two and can be got wrong. Advice accumulates;
-capability does not.
+**Code and prose cannot be folded into one parameter, and both folds fail concretely.**
+`toolkit` is `Procedural`: source the runtime *executes at sandbox setup*, then *advertises* by
+signature and docstring. Folding prose in as comments deletes it — `procedural_signatures`
+advertises top-level `def` lines and their docstrings only, dropping module docstrings, comments,
+and module-level constants. The reverse fold fails harder: the sandbox forbids `exec`, so code
+arriving as a string variable is inert while code arriving as a `Procedural` is callable.
 
-That is why there are two learnable parameters, and this docstring's main job is to say
-why both rather than one.
+**The crosstalk is accepted, not solved, because it is measurable.**
+`TextGradOptimizer._distribute` makes one backward call see both parameters and route feedback to
+whichever it judges responsible; nothing forces an honest split. `render_inputs` labels a
+procedural node `type: code` and a prose node `type: parameter`, so the parameter descriptions
+here are written as routing instructions rather than documentation. And `Attempt` records
+`toolkit_chars` beside `guidance_chars` and the advertised-helper count, so prose written into the
+code parameter shows up as code growing while the helper count does not. One parameter would make
+that unmeasurable. How often the routing is wrong on a live run is **unverified**.
 
-## Why code and prose are separate gradient targets
+**A rewritten toolkit is rehearsed before the round that depends on it.** `Procedural` setup
+failures raise loudly by design — `ValueError: Failed to load procedural code into the executor
+namespace` kills the cycle — and losing every accumulated helper to that is not acceptable. So
+`rehearse` runs first and a failing toolkit rolls back to the last that passed, kept in a
+`Frozen[Procedural]` the optimizer cannot target, with the rollback recorded on the `Attempt` and
+printed. Rehearsal catches load and call-time failures, not a helper that runs and returns
+something subtly worse. Two wiring details the loop needs: a recalled value arrives as a **call
+argument**, since gradient targets are discovered there and anything on `self` is invisible; and
+each recall happens **per call**, since a `ParameterView` is emitted once and reusing one across a
+batch leaves only the first traced call carrying a gradient target.
 
-`toolkit` is `Procedural`: Python source the runtime *executes at sandbox setup*, so
-its functions are defined and callable, and then *advertises* by signature and
-docstring in the prompt preamble. `advice` stays plain prose the prompt interpolates.
-
-The tempting simplification is to fold the prose into the code as comments and have
-one parameter. It does not work, and the reason is measured rather than argued:
-`procedural_signatures` advertises top-level `def` lines and their docstrings only.
-Module docstrings, comments, and module-level constants are dropped. A policy written
-as a comment in the toolkit is invisible to the agent that would have to follow it.
-
-The reverse fold fails harder. Prose describing a helper is not a helper: the whole
-point of `Procedural` is that the sandbox forbids `exec`, so code arriving as a
-string variable is inert while code arriving as a `Procedural` parameter is callable.
-
-That leaves the real question, which is whether two simultaneous gradient targets
-interfere. They can, and the mechanism is visible in `TextGradOptimizer._distribute`:
-one backward model call sees both parameters and routes feedback to whichever it
-judges responsible. Nothing forces it to split honestly, so a round whose feedback is
-about the cutoff can land on the code, or vice versa. Two things make that acceptable
-here rather than merely tolerated.
-
-First, the split is legible in the rendered inputs: `render_inputs` labels a
-procedural node `type: code` and a prose node `type: parameter`, and the optimizer's
-own prompt tells it to respect each target's description. So the descriptions below
-are written as routing instructions, not as documentation.
-
-Second, and this is the part that makes the interference a finding rather than a
-silent failure, the two parameters are *separately measurable*. `Attempt` records
-`toolkit_chars` beside `guidance_chars` per round, plus the count of advertised
-helpers, and the summary table prints all three. A round that improved by growing the
-toolkit looks different from one that improved by sharpening the advice, and a round
-where the optimizer wrote a paragraph of prose into the code parameter shows up as the
-code growing while the helper count does not.
-
-Collapsing to one parameter would have made that unmeasurable, which is the reason to
-prefer two even accepting the crosstalk. We have not measured how often the routing
-is wrong on a live run; that needs live calls and is stated as unverified rather than
-assumed away.
-
-## What keeps the loop alive when a rewrite is bad
-
-`Procedural` setup failures raise loudly, by design: malformed or erroring recalled
-code raises `ValueError: Failed to load procedural code into the executor namespace`
-and the whole cycle dies. Loud is right, and losing every accumulated helper to it
-is not. So a rewritten toolkit is *rehearsed* before the round that would depend on
-it (see `rehearse`), and a toolkit that fails rehearsal is rolled back to the last one
-that passed, which is kept in a `Frozen[Procedural]` parameter the optimizer cannot
-target. The rollback is recorded on the `Attempt` and printed in the table, because a
-loop that silently reverted the thing it was supposed to be learning reports rounds it
-never ran the rewrite through.
-
-Two details make the whole thing work at all. A recalled value arrives as a **call
-argument**, because gradient
-targets are discovered in call arguments and anything hidden on `self` is invisible to
-the optimizer. And each recall happens per call, because a `ParameterView` is emitted
-once — reuse one across a batch and only the first traced call carries a gradient
-target.
-
-The safety property is unchanged, and the code parameter does not weaken it. The
-toolkit runs in the same AST-interpreted sandbox as any other agent-written analysis:
-no `os`, no `open`, no `exec`, and only the modules `ANALYSIS_IMPORTS` authorises. What
-the agent *returns* is still validated by Pydantic, still model-checked by TLC, and
-still executed by the same interpreter. A bad rewrite produces a worse model, or a
-round that fails rehearsal and says so, never an unverified one.
+The code parameter does not weaken the safety property. The toolkit runs in the same
+AST-interpreted sandbox as any agent-written analysis — no `os`, no `open`, no `exec`, only what
+`ANALYSIS_IMPORTS` authorises — and what it *returns* is still Pydantic-validated and TLC-checked.
 """
 
 from __future__ import annotations

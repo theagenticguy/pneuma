@@ -71,9 +71,10 @@ scores. The harness then mis-grades in silence: a model that returned 86 handoff
 ever walked is recorded as indistinguishable from one that kept every real handoff. The
 clamp does not repair the measurement, it hides that the measurement was wrong. Worth
 keeping as defence in depth, and a call site should clamp, but never as the answer. The
-pole is what the clamp conceals, and `casestudy/harnesslearn.py:267` and
-`casestudy/minelearn.py:362,465` record the score `319.386` that the unbounded form
-produced and selected as best.
+pole is what the clamp conceals, and `weighted_score` in `casestudy/harnesslearn.py`,
+`Attempt.score` and the feedback text in `casestudy/minelearn.py` all record the score
+`319.386` that the unbounded form produced and selected as best. See
+[minelearn.md](minelearn.md) for why telling an agent that number teaches it nothing.
 
 **Refuse** is wrong as a general rule, because it makes the objective the wrong place to
 enforce a fact about measurement. `score_edges` bounds the share by intersecting the
