@@ -2,10 +2,10 @@
 
 Every other loop in this project learns the answer. `minelearn` learns how to mine, and
 `detect` grades what it mined. What none of them can do is change the thing doing the
-grading. Every defect in this project's recorded history lived in harness code and none in
-the model's judgment, so the harness is where the leverage is, and it is also the one place
-where a bad rewrite is invisible: a broken objective does not error, it reports a confident
-number that gets monotonically worse while looking exactly like training.
+grading. Harness code, not the model's judgment, is where the defects live, so the harness is
+where the leverage is, and it is also the one place where a bad rewrite is invisible: a broken
+objective does not error, it reports a confident number that gets monotonically worse while
+looking exactly like training.
 
 So this module hands a numeric harness parameter to the optimizer and puts the detectors in
 front of it as a gate. The whole design is one sentence: **a harness parameter may be
@@ -39,16 +39,14 @@ A parameter whose whole domain the gate accepts would be a parameter the gate is
 guarding. This one has a refusing region and it is where the term that punishes an empty
 answer has been weighted out of existence.
 
-The `w = 0.05` row is a correction to an earlier version of this docstring, and it is the
-best evidence in this file that the two halves of the gate are not redundant. That version
-claimed the whole range 0.05 to 0.99 passes, which was measured with the objective probe
-alone. It does pass the objective probe. It is nonetheless *rejected*, by the safety half
-only: weighting selectivity that heavily moves the selected threshold from 17 to 114, and at
-114 one of the three derived precedences becomes unsatisfiable. So the schema's own
-`ge=0.05` floor sits inside the region the gate refuses, which is the right relationship
-between a convenience bound and a safety argument — the bound is not what makes this safe,
-and a reader who assumed it was would have been wrong in a way only the second detector
-catches.
+The `w = 0.05` row is the best evidence in this file that the two halves of the gate are not
+redundant. It passes the objective probe, because nothing about the *score* at that weight is
+pathological. It is nonetheless *rejected*, by the safety half only: weighting selectivity
+that heavily moves the selected threshold from 17 to 114, and at 114 one of the three derived
+precedences becomes unsatisfiable. So the schema's own `ge=0.05` floor sits inside the region
+the gate refuses, which is the right relationship between a convenience bound and a safety
+argument. The bound is not what makes this safe, and this row is only visible to the second
+detector.
 
 **Not delegated, because it is safety-relevant: the threshold search window.** This is the
 exclusion that carries the argument, and it is a measurement. Widening the window the loop
@@ -65,12 +63,12 @@ Read the first and last columns together. The objective probe says PASS at every
 above 30, because nothing about the *score* is pathological there. Meanwhile at window 150
 every derived precedence is `unsatisfiable`: raising the mining threshold removes the edges
 that could reach the forbidden state, TLC explores the whole space, reports no error, and
-the green verdict is about the shape of the graph rather than about the rule. That is
-defect A2 from this project's history, reachable again through a harness parameter, and it
-is *invisible to the objective probe*. A parameter that can turn a live rule into
-decoration while every score-shaped check reports PASS is not a tuning knob. It stays a
-constant, and `admits` measures rule liveness precisely so the exclusion is enforced by a
-number rather than trusted.
+the green verdict is about the shape of the graph rather than about the rule. That is a rule
+made unsatisfiable by a threshold change and then reported green by the checker, reachable
+through a harness parameter, and it is *invisible to the objective probe*. A parameter that
+can turn a live rule into decoration while every score-shaped check reports PASS is not a
+tuning knob. It stays a constant, and `admits` measures rule liveness precisely so the
+exclusion is enforced by a number rather than trusted.
 
 **Not delegated, because the gate cannot judge it: `sweep_resolution`.** The prober's own
 grid density. Measured on the permit log, whose composed objective is sound:
@@ -154,8 +152,8 @@ the value byte-identical, so the loop cannot invent movement it did not measure.
 
 `quality` is what goes in the score channel, and it is built from the gate's own counters
 rather than from the objective's peak. That choice is a measurement too. The obvious
-meta-objective is "the inner peak the harness achieves", and it is wrong in the way this
-whole session is about: peak is *maximised at the pathological end*, 0.9855 at `w = 0.0`
+meta-objective is "the inner peak the harness achieves", and it is wrong in exactly the way
+this module guards against: peak is *maximised at the pathological end*, 0.9855 at `w = 0.0`
 where the empty model wins, against 0.8184 at the honest `w = 0.5`. An optimizer climbing
 peak would walk straight into the refusing region and report a record. So quality is the
 mean of two things the gate measures directly, both verified to discriminate:
@@ -167,9 +165,9 @@ mean of two things the gate measures directly, both verified to discriminate:
 
 Both are `Discrimination`-shaped questions about the harness, which is the same primitive
 one level up: a quality signal that is flat across the domain it scores cannot tell a good
-harness from a bad one. `Admission.discrimination` reports them in that vocabulary, and the
-first candidate signal tried here was thrown out by it — the honest-optimum-versus-
-degenerate separation is exactly 1.0 at every passing weight, so it was flat and useless.
+harness from a bad one. `Admission.discrimination` reports them in that vocabulary, and it is
+what disqualifies the obvious alternative signal: the honest-optimum-versus-degenerate
+separation is exactly 1.0 at every passing weight, so it is flat and useless.
 
 ## What this does not claim
 
@@ -263,10 +261,11 @@ def weighted_score(
     real thing.
 
     Both clamps and the invention penalty are carried over unchanged, deliberately. The
-    `edge_share` clamp is the fix for the division pole that once scored a garbage model at
-    319.386 and had it selected as best; re-deriving the formula without it would
-    reintroduce a defect this project already paid for. The weight moves how the two terms
-    trade off and touches neither bound.
+    `edge_share` clamp is load-bearing and must not be dropped in any re-derivation: without
+    it an `edge_share` above 1 makes selectivity negative, turning the harmonic mean into a
+    rational function with a pole at `edge_share == 1 + coverage`, where a garbage model
+    scores 319.386 and is selected as best. The weight moves how the two terms trade off and
+    touches neither bound.
     """
     selectivity = 1.0 - min(max(edge_share, 0.0), 1.0)
     denominator = weight * selectivity + (1.0 - weight) * coverage
@@ -402,9 +401,7 @@ def compose(
     )
 
 
-_EMPTYING = re.compile(
-    r"of (\d+) grid-adjacent pairs where the answer shrinks, (\d+) cost score"
-)
+_EMPTYING = re.compile(r"of (\d+) grid-adjacent pairs where the answer shrinks, (\d+) cost score")
 
 
 def emptying_margin(report: Probe) -> Discrimination:
@@ -450,8 +447,10 @@ def emptying_margin(report: Probe) -> Discrimination:
         subject="emptying costs score",
         observations=0,
         separating=0,
-        withheld=("the emptying check did not run on this sweep, so no shrinking pair was "
-                  "compared and this harness has no measurement either way",),
+        withheld=(
+            "the emptying check did not run on this sweep, so no shrinking pair was "
+            "compared and this harness has no measurement either way",
+        ),
         unit="shrinking pair",
         kind="harness parameter",
     )
@@ -471,7 +470,8 @@ def rule_liveness(
     PASS with a peak of 0.8210, while all three derived precedences are `unsatisfiable` —
     the mined graph no longer contains an edge that could reach the forbidden state, so TLC
     explores the whole space, finds no error, and reports green about a rule protecting
-    nothing. That is this project's defect A2, and the score-shaped checks cannot see it.
+    nothing. A threshold change made the rule unsatisfiable and the checker still says green,
+    and the score-shaped checks cannot see it.
 
     Expressed as a `Discrimination` because it is the same question one level up: a rule no
     reachable state can break cannot tell a compliant run from a violation. `unknown`
@@ -537,7 +537,8 @@ class Admission:
 
         A regression against the seed rather than against an absolute floor, because how
         many precedences a log yields is a property of the log. Requiring three would be a
-        constant fitted to the permit fixture, which is this session's defect one level up.
+        constant fitted to the permit fixture, which is the same defect one level up: a check
+        that passes because of what the fixture happens to contain.
         """
         return (self.rules.separating or 0) < self.baseline_rules
 
@@ -552,8 +553,7 @@ class Admission:
         Built from the two counters above rather than from the objective's peak, and that is
         a measurement not a preference: peak is *maximised at the pathological end*, 0.9855
         at `weight=0.0` where the empty model wins against 0.8184 at the honest seed. An
-        optimizer climbing peak would climb into the refusing region and report a record,
-        which is the failure this whole session is about.
+        optimizer climbing peak would climb into the refusing region and report a record.
 
         Zero rather than a partial credit for a rejected harness, so the search cannot
         approach the refusing region and be rewarded for getting closer.
@@ -658,9 +658,7 @@ def admit(
     best = report.sweeps[0].best if report.sweeps else None
     threshold = int(best.point["threshold"]) if best else 1
     mined = miner.mine(events, name="HarnessCandidate", min_edge_cases=threshold).process
-    live = rule_liveness(
-        events, mined, min_support=min_support, max_rules=max_rules
-    )
+    live = rule_liveness(events, mined, min_support=min_support, max_rules=max_rules)
 
     if baseline_rules is None:
         seed = compose(
@@ -680,9 +678,7 @@ def admit(
         )
         seed_best = seed_report.sweeps[0].best if seed_report.sweeps else None
         seed_threshold = int(seed_best.point["threshold"]) if seed_best else 1
-        seed_process = miner.mine(
-            events, name="HarnessSeed", min_edge_cases=seed_threshold
-        ).process
+        seed_process = miner.mine(events, name="HarnessSeed", min_edge_cases=seed_threshold).process
         baseline_rules = rule_liveness(
             events, seed_process, min_support=min_support, max_rules=max_rules
         ).separating
@@ -908,11 +904,11 @@ def evidence_for(verdict: Admission, seed_quality: float) -> str:
     """What the proposer is shown about the last round.
 
     States the quality the search is scored on, every round, unconditionally. That is not
-    stylistic: `probe_feedback` exists because a previous loop in this project reported
-    coverage while selecting on a harmonic mean, and the agent obediently walked its score
-    from 0.804 down to 0.706 over four rounds while the number it was shown improved. An
-    optimizer cannot climb a hill it is not told the height of, and a message that names the
-    height only sometimes leaves the silent rounds steered by something else.
+    stylistic: an optimizer cannot climb a hill it is not told the height of, and a message
+    that names the height only sometimes leaves the silent rounds steered by something else.
+    A loop that reported coverage while selecting on a harmonic mean walked the agent's score
+    from 0.804 down to 0.706 over four rounds while the number it was shown improved, which is
+    what `probe_feedback` exists to prevent.
     """
     head = (
         f"coverage_weight={verdict.weight:g} scored quality {verdict.quality:.4f} "
@@ -933,23 +929,21 @@ def evidence_for(verdict: Admission, seed_quality: float) -> str:
 def substitute_score(graph: Any, name: str, quality: float) -> int:
     """Replace the backward model's opinion of `name` with the measured quality.
 
-    This function is a correction, and the mistake it corrects was mine. `optimizer.step`
-    looks like the whole mechanism, and for a *text* parameter it is. For a numeric one it is
-    not, and the reason is a detail of where `GradFeedback.score` comes from:
-    `_distribute` builds it as `GradFeedback(text=fb.feedback, score=fb.score)` where `fb` is
-    the **backward model's** structured output, and `Feedback.score` is documented as the
-    model "rating how well this input's VALUE actually served the agent's output".
+    `optimizer.step` looks like the whole mechanism, and for a *text* parameter it is. For a
+    numeric one it is not, and the reason is a detail of where `GradFeedback.score` comes
+    from: `_distribute` builds it as `GradFeedback(text=fb.feedback, score=fb.score)` where
+    `fb` is the **backward model's** structured output, and `Feedback.score` is documented as
+    the model "rating how well this input's VALUE actually served the agent's output".
 
     So `step` alone would drive the trust-region search on a language model's impression of a
-    number's usefulness, read off a conversation trace. That is precisely the substitution
-    this session keeps finding: a plausible quantity standing in for a measured one, in a
-    loop that cannot tell them apart because both are floats in `[0, 1]` and the search
-    converges either way. It would have looked like it was working.
+    number's usefulness, read off a conversation trace. That is a plausible quantity standing
+    in for a measured one, in a loop that cannot tell them apart because both are floats in
+    `[0, 1]` and the search converges either way. It would look like it was working.
 
-    Calling `store.consolidate` a second time with the real score does not fix it either, and
-    that was the other half of the mistake. Verified: two consolidations in one round record
-    two observations, the first at the LLM's score, and `_numeric_update` reads that history
-    to decide its next step. The search's own memory would carry a fabricated row per round.
+    Calling `store.consolidate` a second time with the real score does not fix that. Verified:
+    two consolidations in one round record two observations, the first at the LLM's score, and
+    `_numeric_update` reads that history to decide its next step. The search's own memory
+    would carry a fabricated row per round.
 
     So the routing is kept and the number is replaced. `backward` decides *which* parameter
     this round's feedback belongs to, which is a judgment about attribution and is what a
@@ -959,8 +953,8 @@ def substitute_score(graph: Any, name: str, quality: float) -> int:
 
     Returns the number of gradients whose score was replaced, so a caller can assert the
     substitution happened rather than assume it. Zero means the graph carried no gradient for
-    this parameter, which is the silent-no-op this project keeps finding, and `learn` refuses
-    on it.
+    this parameter, which is a silent no-op that would leave the value at seed while the loop
+    reported rounds, so `learn` refuses on it.
     """
     from ai_functions.optimizer._graph import topological_sort
 
@@ -1026,7 +1020,7 @@ async def train(
     `substitute_score` says why: `step` would drive the search on the backward model's own
     rating of the number instead of on the gate's.
 
-    Three mechanics are load-bearing and each cost a silent bug somewhere in this project:
+    Three mechanics are load-bearing, and getting any of them wrong is silent:
 
     `RuntimeHarness` wraps the loop because `trace` records against the running runtime;
     without it the graph carries no parameter, `learn` raises rather than reporting a round
@@ -1103,9 +1097,7 @@ async def train(
                         rejected_before=len(proposer.rejected) - before,
                     )
                 )
-                training.rejections.extend(
-                    a.report_text() for a in proposer.rejected[before:]
-                )
+                training.rejections.extend(a.report_text() for a in proposer.rejected[before:])
                 evidence = evidence_for(verdict, training.seed_quality)
 
                 if index == rounds - 1:

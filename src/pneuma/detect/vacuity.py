@@ -50,16 +50,16 @@ sweep that hits it says `truncated`, which makes `live` and `vacuous` three-valu
 rather than optimistic. A search that gave up is not evidence of safety, and
 recording it as such would rebuild the defect one level up.
 
-That applies to the *relaxed* sweeps too, and getting it wrong once was a real defect
-here. The relaxation levels have wildly different sizes: `free_initial` starts every
-variable at every value, so with n free booleans its start set is 2^n against `exact`'s
-one. A model can finish at `exact` and exhaust the budget at `free_initial`, and when it
-does, `free_guards` is never swept at all. Since `free_guards` is the level that earns a
-guarded rule its pass, such a rule used to read as "0 violating, search finished, no
-witness" and be reported VACUOUS. `relaxation_truncated` separates that case out: the
-cause becomes `unknown`, `vacuous` stays False, and the witness count stays 0 so the
-checker's pass is still withdrawn. Not knowing is not the same finding as decoration,
-and neither of them is a pass.
+That applies to the *relaxed* sweeps too, and their truncation must be tracked separately
+from `exact`'s, because the levels bind at wildly different sizes. `free_initial` starts
+every variable at every value, so with n free booleans its start set is 2^n against
+`exact`'s one. A model can therefore finish at `exact` and exhaust the budget at
+`free_initial`, and when it does, `free_guards` is never swept at all. Since `free_guards`
+is the level that earns a guarded rule its pass, without a separate flag such a rule reads
+as "0 violating, search finished, no witness", which is indistinguishable from decoration.
+`relaxation_truncated` separates that case out: the cause becomes `unknown`, `vacuous`
+stays False, and the witness count stays 0 so the checker's pass is still withdrawn. Not
+knowing is not the same finding as decoration, and neither of them is a pass.
 """
 
 from __future__ import annotations
@@ -350,14 +350,15 @@ def _trace(parent: Mapping[Key, tuple[Key, str]], target: Key) -> Trace:
 class RuleVerdict:
     """One rule, and whether its pass would mean anything.
 
-    Field names match the `Liveness` record this replaces in `casestudy.rules`, so a
-    caller reading `live` / `violating_states` / `antecedent_states` / `truncated`
-    keeps working. Everything past that is new: the level-by-level breach counts, the
-    named cause, the shortest witness trace, and the guard-satisfiability note.
+    `live` / `violating_states` / `antecedent_states` / `truncated` are a compatibility
+    surface: `casestudy.rules.Liveness` is an alias for this record, so a caller that
+    annotates against that name reads those four fields and must keep working. The rest is
+    this record's own: the level-by-level breach counts, the named cause, the shortest
+    witness trace, and the guard-satisfiability note.
 
-    `live` stays three-valued for the same reason it was: False means the sweep
-    finished and found nothing, None means it ran out of budget, and collapsing those
-    two would report an abandoned search as a safe one.
+    `live` is three-valued and must stay so. False means the sweep finished and found
+    nothing, None means it ran out of budget, and collapsing those two would report an
+    abandoned search as a safe one.
     """
 
     invariant: str
@@ -554,9 +555,9 @@ def _first_breaking(relaxed: Mapping[Relaxation, int]) -> str | None:
 class Audit:
     """Every rule in one system, swept at every relaxation it needed.
 
-    The whole-system sweep is the point. Checking one rule on demand is what let the
-    original defect through: the rule someone thought to ask about was measured, and
-    the ones nobody asked about were not.
+    The whole-system sweep is the point. Checking one rule on demand is how a vacuous
+    rule survives: the rule someone thought to ask about gets measured, and the ones
+    nobody asked about do not.
     """
 
     verdicts: Mapping[str, RuleVerdict]

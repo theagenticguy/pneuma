@@ -185,8 +185,8 @@ def audit_process(
     """Sweep every invariant in `process`, including the checker's structural two.
 
     The whole-process form is the one to call. Measuring one invariant on request is
-    how the original defect survived: the rule someone thought to ask about got a
-    number, and the rest got a green verdict.
+    how a vacuous rule survives: the rule someone thought to ask about gets a number,
+    and the rest get a green verdict.
 
     Args:
         process: A validated IR. Not modified; relaxation happens in the walk.

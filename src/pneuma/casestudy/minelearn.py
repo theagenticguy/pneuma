@@ -1,19 +1,19 @@
 """Improve the miner's own instructions *and* its own tools by backpropagation.
 
-The first `aimine` run lost to the fixed implementation, and the diagnosis was in the
-agent's stated method: it counted directly-follows pairs ranked by distinct cases,
-which is exactly what the frozen code does. It reproduced the algorithm rather than
-improving on it, because the prompt described that algorithm as the obvious starting
-point and then asked for a judgment call.
+An agent asked to write mining analysis with the obvious algorithm named in its prompt
+reproduces that algorithm rather than improving on it. `aimine` loses to the fixed
+implementation by counting directly-follows pairs ranked by distinct cases, which is
+exactly what the frozen code does, because the prompt describes that algorithm as the
+obvious starting point and then asks for a judgment call.
 
-The first fix was to optimise the prompt: `advice` is prose the miner reads before
-analysing, and the loop rewrites it from measured feedback. That worked as a
-mechanism and it has a ceiling, which is that better advice is remembered while
-better *code* is not. `aimine` has the agent write its analysis fresh in a sandbox
-every run, so a helper it got right in round one is retyped from scratch in round two
-and can be got wrong. Advice accumulated; capability did not.
+Optimising the prompt alone has a ceiling. `advice` is prose the miner reads before
+analysing and the loop rewrites it from measured feedback, which works as a mechanism,
+but better advice is remembered while better *code* is not: `aimine` has the agent
+write its analysis fresh in a sandbox every run, so a helper it got right in round one
+is retyped from scratch in round two and can be got wrong. Advice accumulates;
+capability does not.
 
-So there are now two learnable parameters, and this docstring's main job is to say
+That is why there are two learnable parameters, and this docstring's main job is to say
 why both rather than one.
 
 ## Why code and prose are separate gradient targets
@@ -66,11 +66,11 @@ is not. So a rewritten toolkit is *rehearsed* before the round that would depend
 it (see `rehearse`), and a toolkit that fails rehearsal is rolled back to the last one
 that passed, which is kept in a `Frozen[Procedural]` parameter the optimizer cannot
 target. The rollback is recorded on the `Attempt` and printed in the table, because a
-loop that silently reverted the thing it was supposed to be learning is exactly the
-failure this project keeps finding.
+loop that silently reverted the thing it was supposed to be learning reports rounds it
+never ran the rewrite through.
 
-Two details make the whole thing work at all, both learned the hard way elsewhere in
-this project. A recalled value arrives as a **call argument**, because gradient
+Two details make the whole thing work at all. A recalled value arrives as a **call
+argument**, because gradient
 targets are discovered in call arguments and anything hidden on `self` is invisible to
 the optimizer. And each recall happens per call, because a `ParameterView` is emitted
 once — reuse one across a batch and only the first traced call carries a gradient
@@ -252,12 +252,13 @@ class EdgeAudit:
 def score_edges(discovered: Discovered, *, visible_handoffs: pl.DataFrame) -> EdgeAudit:
     """Audit returned edges against the handoffs the agent could actually have seen.
 
-    Both halves of selectivity used to be measured on different populations. The
-    numerator counted edges the agent returned, with nothing constraining them to be
-    real handoffs, so `edges / total_handoffs` exceeded 1 and drove the score through a
-    division pole. The denominator counted handoffs in the *full* log while the agent
-    was only ever shown a sample, so on the receipt log the denominator was 99 against
-    69 reachable handoffs and selectivity was overstated for every attempt.
+    Both halves of selectivity must be measured on the same population, and this
+    function is where that is enforced. Measuring them on different populations breaks
+    twice over. A numerator counting edges the agent returned, with nothing constraining
+    them to be real handoffs, lets `edges / total_handoffs` exceed 1 and drives the score
+    through a division pole. A denominator counting handoffs in the *full* log while the
+    agent was only ever shown a sample overstates selectivity for every attempt: on the
+    receipt log that denominator is 99 against 69 reachable handoffs.
 
     Normalising the same way the IR compile step does — drop self-loops, dedupe by
     endpoint pair — keeps `kept` comparable to the transition count that is graded.
@@ -355,13 +356,12 @@ class Attempt:
         the handoffs it was shown has abstracted, one using all of them has memorised.
         The harmonic mean forces both to be respectable.
 
-        The clamp is the fix for the objective's worst failure. Unclamped, an
-        `edge_share` above 1 made selectivity negative and turned this harmonic mean
-        into a rational function with a pole at `edge_share == 1 + coverage`. A model
-        with 185 edges against 99 handoffs and 86.4% coverage scored 319.386, `best`
-        selected it, and the feedback congratulated the agent on a record in the same
-        sentence that accused it of memorising. `score_edges` now bounds the share at
-        source; clamping here means a hand-built `Attempt` cannot reintroduce the pole.
+        The clamp is load-bearing and must not be dropped in any re-derivation. Without
+        it an `edge_share` above 1 makes selectivity negative, turning this harmonic mean
+        into a rational function with a pole at `edge_share == 1 + coverage`: a model with
+        185 edges against 99 handoffs and 86.4% coverage scores 319.386 and is selected as
+        best. `score_edges` bounds the share at source; clamping here means a hand-built
+        `Attempt` cannot reintroduce the pole.
 
         Inventing is graded below memorising. Memorising keeps every real handoff and
         earns zero; inventing puts behaviour in the model that no case ever walked,
@@ -406,10 +406,10 @@ class Training:
         """Render the rounds as a table, with each parameter's size in its own column.
 
         `helpers`, `code`, and `advice` are separate columns because the two-parameter
-        design is only worth having if the table can attribute a round's movement to
-        one of them. A single "guidance" column, which is what this printed before,
-        made a round that grew the toolkit and a round that grew the prose look
-        identical — and it made the crosstalk failure invisible.
+        design is only worth having if the table can attribute a round's movement to one
+        of them. A single combined size column makes a round that grew the toolkit and a
+        round that grew the prose look identical, and makes the crosstalk failure
+        invisible.
 
         `!` marks a round whose rewritten toolkit failed rehearsal and was rolled back.
         """
@@ -444,28 +444,28 @@ class Training:
 def feedback_for(attempt: Attempt, best_so_far: float | None = None) -> str:
     """Turn the score into feedback the optimizer can route.
 
-    Two earlier versions of this function each taught the agent the wrong lesson, and
-    both failures were in the feedback rather than the mechanism.
+    Two feedback designs teach the agent the wrong lesson, and both failures are in the
+    feedback rather than the mechanism.
 
-    Reporting coverage alone drove the threshold to 1: the agent kept every one-off
-    handoff, scored 98.6%, and produced a model indistinguishable from the raw log.
+    Reporting coverage alone drives the threshold to 1: the agent keeps every one-off
+    handoff, scores 98.6%, and produces a model indistinguishable from the raw log.
 
     Reporting the balanced score but only *complaining* about memorisation above 60%
-    edge share was worse, because it was silently one-sided. At 29% share the agent
-    heard nothing but "you are behind on coverage", so it loosened the threshold every
-    round and walked its score from 0.804 down to 0.706 — away from its own best
-    attempt, obediently, while the objective it was being scored on got worse.
+    edge share is worse, because it is silently one-sided. At 29% share the agent hears
+    nothing but "you are behind on coverage", so it loosens the threshold every round and
+    walks its score from 0.804 down to 0.706, away from its own best attempt, obediently,
+    while the objective it is being scored on gets worse.
 
-    So the score itself is now reported every round, along with whether it moved up or
-    down against the best attempt so far. An optimizer cannot climb a hill it is not
-    told the height of.
+    So the score itself is reported every round, along with whether it moved up or down
+    against the best attempt so far. An optimizer cannot climb a hill it is not told the
+    height of.
 
     Invented edges are reported before anything else, and the standing clause is
-    suppressed for them. The recorded failure was a message that scolded the agent for
-    memorising and told it 319.386 was a record, in one breath. An attempt that returned
-    handoffs no case walked has not set a record whatever the arithmetic says.
+    suppressed for them: a message that scolds the agent for memorising while telling it
+    319.386 is a record teaches nothing. An attempt that returned handoffs no case walked
+    has not set a record whatever the arithmetic says.
 
-    Two clauses were added when the toolkit became a second parameter.
+    Two clauses exist because the toolkit is a second parameter.
 
     A rollback is reported *first*, ahead of the score, because a round that ran on
     restored code did not test the rewrite it was supposed to be testing, and reading
@@ -729,9 +729,9 @@ def probe_objective(
 ) -> Probe:
     """Pre-flight the objective this loop optimises, before a single round runs.
 
-    Every failure in this file's history was in the objective or the feedback, never the
-    mechanism, and each produced a confident monotonically worsening run that looked exactly
-    like training. Checking afterwards is how all five were found. This checks first.
+    The failures this loop is exposed to live in the objective or the feedback, not the
+    mechanism, and each produces a confident monotonically worsening run that looks exactly
+    like training. Checking afterwards cannot distinguish the two. This checks first.
 
     Both bounds are declared as established by code rather than merely intended, and both
     claims are true today: `miner.conformance` divides conforming cases by the case count,
@@ -758,18 +758,18 @@ def probe_objective(
     declared: the emptiest answer is enumerated from `Structure.size`, which counts surviving
     handoffs.
 
-    The decision probe also names *why*, which is new and is the point of `components`. Those
-    two findings say a degenerate input wins; they do not say that one term of the metric has
-    no discriminating power on this dataset. `component-does-not-discriminate` says exactly
+    The decision probe also names *why*, which is the point of `components`. Those two
+    findings say a degenerate input wins; they do not say that one term of the metric has no
+    discriminating power on this dataset. `component-does-not-discriminate` says exactly
     that, in the same three-valued vocabulary `detect.vacuity` reports an unfirable rule
     through. Measured: on this log `replay coverage` is idle over all 44 thresholds while
     `selectivity` separates 43 of them, and on the permit log both terms discriminate.
 
-    One thing that measurement does *not* say, and conflating the two would be an error this
-    file has made before: `grade`'s coverage is whole-trace conformance of the *mined process*
-    and it is the flat one. `miner.mine(...).coverage` on the same log is not flat, moving
-    0.5795 down to 0.1023 over the same thresholds. Two different quantities, both called
-    coverage, and only the first is the one this score divides.
+    One thing that measurement does *not* say, and the two must not be conflated: `grade`'s
+    coverage is whole-trace conformance of the *mined process* and it is the flat one.
+    `miner.mine(...).coverage` on the same log is not flat, moving 0.5795 down to 0.1023 over
+    the same thresholds. Two different quantities, both called coverage, and only the first is
+    the one this score divides.
 
     `events=None` runs the metric probe alone, and the report says the decision-space checks
     did not run rather than passing quietly.
@@ -844,7 +844,7 @@ class Rehearsal:
     Failing to load or raising on a call is a fail with the message attached, and the
     caller rolls back. `unrehearsed` is neither: those helpers exist and were not
     exercised, which is a gap in the fixtures rather than a verdict on the code, and
-    reporting it as a pass would be the vacuity failure this project keeps finding.
+    reporting it as a pass would be a check that never was in a position to fail.
     """
 
     ok: bool
@@ -965,7 +965,7 @@ async def train(
     """Run the improvement loop over the miner's toolkit and its guidance.
 
     Refuses to start against a pathological objective rather than discovering the pathology
-    by climbing it, which is how the first five were found.
+    by climbing it.
 
     Both parameters are recalled per round and passed as call arguments, in that order,
     so both are gradient targets. Recalling per round rather than once is the
@@ -990,8 +990,8 @@ async def train(
     # `events` is passed so the decision-space half runs. Without it the pre-flight is the
     # metric probe alone, which structurally cannot see an emptying optimum: the emptiest
     # answer only becomes a distinguishable point once the objective is composed over the
-    # threshold the loop moves. That was the hole, and it was open on the permit log only
-    # because the permit log's coverage term happens to discriminate.
+    # threshold the loop moves. The metric probe alone passes on the permit log only because
+    # the permit log's coverage term happens to discriminate.
     probe_objective(
         events, sample_cases=sample_cases, baseline_threshold=baseline_threshold
     ).raise_if_pathological("the miner's balanced score")

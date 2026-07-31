@@ -79,11 +79,11 @@ def fetch_rows(
     scope. The insert is gone, `commit()` reports success, and no exception is
     raised anywhere.
 
-    It cost this backend a real bug before it was found. A read-modify-write
-    counter — read `next_id`, write `next_id + 1`, insert the row — allocated
-    the same id forever, because the reading cursor died after the counter
-    write and took it with it. The symptom surfaced as a `UNIQUE constraint`
-    failure on the *entry* table, three statements away from the cause.
+    The symptom lands far from the cause. A read-modify-write counter — read
+    `next_id`, write `next_id + 1`, insert the row — allocated the same id
+    forever, because the reading cursor died after the counter write and took it
+    with it. That surfaced as a `UNIQUE constraint` failure on the *entry*
+    table, three statements away from the cause.
 
     `Cursor.close()` finalizes the active statement (lib.py:539) while
     `__del__` does not, so closing explicitly is the fix. Every read in this

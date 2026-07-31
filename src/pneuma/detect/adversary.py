@@ -1,8 +1,8 @@
 """Adversaries that search for an input scoring well while being obviously worthless.
 
 `objective.py` enumerates the degenerate inputs that follow from a declared `Structure`.
-That is mechanical and it is strong where it applies: it found the transcript-log defect
-that a hand-written list of degenerate inputs missed for the whole session. But it can only
+That is mechanical and it is strong where it applies: enumerating from the structure has
+caught a defect that a hand-written list of degenerate inputs missed. But it can only
 find what the structure implies. An objective can be gamed in a way nobody put in the
 declaration, and the only mechanism that can find those is a search.
 
@@ -40,8 +40,8 @@ the report says so. This is the half that makes a fabricated candidate harmless.
 is not decidable from its score — that is the entire premise, since a worthless input that
 scored badly would not be a defect. So `judge` asks a panel, and the panel's ballot is
 structured: a judge answers `worthless: bool` plus a reason, and `MIN_AGREEMENT` of them
-must say yes. A single judge is the failure mode this session is about, because one judge
-agreeing with one proposer is two samples of the same prior.
+must say yes. A single judge is the failure mode: one judge agreeing with one proposer is
+two samples of the same prior.
 
 The judges' guard against rubber-stamping is that they are asked to reject, with a
 concrete example of what rejecting looks like, and the panel is measured: `Verdict` keeps
@@ -55,7 +55,7 @@ cannot do".
 `ANGLES` is five prompts, not one prompt run five times. Diversity is doing the work here:
 identical adversaries at temperature-equivalent sampling explore the same neighbourhood,
 and the neighbourhood is chosen by the prior they share. The five angles correspond to the
-five ways this project's own objective was historically wrong, which is the only grounded
+five ways this project's own objective was observed to go wrong, which is the only grounded
 basis available for picking them: emptiness, escape, cancellation, clamp exploitation, and
 tie-seeking. `docs/case-study.md` section 10 is the source.
 
@@ -172,7 +172,7 @@ ANGLES: tuple[tuple[str, str], ...] = (
         "the worst answer that ties the best one.",
     ),
 )
-"""Five adversaries with five distinct mandates, one per historical failure mode.
+"""Five adversaries with five distinct mandates, one per observed failure mode.
 
 Grounded in `docs/case-study.md` section 10 rather than invented: emptiness is failure one,
 cancellation and clamp are the pole that shipped and the clamp added for it, escape is the
@@ -229,9 +229,9 @@ class Judged:
 class Verdict:
     """Everything the search did, including what it failed to find.
 
-    A negative result is the point of keeping this: "five adversaries with distinct
-    mandates found nothing enumeration did not" is a publishable measurement about the
-    search, and it is only available if the search records its misses.
+    A search that found nothing is a measurement about the search, not an absence of
+    output: "five adversaries with distinct mandates found nothing enumeration did not"
+    is only available if the misses are recorded, so they are.
     """
 
     judged: list[Judged] = field(default_factory=list)
@@ -327,8 +327,10 @@ def _brief_text(brief: Brief) -> str:
     )
     finite = [s for s in brief.samples if s.finite]
     ranked = sorted(finite, key=lambda s: -(s.value or 0.0))
+
     def show(sample: Sample) -> str:
         return f"  {json.dumps(sample.point)} -> {sample.value:.6g}"
+
     top = "\n".join(show(s) for s in ranked[:6])
     bottom = "\n".join(show(s) for s in ranked[-4:])
     structure = ""
@@ -341,8 +343,7 @@ def _brief_text(brief: Brief) -> str:
             f"\n## The answer's size\n\n`size` counts {brief.structure.units}. Smaller means "
             "the answer represents less. At the highest-scoring points:\n"
             + "\n".join(
-                f"  {json.dumps(p)} -> size {m}"
-                + ("" if v else " (not a viable answer at all)")
+                f"  {json.dumps(p)} -> size {m}" + ("" if v else " (not a viable answer at all)")
                 for p, m, v in sized
                 if m is not None
             )

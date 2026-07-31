@@ -14,11 +14,10 @@ worth of state and one three-valued verdict. Nothing here knows what a state or 
 ## The three-valued verdict, and why it is not a boolean
 
 `discriminates` is True / False / None, never a bare boolean, and this is the one design
-point that matters. It was learned by getting it wrong: `vacuity` once reported a *truncated*
-relaxation sweep as a confident finding of decoration, because "the search found no witness"
-and "the search gave up before it could find one" collapsed into the same False. An
-abandoned search is not evidence about the states it never reached, so the two have to be
-different objects.
+point that matters. The third value is not optional: under a boolean, "the search found no
+witness" and "the search gave up before it could find one" collapse into the same False,
+which reports a truncated sweep as a confident finding of decoration. An abandoned search
+is not evidence about the states it never reached, so the two have to be different objects.
 
     True   at least one observation separated the cases. The check has teeth here.
     False  every observation was examined and none separated them. That is the finding.

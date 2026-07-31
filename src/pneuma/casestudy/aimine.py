@@ -146,11 +146,11 @@ class Graded:
 def rejects_a_disconnected_model(response: Discovered) -> None:
     """Post-condition: every activity in an edge must be reachable from the start.
 
-    The prompt tells the agent an unreachable state "will be rejected and you will be
-    asked again". Until this existed nothing performed that rejection, so the prompt was
-    asserting a property of code that was not there. `to_process` prunes islands rather
-    than raising, which is right for the compile step and wrong as the only response:
-    pruning silently discards analysis the agent thought it was submitting.
+    This is what backs the prompt's promise that an unreachable state "will be rejected
+    and you will be asked again"; without a post-condition that raises, the prompt
+    asserts a property no code enforces. `to_process` prunes islands rather than raising,
+    which is right for the compile step and wrong as the only response: pruning silently
+    discards analysis the agent thought it was submitting.
     """
     stranded = unreachable_activities(response)
     if stranded:
@@ -210,8 +210,9 @@ class Miner(MethodAgent):
 
         Write Python in the executor to analyse it. `polars`, `numpy`, `statistics`,
         `collections`, `itertools`, and `math` are available. Read `log_csv` with
-        `polars.read_csv(io.StringIO(log_csv))` if you prefer a DataFrame, or parse it
-        directly.
+        `polars.read_csv(log_csv.encode())` if you prefer a DataFrame, or parse it
+        directly. `io` is not an authorised import here, so the `io.StringIO` route
+        raises; encoding the string is what works.
 
         What to decide, and what I am not deciding for you:
 
@@ -404,13 +405,16 @@ def grade(
 ) -> Graded:
     """Score a discovered model against the hand-written miner on the same log.
 
-    The matched threshold comes from `observed_threshold`, not from
-    `discovered.threshold_used`. Reading it off the agent's self-report made the agent
-    the author of its own handicap: on the permit log, one model that scored 96.4%
-    coverage went from losing (baseline 97.6% at the honest cutoff of 5) to winning by
-    38 points (baseline 59.1%) purely by claiming it had cut at 300, with its own edges
-    and coverage untouched. Nothing detected it, and the summary line printed that win
-    labelled "the honest comparison".
+    The matched threshold must be derived from the log by `observed_threshold` and never
+    read off `discovered.threshold_used`. A self-reported threshold makes the agent the
+    author of its own handicap, and nothing downstream detects it: the summary line still
+    prints the result labelled "the honest comparison".
+
+    On the permit log, a model whose edges are the frozen miner's own at cutoff 5 scores
+    96.4% coverage and ties the derived baseline at 96.4%, so it does not win. Change one
+    self-reported field to claim a cutoff of 300, leaving its edges and therefore its
+    coverage untouched, and the baseline it faces drops to 59.1%: the same model now wins
+    by 37.2 points.
     """
     process = to_process(discovered, name)
     baseline = mine(events, name="Baseline", min_edge_cases=baseline_threshold)

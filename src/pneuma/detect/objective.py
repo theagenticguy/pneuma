@@ -1,19 +1,33 @@
 """Probe a scoring function for degenerate optima before a training loop trusts it.
 
-This project's own case study documents four consecutive ways the miner's objective was
-wrong, and the conclusion it reached was that "the scoring function is the artifact that
-needs adversarial review". A checklist is not review. This is the mechanical form: hand
-the objective and a declared feasible domain to `probe`, and it sweeps, refines, and
-refuses rather than letting the loop discover the pathology by climbing it.
+The scoring function is the artifact that needs adversarial review, and a checklist is not
+review. This is the mechanical form: hand the objective and a declared feasible domain to
+`probe`, and it sweeps, refines, and refuses rather than letting the loop discover the
+pathology by climbing it.
 
-Nothing here imports from pneuma. The consumer supplies a callable, a box, and the
-degenerate inputs it wants ruled out; every pneuma-specific fact lives at the call site.
-That is deliberate: any system with a learned objective needs this, and process mining is
-incidental to all of it.
+Four failure modes organise the checks. Each one is a way an objective can be wrong while
+still returning a plausible number, and each has been measured rather than imagined:
+
+1. A degenerate input is the optimum, so the best score is reached by refusing to
+   generalise. `degenerate-optimum` from `_check_degenerate`, and its general form
+   `emptying-is-free` from `_check_emptying`.
+2. The feedback the optimizer reads states some quantity other than the score selection
+   uses, so it climbs a hill it was never shown. See `probe_feedback`.
+3. The objective raises on a declared-feasible input, so the round is lost rather than
+   scored. `raises-inside-the-domain`.
+4. The optimum sits on the swept window's own edge, so the loop optimises correctly inside
+   a window that excludes the real peak. `window-too-narrow`.
+
+An input escaping its declared range is the fifth, and the one a prober that checked only
+the declared box would pass; see "Out-of-domain semantics" below.
+
+The only pneuma import is `.discrimination`, a small primitive shared with `vacuity`;
+everything else is stdlib. The consumer supplies a callable, a box, and the shape of its
+answer space, and every domain-specific fact lives at the call site. That is deliberate:
+any system with a learned objective needs this, and process mining is incidental to all of
+it.
 
 ## The two spaces, and why conflating them makes the prober useless
-
-The single most important design point, and the one that took a measurement to find.
 
 An objective has *metric* inputs (coverage, selectivity) and the loop has a *decision*
 variable (the support threshold) that it actually controls. The metrics are coupled
@@ -21,16 +35,16 @@ functions of the decision; the decision is what the optimizer moves.
 
 Check "is the maximum in the interior" in metric space and the check is worthless. Any
 sane F-score is maximised at the ideal corner — perfect coverage using no edges — and
-that corner is a boundary. Measured on this project's fixed objective: `coverage=1.0,
-edge_share=0.0` scores 1.0, the grid maximum, on the face of the box. The historical
-coverage-only objective has its maximum at a corner too. A boundary-max check in metric
-space fires on the good objective and the broken one alike.
+that corner is a boundary. Measured on a sound composed objective: `coverage=1.0,
+edge_share=0.0` scores 1.0, the grid maximum, on the face of the box. A coverage-only
+objective has its maximum at a corner too. A boundary-max check in metric space fires on
+the good objective and the broken one alike.
 
-In decision space the same check is exactly right, and it caught the real failure.
-Sweeping the threshold and composing the measurement, the fixed objective peaks at 40
-with 0.8613 — interior. Swept over the window the live agent chose for itself, 1 to 24,
-it peaks at 24 with 0.8448: on the window's own upper edge. That is failure four,
-"optimised correctly inside a window that was too narrow", detected mechanically.
+In decision space the same check is exactly right. Sweeping the threshold and composing
+the measurement, that same objective peaks at 40 with 0.8613 — interior. Swept over a
+narrower window, 1 to 24, it peaks at 24 with 0.8448: on the window's own upper edge.
+That is failure mode four, "optimised correctly inside a window that was too narrow",
+detected mechanically.
 
 So `Space.METRIC` and `Space.DECISION` run different checks, and the mode is a required
 argument rather than a default, because picking it wrong is the failure this paragraph
@@ -38,8 +52,8 @@ exists to prevent.
 
 ## Out-of-domain semantics: not clamp, not refuse, but "must not reward"
 
-The bug that shipped was an input escaping its range: `edge_share` was
-`edges the agent returned / handoffs in the log` with nothing constraining the numerator
+The concrete escape this is built against: `edge_share` was
+`edges the model returned / handoffs in the log` with nothing constraining the numerator
 to the denominator's population, so it exceeded 1, selectivity went negative, and the
 harmonic mean became a rational function with a pole. The objective's *shape* was sound.
 Its *domain* was not. A prober checking only the declared range would have passed it.
@@ -51,7 +65,7 @@ There are three candidate semantics and only one of them is right.
 The harness then mis-grades in silence: a model that returned 86 handoffs no case ever
 walked is recorded as indistinguishable from one that kept every real handoff. The
 clamp does not repair the measurement, it hides that the measurement was wrong. Worth
-keeping as depth — this project does clamp, and should — but never as the answer.
+keeping as defence in depth, and a call site should clamp, but never as the answer.
 
 **Refuse** is wrong as a general rule, because it makes the objective the wrong place to
 enforce a fact about measurement. `score_edges` bounds the share by intersecting the
@@ -62,7 +76,7 @@ computed. That is where an escape should be impossible, not where it should rais
 escape region and require that no out-of-domain input outscores the best in-domain
 input. The argument does not depend on believing the escape is unreachable: a training
 loop is a search for the argmax, so a reward outside the declared domain is a reward,
-and reachability is a claim about code that this prober cannot verify. The historical
+and reachability is a claim about code that this prober cannot verify. The unclamped
 objective fails this outright — at `coverage=0.75, edge_share=2.0` it scores 6.0 against
 an honest maximum of 1.0, and at `coverage=1.0, edge_share=11.0` it scores 2.2222.
 
@@ -70,10 +84,11 @@ an honest maximum of 1.0, and at `coverage=1.0, edge_share=11.0` it scores 2.222
 than intended. It downgrades an escape finding from refusal to warning and it demands
 the name of the code that does the bounding, which is a reviewable claim in the call
 site. It does not skip the check. Nothing here is skipped silently, because a prober
-that under-samples and reports "looks fine" is this session's defect one level up.
+that under-samples and reports "looks fine" is the defect class this module detects,
+one level up.
 
 `bounded_by` is also this module's own weakest point, and the weakness is measured rather
-than assumed. Declare it on *every* axis and the historical broken objective passes with
+than assumed. Declare it on *every* axis and the unclamped objective passes with
 seven warnings and no refusal, because every pathology it has lives outside the declared
 box. That is the intended semantics — the caller has asserted the bounds are enforced
 elsewhere, and the prober cannot verify a claim about another file — but it means a false
@@ -83,28 +98,29 @@ it is what `Probe.report` points at when warnings are all that is left.
 
 ## Degenerate inputs are computed, not declared, because a declared list is the same defect
 
-`Degenerate` used to be the only way the prober learned what a bad answer looked like:
-the caller wrote down the inputs it wanted ruled out and the prober checked none of them
-won. That contract has the shape of the failure this module exists to catch. A
-hand-written list of bad answers is a harness artifact written by the same hand as the
+A caller-declared `Degenerate` list must not be the only way the prober learns what a bad
+answer looks like, and `Structure` exists because a two-fixture measurement proved that.
+A hand-written list of bad answers is a harness artifact written by the same hand as the
 scoring formula, and it is wrong in the same direction.
 
-Measured, on a second fixture: the prober passed a genuinely degenerate objective with
-zero findings. Through the real `grade`/`score_edges` path, whole-trace coverage on a log
-of AI coding-agent transcripts is 0.0227 at *every* mining threshold from 1 to 44, so the
-score reduces to a monotone function of selectivity alone and the winner is a two-state
+The measurement: with a declared list alone the prober passed a genuinely degenerate
+objective with zero findings. Through the real `grade`/`score_edges` path, whole-trace
+coverage on an agent-transcript log is 0.0227 at *every* mining threshold from 1 to 44, so
+the score reduces to a monotone function of selectivity alone and the winner is a two-state
 model replaying two cases out of 88. Every check here passed: the argmax was interior,
 nothing was non-finite, there was no pole, and the function was bounded. Adding one
 `Degenerate` naming the smallest surviving model turned the same probe into a refusal.
-On the permit log the smallest surviving model scores 0.1496 against an optimum of
-0.8606, so the missing declaration was invisible on fixture one *by construction*.
+On a curated business-process log the smallest surviving model scores 0.1496 against an
+optimum of 0.8606, so the missing declaration was invisible on that fixture *by
+construction*. One fixture cannot show that a declared list is load-bearing; two can.
 
-`Structure` is the replacement, and the shift it encodes is the point: a caller supplies
-the *shape of the search space* rather than a list of guesses. "The smallest thing that
-still counts as an answer" is a property of the space, not a value someone remembers to
-write down. One callable, `size`, says how much answer a point represents — handoffs
-kept, states in the model, features selected — and every degenerate input follows
-mechanically: the emptiest viable point, the fullest, the empty one, the box corners.
+`Structure` is what the prober relies on instead, and the shift it encodes is the point: a
+caller supplies the *shape of the search space* rather than a list of guesses. "The
+smallest thing that still counts as an answer" is a property of the space, not a value
+someone remembers to write down. One callable, `size`, says how much answer a point
+represents — handoffs kept, states in the model, features selected — and every degenerate
+input follows mechanically: the emptiest viable point, the fullest, the empty one, the box
+corners.
 
 Two checks are derived from it, and the second is the stronger one.
 
@@ -131,37 +147,38 @@ finding *says*: the score is monotone in emptiness across every pair walked, rat
 coordinate that happened to win. A caller who fixes the winning point without fixing the
 monotonicity has fixed nothing, and the point test alone would then go quiet.
 
-## Every one of these is a decision-space check, and that was corrected by measurement
+## Every degenerate check is decision-space only, and that must not be relaxed
 
-The same argument the boundary-max check rests on, applied one layer out. Nothing new.
+The same argument the boundary-max check rests on, applied one layer out.
 
 Metric axes are varied freely and independently, so "hold everything else and shrink this
 term" is always available on the grid and is usually the right answer — the ideal corner is
 perfect coverage using no edges, which is exactly an empty answer scoring the maximum. In
 decision space the axes are what the optimizer moves, the metrics are coupled functions of
 them, and "shrink the answer" is a real move with a real cost. Measured: `emptying-is-free`
-does not fire on the permit log's composed objective, where the score falls from 0.8184 at
-the argmax to 0.7680 one grid step toward emptier models, and does fire on the transcript
-log's, where every step from the argmax to a single-edge model scores 0.0444.
+does not fire on a curated business-process log's composed objective, where the score falls
+from 0.8184 at the argmax to 0.7680 one grid step toward emptier models, and does fire on an
+agent-transcript log's, where every step from the argmax to a single-edge model scores 0.0444.
 
-An earlier version of this module applied that discipline to `emptying-is-free` and to the
-box corners, and *not* to the size-derived points, on the reasoning that "the emptiest point
-that is still an answer" is meaningful on any axes. That was wrong, and a live adversarial
-run is what found it. On the current objective's metric grid, 21 points tie for the smallest
-non-zero `edge_share`, scoring 0.0 to 0.9744, so which one was picked came down to iteration
-order. Tiebreaking on score, which is the fix for the order dependence, makes the underlying
-problem worse rather than better: with free axes the best point at any fixed size holds every
-other term at its ideal, so as the grid refines it converges on the ideal corner, and a sound
-objective would eventually be refused for having a good optimum. So the whole enumeration is
-decision-space only and metric space says so in a note.
+The tempting relaxation is to apply the space discipline to `emptying-is-free` and the box
+corners but *not* to the size-derived points, on the reasoning that "the emptiest point that
+is still an answer" is meaningful on any axes. That is unsound in two ways at once, and both
+have been measured, so the enumeration is decision-space only and metric space says so in a
+note.
 
-That correction is the strongest thing the LLM half produced this session, and it is worth
-recording precisely because of what it says about the LLM half's limits. Five adversaries
-with distinct mandates and a three-judge panel all upheld the metric-space empty-answer
-candidates unanimously, arguing correctly that they were degenerate. They found the flaw and
-then walked into it, because "an empty answer scoring the maximum" reads as a defect right up
-until you notice metric axes make it the definition of a good objective. Only the space
-discipline separates the two, and the space discipline is deterministic.
+It is order-dependent. On the composed objective's metric grid, 21 points tie for the
+smallest non-zero `edge_share`, scoring anywhere from 0.0 to 0.9744, so which one becomes
+"the emptiest answer" is decided by `product`'s iteration order.
+
+And tiebreaking on score, which is the obvious fix for that order dependence, makes the
+underlying problem worse rather than better. With free axes the best point at any fixed size
+is the one holding every other term at its ideal, so as the grid refines it converges on the
+ideal corner: `coverage=1.0, edge_share=0.05` already scores 0.9744 against a grid maximum of
+1.0. A sound objective would eventually be refused for having a good optimum.
+
+Why this reads as wrong at first: "an empty answer scoring the maximum" looks like a defect
+right up until you notice that free metric axes make it the definition of a *good* objective.
+Only the space discipline separates the two, and it is deterministic.
 
 ## The adversarial half, and why a search is not a declaration
 
@@ -179,7 +196,7 @@ searcher owns the half that is a judgment call: whether the input is *worthless*
 ## Naming the cause, not only the symptom, and why it is the same check `vacuity` runs
 
 Every check above is downstream of one thing. `emptying-is-free` and `degenerate-optimum`
-both say *a degenerate input wins*; neither says why. Measured on the transcript log, the
+both say *a degenerate input wins*; neither says why. Measured on an agent-transcript log, the
 why is that one term of the metric has no discriminating power on that dataset: whole-trace
 replay coverage through the real `grade` path reads 0.0227 at every threshold from 1 to 44.
 With coverage held constant the score is a monotone function of emptiness by algebra, so the
@@ -191,7 +208,7 @@ point; a caller told the coverage term never moves knows the fix is the measurem
 compliant run from a violation. A term whose value never moves across the swept space cannot
 tell a good answer from a bad one. Both are checks that pass without ever having been in a
 position to fail, both need the verdict to be three-valued so an abandoned measurement is not
-a pass, and `discrimination.py` is the twenty lines they have in common. That module's
+a pass, and `discrimination.py` is what they have in common. That module's
 docstring also records where the unification stops, which is a real limit rather than a gap.
 
 ## What this cannot do
@@ -202,7 +219,7 @@ that it states it on every round rather than some. It cannot check that the pros
 
 `components` are declared, not decomposed. Splitting an arbitrary callable into terms needs
 its source and an algebra over it, so a caller lists what it wants measured. The declaration
-is auditable in the way a hand-written `Degenerate` list was not — a term is evaluated on the
+is auditable in the way a hand-written `Degenerate` list is not — a term is evaluated on the
 same points the objective is, so a term declared wrong reports its own variance rather than
 the score's — but a term nobody declares is a term nobody measured, and the report says so.
 """
@@ -277,15 +294,15 @@ class Domain:
 class Degenerate:
     """An input the objective must not be maximised by, and the reason it is degenerate.
 
-    The label is not decoration. "keep everything" is what threshold 1 means, and the
-    first live run reported 98.6% coverage while producing it, so the finding has to say
+    The label is not decoration. "keep everything" is what threshold 1 means, and a
+    measured run reported 98.6% coverage while producing it, so the finding has to say
     which degenerate input won rather than only that one did.
 
-    Still the *unit* the checks work in, but no longer the *contract*: a caller declares a
+    This is the *unit* the checks work in but not the *contract*: a caller declares a
     `Structure` and these are enumerated from it, or a `search` proposes them. Passing a
-    hand-written list is still allowed and is still checked, because a caller who does know
-    a specific bad answer should be able to say so. It is no longer what the prober relies
-    on, which is the whole change; see the module docstring.
+    hand-written list is allowed and is checked, because a caller who does know a specific
+    bad answer should be able to say so. It must not be what the prober relies on; see the
+    module docstring for the measurement that shows why.
     """
 
     label: str
@@ -315,10 +332,10 @@ Size = Callable[..., float]
 class Structure:
     """The shape of the answer space, from which degenerate inputs follow mechanically.
 
-    This is the seam that replaced the declared list, and the reason it is a *callable*
-    rather than points is in the module docstring: "the smallest thing that still counts as
-    an answer" is a property of the space, and a caller who could name the point already
-    knows the answer the prober is supposed to find.
+    This is the seam the declared list must not be used in place of, and the reason it is a
+    *callable* rather than points is in the module docstring: "the smallest thing that still
+    counts as an answer" is a property of the space, and a caller who could name the point
+    already knows the answer the prober is supposed to find.
 
     `size` is the only thing required, and it is deliberately loose about units. Handoffs
     kept, states in a model, features selected, rules retained: anything monotone in "how
@@ -326,11 +343,11 @@ class Structure:
     other sizes, so no scale assumption is made on the caller's behalf.
 
     `viable` is separate from `size > 0` because an empty answer and an *unrepresentable*
-    one are different, and conflating them hides the finding. On the permit log the
-    threshold above maximum support keeps zero handoffs and compiles nothing, so it scores
-    zero and cannot win; the interesting point is the last threshold that still compiles a
-    model. Without `viable` the emptiest enumerated point is the one that scores zero and
-    the check passes for the wrong reason.
+    one are different, and conflating them hides the finding. Measured on a curated
+    business-process log: the threshold above maximum support keeps zero handoffs and
+    compiles nothing, so it scores zero and cannot win; the interesting point is the last
+    threshold that still compiles a model. Without `viable` the emptiest enumerated point is
+    the one that scores zero and the check passes for the wrong reason.
     """
 
     size: Size
@@ -367,10 +384,10 @@ Term = Callable[..., float]
 class Component:
     """One term of the objective, so the prober can say which term stopped discriminating.
 
-    The reason this exists is a measured gap between a *cause* and a *symptom*. On the
-    transcript log the prober already refuses, with `emptying-is-free` and two enumerated
-    `degenerate-optimum` findings, and every one of those is downstream: they say a
-    degenerate input wins. What none of them says is *why*, and the why is that one term of
+    The reason this exists is a measured gap between a *cause* and a *symptom*. On an
+    agent-transcript log the prober already refuses, with `emptying-is-free` and two
+    enumerated `degenerate-optimum` findings, and every one of those is downstream: they say
+    a degenerate input wins. What none of them says is *why*, and the why is that one term of
     the metric has no discriminating power on this dataset. Whole-trace replay coverage
     through the real `grade` path is 0.0227 at every threshold from 1 to 44, so the score
     reduces to a monotone function of emptiness and the winner is whatever the space admits
@@ -385,7 +402,7 @@ class Component:
     Declared rather than inferred, and that is a real limit worth naming. The prober cannot
     decompose an arbitrary callable into terms — that would need the source and an algebra —
     so a caller lists the ones it wants measured. The declaration is *auditable* in the way a
-    hand-written `Degenerate` list was not: a term is a function of the same point the
+    hand-written `Degenerate` list is not: a term is a function of the same point the
     objective takes, so the prober evaluates it rather than believing anything about it, and
     a term declared wrong reports its own variance rather than the score's.
 
@@ -680,16 +697,17 @@ def _sweep_box(
     )
 
 
-def _adjacent_pairs(axes: Sequence[Domain], grids: Sequence[Sequence[float]]) -> Iterable[
-    tuple[Point, Point]
-]:
+def _adjacent_pairs(
+    axes: Sequence[Domain], grids: Sequence[Sequence[float]]
+) -> Iterable[tuple[Point, Point]]:
     """Grid-adjacent point pairs along each axis. Where a pole shows up as a sign flip."""
     for index in range(len(axes)):
         others = [range(len(grid)) for grid in grids]
         others[index] = range(len(grids[index]) - 1)
         for combo in product(*others):
-            low = dict(zip((a.name for a in axes), (grids[i][j] for i, j in enumerate(combo)),
-                           strict=True))
+            low = dict(
+                zip((a.name for a in axes), (grids[i][j] for i, j in enumerate(combo)), strict=True)
+            )
             high = dict(low)
             high[axes[index].name] = grids[index][combo[index] + 1]
             yield low, high
@@ -709,8 +727,8 @@ def _chase_pole(
     A zero crossing and a pole both flip sign. They differ under refinement: across a
     crossing the midpoint's magnitude sits between its neighbours', while across a pole
     it exceeds both and keeps exceeding them. That difference is the whole detector, and
-    it is why the pole in this project's history is distinguishable from the legitimate
-    place where the fixed objective passes through zero.
+    it is what makes a division pole distinguishable from the legitimate place where a
+    sound objective passes through zero.
     """
     samples: list[Sample] = []
     left, right = dict(low), dict(high)
@@ -771,8 +789,7 @@ def _refine_maximum(
     samples: list[Sample] = []
     peak = abs(best.value or 0.0)
     radius = {
-        axis.name: axis.span / (sweep.resolution.get(axis.name, 2) - 1 or 1)
-        for axis in sweep.axes
+        axis.name: axis.span / (sweep.resolution.get(axis.name, 2) - 1 or 1) for axis in sweep.axes
     }
     grew = 0
     for _ in range(refine):
@@ -860,7 +877,7 @@ def probe(
         structure: The shape of the answer space. Degenerate inputs are enumerated from it
             and the emptying check is derived from it. Prefer this over `degenerate`: a
             declared list of bad answers is written by the same hand as the scoring formula
-            and is wrong in the same direction, which is what this argument replaced.
+            and is wrong in the same direction.
         components: Named terms of the objective's own arithmetic, measured for whether they
             vary across the swept space at all. This is the check that names the *cause* an
             emptying or degenerate finding is the symptom of; see `Component`.
@@ -899,16 +916,12 @@ def probe(
 
     findings: list[Finding] = []
     notes: list[str] = []
-    declared = _sweep_box(
-        objective, domains, label="declared", space=space, resolution=resolution
-    )
+    declared = _sweep_box(objective, domains, label="declared", space=space, resolution=resolution)
     notes.extend(_undersampled(domains, declared, resolution))
 
     findings.extend(_check_raises(declared))
     findings.extend(_check_nonfinite(declared))
-    pole_samples, pole_findings = _check_poles(
-        objective, declared, refine=refine, growth=growth
-    )
+    pole_samples, pole_findings = _check_poles(objective, declared, refine=refine, growth=growth)
     findings.extend(pole_findings)
     growth_samples, growth_findings = _check_unbounded(
         objective, declared, refine=refine, growth=growth
@@ -941,8 +954,7 @@ def probe(
         notes.append(
             "no `structure` was declared, so degenerate inputs could not be enumerated and "
             "emptying-is-free could not be checked. Whatever is in `degenerate` is a list "
-            "written by hand, which is the contract this argument replaced: see the module "
-            "docstring."
+            "written by hand, which is not enough on its own: see the module docstring."
         )
 
     if search is not None:
@@ -1016,16 +1028,12 @@ def probe(
     )
 
 
-def _undersampled(
-    domains: Sequence[Domain], sweep: Sweep, resolution: int
-) -> list[str]:
+def _undersampled(domains: Sequence[Domain], sweep: Sweep, resolution: int) -> list[str]:
     """Say when the grid skipped feasible values, because the ceiling is then a lower bound.
 
-    Found by a live adversary rather than by design, and it is the one thing the LLM half
-    contributed that no enumeration was ever going to find. On the permit log's composed
-    objective an adversary swept the integers directly, reported 0.8274 at threshold 19, and
-    observed that the probe's stated ceiling was 0.8184 at 17. Reproduced: the 21-point grid
-    over 1 to 323 lands on 1, 17, 33, 49 and skips 19 entirely.
+    Measured on a curated business-process log's composed objective: sweeping the integers
+    directly scores 0.8274 at threshold 19, while the probe's own stated ceiling is 0.8184 at
+    17. The 21-point grid over 1 to 323 lands on 1, 17, 33, 49 and skips 19 entirely.
 
     That is not a defect in the objective and it is not one in the grid either — a sweep is a
     sweep. It is a defect in a report that calls a sampled maximum "the in-domain maximum",
@@ -1059,8 +1067,8 @@ def _undersampled(
 def _check_raises(sweep: Sweep) -> list[Finding]:
     """An objective that raises inside its own declared domain loses the round.
 
-    Failure three in the case study: tightening produced a graph with no terminal state
-    and the compile step raised instead of degrading. The training round was lost rather
+    Failure mode three, measured: tightening produced a graph with no terminal state and
+    the compile step raised instead of degrading, so the training round was lost rather
     than scored. Nothing about that is specific to process mining — any objective that
     can raise on a feasible input has an input the loop cannot learn from.
     """
@@ -1116,13 +1124,13 @@ Not a tunable, a documented property of the check, kept named so the report and 
 refer to one thing. It is the fix for a measured false positive, and the reasoning is in
 `_find_spike`.
 
-The rejected alternative is recorded because it is the one that looks right. Flooring the
-ratio's denominator relative to the sweep's peak, instead of at the absolute `TOLERANCE`, was
-tried first and *never changes an outcome*: a relative floor only exceeds `TOLERANCE` once the
-peak passes 1e3, and by then a real spike clears either floor by orders of magnitude. Mutation
-testing is what showed it — reverting the floor to `TOLERANCE` left every test passing, and no
-objective could be constructed where it mattered. So it was removed rather than shipped as an
-unmeasured knob, which is the defect class this package exists to detect.
+The ratio's denominator is floored at the absolute `TOLERANCE`, and must not be "improved" to
+a floor relative to the sweep's peak. A peak-relative floor is indistinguishable from the
+absolute one: it only exceeds `TOLERANCE` once the peak passes 1e3, and by then a real spike
+clears either floor by orders of magnitude. Mutation testing confirms the pair are equivalent
+in this codebase — reverting a relative floor to `TOLERANCE` leaves every test passing, and no
+objective can be constructed where it matters. Adding it back would ship an unmeasured knob,
+which is the defect class this package exists to detect.
 """
 
 
@@ -1131,8 +1139,8 @@ def _check_poles(
 ) -> tuple[list[Sample], list[Finding]]:
     """Find singularities two ways, because a pole need not change sign.
 
-    A sign-flipped adjacent pair is the classic odd-order pole, and the one this project's
-    history actually had: `1 - edge_share` going negative flipped the harmonic mean's sign
+    A sign-flipped adjacent pair is the classic odd-order pole, and the one an unclamped
+    share term produces: `1 - edge_share` going negative flips the harmonic mean's sign
     across `edge_share == 1 + coverage`.
 
     An *even*-order pole does not flip sign at all. `1 / abs(x - c)` is positive on both
@@ -1204,8 +1212,8 @@ def _find_spike(
     is where a declared domain tends to start. Skipping the ends would leave the hole in
     the place most likely to hold the defect.
 
-    The neighbour ratio alone is not enough, and that was found by measurement rather than
-    reasoned about. It fires on a three-axis piecewise-linear objective bounded in [0, 1],
+    The neighbour ratio alone is not enough, and the counterexample is measured rather than
+    argued. It fires on a three-axis piecewise-linear objective bounded in [0, 1],
     twice over and for the same underlying reason. Inside the declared box one grid point
     pairs an exact `0.0` neighbour with an entirely ordinary `-0.0125`, three orders up.
     Outside it, `0.25*b - 0.25*c` returns `5.551115123125783e-17` where it is algebraically
@@ -1287,11 +1295,11 @@ def _check_degenerate(
     degenerate: Sequence[Degenerate],
     notes: list[str],
 ) -> list[Finding]:
-    """A degenerate input must not be the winner. Failure one, exactly.
+    """A degenerate input must not be the winner. Failure mode one, exactly.
 
-    Coverage alone was maximised by keeping every handoff including the thirty walked by
-    a single case out of 1434. It reported 98.6% and looked like a win. The optimum was
-    achieved by refusing to generalise.
+    Measured: coverage alone is maximised by keeping every handoff including the thirty
+    walked by a single case out of 1434. It reports 98.6% and looks like a win. The optimum
+    is achieved by refusing to generalise.
 
     This is the *arithmetic* half of the check and it is where every candidate lands
     whatever proposed it, so a declared point, an enumerated one, and one an LLM adversary
@@ -1364,10 +1372,10 @@ def _enumerate_degenerate(
     The **emptiest viable** point is the one that matters, and it is the one a caller
     writing a list forgets. It is the answer that still counts as an answer while
     representing as little as possible, and it is exactly what an objective whose other
-    terms have gone flat is maximised by. On the transcript log it is a two-state model
-    replaying two cases out of 88, and no version of this call site ever named it.
+    terms have gone flat is maximised by. Measured on an agent-transcript log it is a
+    two-state model replaying two cases out of 88, and no hand-written list named it.
 
-    The **fullest** point is memorisation: keep everything, describe nothing. Failure one.
+    The **fullest** point is memorisation: keep everything, describe nothing. Failure mode one.
 
     The **empty** point, where `size` is zero or the point is not viable at all, is "keep
     nothing". Included even though it usually scores zero, because an objective that
@@ -1387,11 +1395,10 @@ def _enumerate_degenerate(
     seen: set[tuple] = set()
 
     if space is not Space.DECISION:
-        # Corrected after a live adversary run, and this is the sharpest thing the LLM half
-        # produced. An earlier version of this function enumerated the size-derived points in
-        # metric space too, and the adversaries proved that unsound in two ways at once.
+        # The size-derived points must not be enumerated in metric space. Doing so is unsound
+        # in two ways at once, and both are measured.
         #
-        # It is order-dependent: on the current objective's 21^3 metric grid, 21 points tie
+        # It is order-dependent: on a composed objective's 21^3 metric grid, 21 points tie
         # for the smallest non-zero `edge_share`, scoring anywhere from 0.0 to 0.9744, so
         # which one becomes "the emptiest answer" is decided by `product`'s iteration order.
         #
@@ -1401,11 +1408,6 @@ def _enumerate_degenerate(
         # converges on the ideal corner: coverage 1.0 with share 0.05 already scores 0.9744
         # against a grid maximum of 1.0. A sound objective would eventually be refused for
         # having a good optimum. That is the same argument the boundary-max check rests on.
-        #
-        # Worth recording that five diverse adversaries and a three-judge panel all upheld
-        # metric-space empty-answer candidates unanimously. The LLM half found the flaw in
-        # the deterministic half, and then reproduced it; only the space discipline catches
-        # both, and it is deterministic.
         notes.append(
             "degenerate inputs not enumerated: every one of them is a decision-space "
             "property. In metric space the axes vary independently, so the strongest empty "
@@ -1424,9 +1426,7 @@ def _enumerate_degenerate(
 
     measured = [
         (sweep_point, size)
-        for sweep_point, size in (
-            (s.point, structure.measure(s.point)) for s in sweep.samples
-        )
+        for sweep_point, size in ((s.point, structure.measure(s.point)) for s in sweep.samples)
         if size is not None
     ]
     if not measured:
@@ -1456,6 +1456,7 @@ def _enumerate_degenerate(
                     else -math.inf
                 ),
             )
+
         emptiest, emptiest_size = strongest(smallest)
         fullest, fullest_size = strongest(largest)
         add(
@@ -1504,8 +1505,8 @@ def _check_emptying(
 ) -> tuple[list[Finding], list[str]]:
     """Does shrinking the answer ever cost score? If never, the optimum is the empty one.
 
-    The general form of the degenerate-optimum finding, and the stronger half of this
-    module's answer to the declared-list defect. The point test asks whether one specific
+    The general form of the degenerate-optimum finding, and the stronger of the two checks
+    derived from `Structure`. The point test asks whether one specific
     emptiest answer wins; this asks whether the objective has any preference for a fuller
     answer *at all*, which is the property that makes the winner degenerate no matter which
     point the space happens to admit last.
@@ -1516,16 +1517,17 @@ def _check_emptying(
     a function that is monotone in emptiness, and its argmax is whatever the space admits
     last.
 
-    Strict by design. A "fewer than N% of pairs cost score" threshold would be a number
-    fitted to whichever fixture was in hand, which is this session's defect one level up,
-    so the check fires only on "never" and the report states how many pairs it walked.
+    Strict by design, and the strictness must not be relaxed. A "fewer than N% of pairs cost
+    score" threshold would be a number fitted to whichever fixture was in hand, which is the
+    defect class this module detects one level up, so the check fires only on "never" and the
+    report states how many pairs it walked.
 
     Decision space only, and for the same reason corners are. Metric axes vary freely, so
     "shrink this term holding the rest" is always on the grid and is usually the correct
-    answer; the ideal corner *is* an empty answer scoring the maximum. Measured: on the
-    permit log's composed decision objective the score falls from 0.8184 at the argmax to
-    0.7680 one grid step emptier, so this does not fire; on the transcript log's it holds
-    0.0444 all the way to a single-edge model, so it does.
+    answer; the ideal corner *is* an empty answer scoring the maximum. Measured: on a curated
+    business-process log's composed decision objective the score falls from 0.8184 at the
+    argmax to 0.7680 one grid step emptier, so this does not fire; on an agent-transcript
+    log's it holds 0.0444 all the way to a single-edge model, so it does.
     """
     if space is not Space.DECISION:
         return [], [
@@ -1690,8 +1692,8 @@ def _check_escape(
 ) -> tuple[list[Sweep], list[Finding], list[str]]:
     """Sweep just outside the declared domain and require that escaping is not rewarded.
 
-    This is the check that would have caught the bug that shipped, and the reasoning for
-    its semantics is in the module docstring. In short: a training loop searches for the
+    This is the check that catches an input escaping its declared range, and the reasoning
+    for its semantics is in the module docstring. In short: a training loop searches for the
     argmax, so a reward outside the declared domain is a reward, whether or not anyone
     believes that input is reachable.
     """
@@ -1713,9 +1715,7 @@ def _check_escape(
         escaped = _sweep_box(
             objective, axes, label=f"escape: {label}", space=space, resolution=resolution
         )
-        pole_samples, pole_findings = _check_poles(
-            objective, escaped, refine=refine, growth=growth
-        )
+        pole_samples, pole_findings = _check_poles(objective, escaped, refine=refine, growth=growth)
         growth_samples, growth_findings = _check_unbounded(
             objective, escaped, refine=refine, growth=growth
         )
@@ -1799,14 +1799,14 @@ def _check_boundary(
 ) -> list[Finding]:
     """In decision space, a maximum on the window's own edge means the window may be wrong.
 
-    Failure four. The agent swept thresholds 1 to 24, optimised correctly inside that
-    window, and settled short of the real peak at 40. Measured here: over 1 to 24 the
-    argmax is 24, the window's upper edge.
+    Failure mode four, measured: an optimizer swept thresholds 1 to 24, optimised correctly
+    inside that window, and settled short of the real peak at 40. Over 1 to 24 the argmax is
+    24, the window's own upper edge.
 
     A boundary maximum is not automatically a defect — the true optimum can genuinely sit
-    at a feasible extreme. So the prober does the thing the agent did not: it looks past
-    the edge. Improving outside means the window was too narrow, which is a refusal.
-    Degrading outside means the boundary is a real optimum, which is a note.
+    at a feasible extreme. So the prober does the thing an in-window optimizer cannot: it
+    looks past the edge. Improving outside means the window was too narrow, which is a
+    refusal. Degrading outside means the boundary is a real optimum, which is a note.
     """
     best = declared.best
     if best is None:
@@ -1925,9 +1925,9 @@ def probe_feedback(
 ) -> Probe:
     """Check that the feedback the optimizer reads states the quantity selection uses.
 
-    Failure two in the case study was not the objective's shape at all. Scoring was the
-    harmonic mean; the feedback reported coverage and only complained about memorisation
-    above 60% edge share. At 29% share the agent heard nothing but "you are behind on
+    Failure mode two is not the objective's shape at all, and it is measured. Scoring was
+    the harmonic mean; the feedback reported coverage and only complained about memorisation
+    above 60% edge share. At 29% share the optimizer heard nothing but "you are behind on
     coverage", loosened the threshold every round, and walked its score from 0.804 down
     to 0.706 while its coverage rose from 93.2% to 96.9%. It walked away from its own
     best attempt, obediently. The metric was never shown to the thing optimising it.
@@ -1950,8 +1950,8 @@ def probe_feedback(
     telling those apart requires knowing what the objective's gradient is in the space of
     things the prose can ask for, which is a semantic question about English. It could be
     faked — accept a caller-supplied extractor and check rank correlation — and that fake
-    is precisely this session's defect class: the extractor would be written by the same
-    hand and wrong in the same direction, and the check would pass while never firing.
+    is exactly the defect class this module detects: the extractor would be written by the
+    same hand and wrong in the same direction, and the check would pass while never firing.
     So this function checks presence, and the report says presence is what it checked.
 
     Args:

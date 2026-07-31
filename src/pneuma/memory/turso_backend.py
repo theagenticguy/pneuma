@@ -1,11 +1,11 @@
 """A `MemoryBackend` over Turso: addressable entries, vector recall, score learning.
 
-Replaces `JSONMemoryBackend` in this project's learning loops. Three things the
-project needed happened to be the same object.
+A drop-in alternative to `JSONMemoryBackend` for a learning loop. Three
+capabilities that a loop needs separately happen to be the same object.
 
-**Targeted recall.** A single prose playbook is recalled whole or not at all, so
+**Targeted recall.** A single prose parameter is recalled whole or not at all, so
 a gradient about one piece of advice is routed to a blob containing all of it
-and the consolidating model rewrites whatever it likes. Splitting the playbook
+and the consolidating model rewrites whatever it likes. Splitting that parameter
 into addressable entries and retrieving the few that bear on the current
 decision makes the gradient land on those entries and no others. That is the
 whole point of `ParameterMeta["results"]`, and section "Narrow gradients" below
@@ -26,7 +26,7 @@ separate host class.
 
 ## Retrieval is vector search, and FTS could not have replaced it
 
-Measured with Cohere Embed v4 vectors over six navigator playbook entries, by
+Measured with Cohere Embed v4 vectors over six agent-guidance entries, by
 `tests/test_turso_memory.py::test_live_retrieval_discriminates_on_a_real_playbook`,
 which prints exactly this:
 
@@ -52,9 +52,10 @@ select an arbitrary subset. `test_turso_fts_cannot_rank_...` records that, and
 it needs no credentials because it is a property of the database. Nothing here
 depends on FTS.
 
-Two corrections to notes this was built from, both found by probing: the match
-syntax is `WHERE column MATCH ?` (the `fts_match(index_name, ...)` form does not
-parse, "no such column"), and `vector_distance_cos` raises
+Two database behaviours here were established by probing rather than taken from
+documentation. The match syntax is `WHERE column MATCH ?` (the
+`fts_match(index_name, ...)` form does not parse, "no such column"), and
+`vector_distance_cos` raises
 `Conversion error: Invalid vector type` on a NULL blob rather than returning
 NULL, which is why every retrieval query is an inner join.
 
@@ -82,7 +83,7 @@ guess. On the corpus above the gap is real but narrow, and it is a property of
 that corpus rather than of the embedding model: `calibrate_ceiling` on the same
 five probes returns 0.7757, which no one would have picked. So the ceiling is
 derived from measurement, and refused outright when the distributions overlap.
-Setting one by taste is the silent cap this project keeps finding.
+A ceiling set by taste is a silent cap.
 
 ## Narrow gradients
 
@@ -421,8 +422,8 @@ class CeilingNotSeparable(ValueError):
 
     Raised by `calibrate_ceiling` rather than returning a midpoint that would
     drop real hits or admit unrelated ones. A ceiling that cannot be justified
-    by measurement is the silent cap this project keeps finding, and inventing
-    one here would put it in the retrieval path.
+    by measurement is a silent cap, and inventing one here would put it in the
+    retrieval path.
     """
 
 
@@ -939,7 +940,7 @@ class TursoMemoryBackend(MemoryBackend):
         A deterministic one-dimensional search with a shrinking trust region,
         over the domain the schema itself declares. Deterministic because a
         random step cannot be asserted in a test, and a learning rule nobody
-        can test is the thing this project keeps finding.
+        can test is indistinguishable from one that does not learn.
 
         Two moves:
 

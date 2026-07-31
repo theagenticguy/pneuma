@@ -401,8 +401,7 @@ def rehearsal_probe(code: str, log_csv: str = REHEARSAL_LOG) -> tuple[str, list[
     Returns `(probe source, rehearsed helper names, skipped helper names)`. A helper
     is skipped when a required parameter has no fixture of that name, and skipping is
     reported rather than swallowed: "we did not check this one" and "this one passed"
-    must not be the same observation, which is the failure mode this whole project
-    keeps finding.
+    must not be the same observation.
 
     The probe is deliberately not defensive. Every call is at the top level of the
     executed block, so the first helper that raises aborts the probe and the error
