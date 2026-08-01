@@ -24,6 +24,9 @@ rots next door, which is the defect class `detect/` exists to catch.
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -133,6 +136,75 @@ def test_a_library_module_needs_no_dataframe_engine(module: Path) -> None:
     reached = {name.split(".")[0] for name in imports_of(module.read_text())}
     heavy = reached & APPLICATION_ONLY_PACKAGES
     assert not heavy, f"{module.name} imports {sorted(heavy)}, which only casestudy/ needs"
+
+
+def importable_library_modules() -> list[str]:
+    """Dotted names for every library module, for the runtime half of the check."""
+    names: list[str] = []
+    for path in library_modules():
+        relative = path.relative_to(PNEUMA)
+        parts = list(relative.parts)
+        parts[-1] = parts[-1].removesuffix(".py")
+        if parts[-1] == "__init__":
+            parts.pop()
+        names.append(".".join(["pneuma", *parts]))
+    return sorted(set(names))
+
+
+def blocking_import(dotted: str) -> subprocess.CompletedProcess[str]:
+    """Import `dotted` in a subprocess where the application-only packages cannot be found.
+
+    The hook is `find_spec`. `find_module` was removed from the import protocol in 3.12, so a
+    blocker written against it is never consulted and every module appears to import cleanly —
+    which is why `test_the_blocker_really_does_block` exists rather than being redundant.
+
+    A subprocess per module, so one module's success cannot be another's cached `sys.modules`
+    entry.
+    """
+    script = textwrap.dedent(f"""
+        import importlib
+        import sys
+
+        BLOCKED = {sorted(APPLICATION_ONLY_PACKAGES)!r}
+
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] in BLOCKED:
+                    raise ImportError(f"{{name}} is blocked: the library must not need it")
+                return None
+
+        sys.meta_path.insert(0, Blocker())
+        importlib.import_module({dotted!r})
+        print("imported {dotted}")
+    """)
+    return subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+
+
+@pytest.mark.parametrize("dotted", importable_library_modules())
+def test_a_library_module_imports_with_the_dataframe_engine_absent(dotted: str) -> None:
+    """The runtime half, which the AST check can only infer.
+
+    Reading imports proves no library file *names* `polars`. It cannot prove the module
+    imports without it, because a dependency reached through another library module appears in
+    neither file's own import list.
+    """
+    result = blocking_import(dotted)
+    assert result.returncode == 0, (
+        f"{dotted} needs one of {sorted(APPLICATION_ONLY_PACKAGES)}:\n"
+        f"{result.stdout}{result.stderr}"
+    )
+    assert f"imported {dotted}" in result.stdout
+
+
+def test_the_blocker_really_does_block() -> None:
+    """Guard the guard: a blocker that blocks nothing passes every case above without the
+    property holding, so an application module must fail under the same harness."""
+    result = blocking_import("pneuma.casestudy.eventlog")
+
+    assert result.returncode != 0, "casestudy.eventlog imported with its engine blocked"
+    assert "is blocked" in result.stderr
 
 
 def test_the_application_really_does_depend_on_the_library() -> None:
