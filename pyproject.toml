@@ -40,6 +40,10 @@ packages = ["src/pneuma"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `tests/` on the path explicitly, so `from paths import PERMITS` resolves from a test in any
+# subdirectory. Without it the import only works for files sitting directly in tests/, and
+# moving one down a level is a collection error.
+pythonpath = ["tests"]
 
 [tool.ruff]
 target-version = "py314"

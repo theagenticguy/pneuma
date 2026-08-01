@@ -36,7 +36,6 @@ import inspect
 import os
 
 import pytest
-from paths import FLEET, PERMITS, needs_fleet, needs_permits
 
 from pneuma.detect.adversary import (
     ANGLES,
@@ -356,76 +355,3 @@ def test_adversarial_search_returns_a_callable_probe_accepts() -> None:
     """`adversarial_search` is a factory, so its shape is checkable without a model call."""
     search = adversarial_search(angles=ANGLES[:1], max_per_angle=1, panel_size=1)
     assert callable(search)
-
-
-# ── Live: what the adversaries actually found ──
-
-
-@live
-@needs_fleet
-def test_live_the_panel_upholds_the_transcript_logs_real_degenerate() -> None:
-    """The measurement that fixed the judge prompt, kept as the regression for it.
-
-    The panel's first version rejected all ten true candidates here, reasoning that a
-    one-edge model tying the incumbent was the incumbent restated. That inverts on exactly
-    the case that matters, because when the optimum is itself degenerate, tying it is the
-    finding. After the fix the same run upholds unanimously."""
-    from pneuma.casestudy import transcriptlog
-    from pneuma.casestudy.minelearn import Attempt, threshold_objective
-    from pneuma.model import opus5
-
-    events, _ = transcriptlog.load_sample(FLEET)
-    objective, structure, top, _components = threshold_objective(events)
-    verdicts: list[Verdict] = []
-    search = adversarial_search(
-        angles=ANGLES[:2], max_per_angle=2, model=opus5("high"), on_verdict=verdicts.append
-    )
-
-    probe(
-        objective,
-        (Domain("threshold", 1, top, integral=True, feasible=(1.0, float(top))),),
-        space=Space.DECISION,
-        structure=structure,
-        search=search,
-        source=inspect.getsource(Attempt.score.fget),
-    )
-
-    (verdict,) = verdicts
-    assert verdict.judged, "the adversaries proposed something"
-    assert verdict.upheld, "and the panel upheld a real degenerate rather than rejecting it"
-
-
-@live
-@needs_permits
-def test_live_the_panel_rejects_on_a_sound_objective() -> None:
-    """The control, and it is the more important of the two. A panel that upheld everything
-    would refuse every objective and be worthless in the way a check that cannot fire is.
-
-    Measured on the permit log, where nothing is degenerate: the adversaries proposed six
-    candidates, several of them scoring *above* the reported ceiling, and the panel rejected
-    all eighteen ballots because a model keeping nine frequent handoffs and replaying most
-    cases is a real answer whatever its score."""
-    from pneuma.casestudy import eventlog
-    from pneuma.casestudy.minelearn import Attempt, threshold_objective
-    from pneuma.model import opus5
-
-    events = eventlog.parse_xes(PERMITS)
-    objective, structure, top, _components = threshold_objective(events)
-    verdicts: list[Verdict] = []
-    search = adversarial_search(
-        angles=ANGLES, max_per_angle=3, model=opus5("high"), on_verdict=verdicts.append
-    )
-
-    report = probe(
-        objective,
-        (Domain("threshold", 1, top, integral=True, feasible=(1.0, float(top))),),
-        space=Space.DECISION,
-        structure=structure,
-        search=search,
-        source=inspect.getsource(Attempt.score.fget),
-    )
-
-    (verdict,) = verdicts
-    assert not verdict.upheld, verdict.report()
-    assert verdict.rejection_rate == 1.0, verdict.report()
-    assert report.ok, report.report()

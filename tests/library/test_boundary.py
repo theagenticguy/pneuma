@@ -33,6 +33,13 @@ import pytest
 from paths import SRC
 
 PNEUMA = SRC / "pneuma"
+TESTS = Path(__file__).resolve().parent.parent
+
+
+def library_test_modules() -> list[Path]:
+    """Every test module in `tests/library/` except this one, which cannot check itself."""
+    return sorted(p for p in (TESTS / "library").glob("test_*.py") if p.name != Path(__file__).name)
+
 
 # Declared by hand because this is the boundary itself: a new top-level module has to be
 # argued onto one side, and `test_every_module_is_declared` fails until it is.
@@ -205,6 +212,78 @@ def test_the_blocker_really_does_block() -> None:
 
     assert result.returncode != 0, "casestudy.eventlog imported with its engine blocked"
     assert "is blocked" in result.stderr
+
+
+@pytest.mark.parametrize("module", library_test_modules(), ids=lambda p: str(p.name))
+def test_a_library_test_module_collects_with_the_dataframe_engine_absent(module: Path) -> None:
+    """The property the `tests/library` / `tests/app` split exists to deliver.
+
+    Importing each library *source* module under the blocker says they load without the
+    engines. It says nothing about whether the tests covering them can run there, and a
+    library whose own suite cannot be collected in the environment it claims to support is not
+    shippable. A module-level `import polars` or `from pneuma.casestudy import ...` in a test
+    file is a collection error, which is what this catches.
+
+    Collection rather than execution, and this file excluded from the parametrisation: running
+    the suite from inside a test in that same suite recurses.
+    """
+    script = textwrap.dedent(f"""
+        import sys
+
+        BLOCKED = {sorted(APPLICATION_ONLY_PACKAGES)!r}
+
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] in BLOCKED:
+                    raise ModuleNotFoundError(f"{{name}} is blocked")
+                return None
+
+        sys.meta_path.insert(0, Blocker())
+        import pytest
+
+        sys.exit(pytest.main(["-p", "no:randomly", "--collect-only", "-q", {str(module)!r}]))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=SRC.parent,
+    )
+    assert result.returncode == 0, (
+        f"{module.name} does not collect without {sorted(APPLICATION_ONLY_PACKAGES)}:\n"
+        f"{result.stdout[-3000:]}{result.stderr[-1500:]}"
+    )
+
+
+def test_an_application_test_module_does_not_collect_under_the_blocker() -> None:
+    """Guard the guard: the check above is only meaningful if collection can fail that way.
+    An application test module has to fail under the same harness."""
+    app_module = TESTS / "app" / "test_casestudy.py"
+    assert app_module.is_file(), f"{app_module} is the control and it is missing"
+
+    script = textwrap.dedent(f"""
+        import sys
+
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name.split(".")[0] in {sorted(APPLICATION_ONLY_PACKAGES)!r}:
+                    raise ModuleNotFoundError(f"{{name}} is blocked")
+                return None
+
+        sys.meta_path.insert(0, Blocker())
+        import pytest
+
+        sys.exit(pytest.main(["-p", "no:randomly", "--collect-only", "-q", {str(app_module)!r}]))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=SRC.parent,
+    )
+    assert result.returncode != 0, "an application test module collected with its engine blocked"
 
 
 def test_the_application_really_does_depend_on_the_library() -> None:
