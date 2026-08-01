@@ -82,6 +82,6 @@ So the honest claim for the seed toolkit is narrow: it is the frozen method with
 parameter tuned, which is exactly what `aimine`'s docstring says the agent's advantage should
 be ("written once in advance versus written per log"). The interesting number is what the
 *agent* does starting from these helpers, and that needs a live run.
-`tests/test_minelearn.py::test_live_toolkit_beats_its_own_seed_baseline` uses 0.8274 as the bar
+`tests/app/test_minelearn.py::test_live_toolkit_beats_its_own_seed_baseline` uses 0.8274 as the bar
 because beating the prose-only loop, or the frozen miner at its default, would be comparing
 against something easier.

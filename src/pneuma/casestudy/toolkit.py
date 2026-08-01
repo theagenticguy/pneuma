@@ -36,7 +36,7 @@ argmax does *not* beat the frozen miner's method — `miner.mine` on the same sa
 `handoff_support` plus a threshold *is* the directly-follows count. The frozen miner at its
 default 25 scores 0.8210, so choosing the cutoff by argmax is worth +0.0064 and nothing else.
 The honest claim is narrow: the frozen method with its one free parameter tuned.
-`tests/test_minelearn.py::test_live_toolkit_beats_its_own_seed_baseline` uses 0.8274 as the bar
+`tests/app/test_minelearn.py::test_live_toolkit_beats_its_own_seed_baseline` uses 0.8274 as the bar
 because the prose-only loop or the frozen default would be easier comparisons.
 """
 

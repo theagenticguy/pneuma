@@ -29,7 +29,7 @@ agent might propose for its own harness — are moved by the score, using the se
 ## Retrieval is vector search, and FTS could not have replaced it
 
 Measured with Cohere Embed v4 vectors over six agent-guidance entries, by
-`tests/test_turso_memory.py::test_live_retrieval_discriminates_on_a_real_playbook`, which
+`tests/library/test_turso_memory.py::test_live_retrieval_discriminates_on_a_real_playbook`, which
 prints exactly this:
 
     query                                            top-1  distance

@@ -303,7 +303,7 @@ evidence, violations were zero and a majority of cases still failed.
 
 ---
 
-*Reproduce: `uv run pytest tests/test_casestudy.py` (17 tests over the real log).
+*Reproduce: `uv run pytest tests/app/test_casestudy.py` (17 tests over the real log).
 Requires `java` and `tools/tla2tools.jar` for the model-checking step.*
 
 

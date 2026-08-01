@@ -181,4 +181,4 @@ and useless.
 The gate admits or rejects; it does not certify. A candidate that passes has been shown not to be
 pathological in the four ways `detect` can measure, and not to have killed a rule that was live at
 the seed. It has not been shown to be *better*, which is what `quality` is for and what the honest
-baseline in `tests/test_harnesslearn.py` measures.
+baseline in `tests/app/test_harnesslearn.py` measures.

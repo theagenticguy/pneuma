@@ -10,7 +10,7 @@ it. It imports nothing from pneuma. `adapter` binds pneuma's `Process` IR to it 
 file to replace when lifting this elsewhere; it is imported lazily through this module's
 `__getattr__`, so importing this package does not pull the IR in. `discrimination`, `vacuity`,
 and `objective` are pure stdlib and lift out of this project unchanged, which is a property
-`tests/test_liftability.py` measures rather than asserts.
+`tests/library/test_liftability.py` measures rather than asserts.
 
 `objective` asks it about a *scoring function*, by sweeping the domain before a training loop
 runs against it rather than after. It also imports nothing from pneuma; the consumer supplies
@@ -124,7 +124,7 @@ def __getattr__(name: str) -> Any:
     file here that imports from `pneuma` and therefore drags in pydantic. Importing it
     eagerly made `from pneuma.detect import probe` depend on the whole IR, which contradicts
     the claim the three deterministic modules make: that they are pure stdlib and can be
-    lifted out of this project unchanged. `tests/test_liftability.py` measures that claim.
+    lifted out of this project unchanged. `tests/library/test_liftability.py` measures that claim.
 
     `__getattr__` rather than telling callers to import `pneuma.detect.adapter` themselves,
     because `audit_process` is half of this package's documented one-liner and moving it

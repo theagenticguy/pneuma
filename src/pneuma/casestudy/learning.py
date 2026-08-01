@@ -21,8 +21,8 @@ dropped for reasons no round measured — invisibly, since the loop reads only c
 Recalling by *search* fixes the routing: `TursoMemoryBackend.search` puts `{entry_id: value}`
 for the retrieved entries in the recall event's meta, that travels to the reconstructed
 `ParameterNode` and back out as `consolidate`'s `retrieved=`, so consolidation edits those
-entries and leaves the rest byte-identical. `test_turso_memory.py` asserts that a gradient
-about entry A does not modify entry B.
+entries and leaves the rest byte-identical. `tests/library/test_turso_memory.py` asserts that
+a gradient about entry A does not modify entry B.
 
 The query is built from the decision context — the state, the legal moves, whether any of them
 is a revisit — so the agent reads the advice bearing on the choice in front of it rather than
