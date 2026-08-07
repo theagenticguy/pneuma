@@ -105,7 +105,9 @@ class CheckResult:
         if self.outcome == "verified":
             return f"verified: {self.distinct_states} distinct states, no violation"
         if self.outcome == "violated":
-            return f"VIOLATED {self.violated}: trace of {len(self.trace)} states"
+            # A lasso trace also carries a `Back to state` closing line; count states.
+            steps = sum(1 for line in self.trace if line.startswith("State "))
+            return f"VIOLATED {self.violated}: trace of {steps} states"
         if self.outcome == "vacuous":
             if self.vacuous_invariants:
                 names = ", ".join(self.vacuous_invariants)
@@ -114,8 +116,13 @@ class CheckResult:
         return f"CHECKER FAILED (exit {self.returncode}): {self.failure}"
 
 
-def render(process: Process) -> str:
-    """Return a TLA+ module for `process`."""
+def render(process: Process, *, liveness: bool = False) -> str:
+    """Return a TLA+ module for `process`.
+
+    With `liveness=True` the module also defines `Termination == <>(pc \\in
+    {terminals})` and strengthens the spec to `Init /\\ [][Next]_vars /\\
+    WF_vars(Next)`. See `check` for why that is opt-in.
+    """
     variables = [v.name for v in process.variables]
     declared = ", ".join(["pc", *variables])
 
@@ -189,7 +196,18 @@ def render(process: Process) -> str:
     for transition in process.transitions:
         lines.append(f"  \\/ {transition.name}")
     lines.append("  \\/ Done")
-    lines += ["", "Spec == Init /\\ [][Next]_vars", ""]
+
+    if liveness:
+        # `<>` needs one visit to a terminal, so `Done` stuttering there is harmless:
+        # the property is already satisfied by the time the run can stall.
+        terminals = ", ".join(f'"{t}"' for t in terminal)
+        lines += ["", f"Termination == <>(pc \\in {{{terminals}}})"]
+        # `WF_vars(Next)` only forbids stalling forever while a move is enabled. It
+        # does not forbid taking moves forever, so a reachable cycle still refutes
+        # `Termination` — correctly, since such a behavior never terminates.
+        lines += ["", "Spec == Init /\\ [][Next]_vars /\\ WF_vars(Next)", ""]
+    else:
+        lines += ["", "Spec == Init /\\ [][Next]_vars", ""]
 
     # Stuck: a non-terminal state with no enabled outgoing transition.
     stuck_clauses: list[str] = []
@@ -229,11 +247,18 @@ def render(process: Process) -> str:
     return "\n".join(lines)
 
 
-def render_config(process: Process) -> str:
-    """Return the .cfg naming the specification and every invariant to check."""
+def render_config(process: Process, *, liveness: bool = False) -> str:
+    """Return the .cfg naming the specification and every invariant to check.
+
+    At most one `PROPERTY` is ever named. TLC's violation report says only that
+    "temporal properties were violated", never which one, so a second property
+    would make the verdict unattributable.
+    """
     invariants = ["TypeOK", "NoDeadlock", *[i.name for i in process.invariants]]
     lines = ["SPECIFICATION Spec"]
     lines += [f"INVARIANT {name}" for name in invariants]
+    if liveness:
+        lines.append("PROPERTY Termination")
     return "\n".join(lines) + "\n"
 
 
@@ -241,8 +266,35 @@ def tlc_available() -> bool:
     return TLA_JAR.is_file() and shutil.which("java") is not None
 
 
-def check(process: Process, *, timeout: int = 180) -> CheckResult:
+def check(process: Process, *, timeout: int = 180, liveness: bool = False) -> CheckResult:
     """Model-check `process` with TLC.
+
+    The default checks safety only: every invariant holds in every reachable state,
+    and no state is stuck. That says nothing about whether the process ever finishes
+    — a run that cycles forever violates no invariant.
+
+    `liveness=True` adds `PROPERTY Termination`, asking TLC whether every behavior
+    eventually reaches a terminal state. It is opt-in because it is a different
+    question, and a real one: a mined process whose log contains a rework loop has a
+    genuine cycle, so it is legitimately non-terminating and safety-verified at the
+    same time. Turning this on by default would recast those models as broken rather
+    than as accurately mined.
+
+    The fairness attached is `WF_vars(Next)`, which rules out only stalling forever
+    while a move is enabled. It does not rule out *moving* forever, so a reachable
+    cycle among real transitions still refutes `Termination`. That verdict is
+    correct, not a limitation: such a behavior really does never terminate. Demanding
+    that a loop eventually be exited is a strictly stronger assumption — strong
+    fairness on each exit action — and is deliberately not made here.
+
+    Two ways to misread a `liveness=True` result:
+
+    - Safety masks liveness. If an invariant also fails, TLC stops at exit 12 and
+      never evaluates the temporal property. Any `violated`, `vacuous`, or `failed`
+      outcome means termination was *not* checked, so it must not be reported as
+      "termination verified" — only `verified` carries that claim.
+    - A `violated` result names `"TemporalProperty"`, not `Termination`. TLC does not
+      say which temporal property failed, which is why only one is ever configured.
 
     Raises:
         RuntimeError: java or tla2tools.jar is missing.
@@ -252,8 +304,8 @@ def check(process: Process, *, timeout: int = 180) -> CheckResult:
 
     with tempfile.TemporaryDirectory() as work:
         directory = Path(work)
-        (directory / f"{process.name}.tla").write_text(render(process))
-        (directory / f"{process.name}.cfg").write_text(render_config(process))
+        (directory / f"{process.name}.tla").write_text(render(process, liveness=liveness))
+        (directory / f"{process.name}.cfg").write_text(render_config(process, liveness=liveness))
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
             [
                 "java",
@@ -300,6 +352,10 @@ def _parse(output: str, *, returncode: int) -> CheckResult:
         elif stripped.startswith("Error:") and stripped not in _NARRATION:
             failure = failure or stripped.removeprefix("Error:").strip()
         elif stripped.startswith("State ") and ":" in stripped:
+            trace.append(stripped)
+        elif stripped.startswith("Back to state"):
+            # A liveness counterexample is a lasso, and this line is where it closes.
+            # Without it the trace reads as a finite prefix and the loop is invisible.
             trace.append(stripped)
 
         counts = _COUNTS.search(stripped)

@@ -231,6 +231,66 @@ def test_tlc_catches_the_shortcut_that_skips_senior_approval() -> None:
     assert any("Expedite" in line for line in result.trace)
 
 
+# ── Liveness is a second question, asked only when asked for ──
+
+
+def test_the_default_spec_says_nothing_about_termination() -> None:
+    """Safety-only is the default, so nothing about fairness may leak into it.
+
+    Two mined models in the case study have real rework loops and are asserted `ok`
+    today. They stay `ok` because the flag is off, not because they terminate.
+    """
+    spec = tla.render(claims())
+    config = tla.render_config(claims())
+    assert "Termination" not in spec
+    assert "WF_" not in spec
+    assert "Spec == Init /\\ [][Next]_vars\n" in spec
+    assert "Termination" not in config
+    assert "PROPERTY" not in config
+
+
+def test_the_liveness_spec_asks_whether_a_terminal_state_is_always_reached() -> None:
+    spec = tla.render(claims(), liveness=True)
+    assert 'Termination == <>(pc \\in {"Paid", "Denied"})' in spec
+    assert "Spec == Init /\\ [][Next]_vars /\\ WF_vars(Next)" in spec
+    assert "Spec == Init /\\ [][Next]_vars\n" not in spec
+
+
+def test_the_liveness_config_names_exactly_one_property() -> None:
+    """TLC never says *which* temporal property failed, so a second one would make
+    the violation unattributable."""
+    config = tla.render_config(claims(), liveness=True)
+    assert config.splitlines().count("PROPERTY Termination") == 1
+    assert len([line for line in config.splitlines() if line.startswith("PROPERTY")]) == 1
+    # The invariants are still checked; liveness is an addition, not a replacement.
+    assert "INVARIANT LargeNeedsTwoApprovals" in config
+
+
+@pytest.mark.skipif(not tla.tlc_available(), reason="needs java and tools/tla2tools.jar")
+def test_tlc_proves_the_acyclic_process_always_terminates() -> None:
+    result = tla.check(claims(), liveness=True, timeout=200)
+    assert result.ok, result.raw[-2000:]
+    assert result.outcome == "verified"
+
+
+@pytest.mark.skipif(not tla.tlc_available(), reason="needs java and tools/tla2tools.jar")
+def test_a_cycle_the_safety_check_accepts_is_caught_by_the_liveness_check() -> None:
+    """The gate must be able to fail. `revisiting()` has a real `B → C → B` loop, so
+    a behavior can go around it forever: safety holds, termination does not.
+
+    `WF_vars(Next)` forbids only stalling while a move is enabled. Looping is moving,
+    so the loop survives fairness and refutes `Termination` — the correct verdict.
+    """
+    safe = tla.check(revisiting(), timeout=200)
+    assert safe.ok, "the cycle breaks no invariant, so safety alone cannot see it"
+
+    live = tla.check(revisiting(), liveness=True, timeout=200)
+    assert not live.ok
+    assert live.outcome == "violated"
+    assert live.violated == "TemporalProperty"
+    assert any(line.startswith("Back to state") for line in live.trace), live.trace
+
+
 # ── The verdict parser: a broken run must never look like a clean one ──
 #
 # Every fixture below is real TLC 2.19 output, trimmed, captured with the
@@ -311,6 +371,55 @@ pc = 0
 
 State 2: Stuttering
 4 states generated, 2 distinct states found, 0 states left on queue.
+""")
+
+# A lasso: the counterexample is a finite prefix plus a cycle, and the cycle is named
+# only by the closing `Back to state` line. Captured from a real `liveness=True` run
+# over `revisiting()`, which exits 13. The two interpolated lines are verbatim too;
+# they are only assembled here because they exceed the line limit as literals.
+_LASSO_PROGRESS = (
+    "Progress(3) at 2026-08-07 02:06:16: 6 states generated,"
+    " 4 distinct states found, 0 states left on queue."
+)
+_LASSO_CHECKING = (
+    "Checking temporal properties for the complete state space with"
+    " 4 total distinct states at (2026-08-07 02:06:16)"
+)
+
+_LASSO = _tlc(f"""Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-08-07 02:06:16.
+{_LASSO_PROGRESS}
+{_LASSO_CHECKING}
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+pc = "A"
+
+State 2: <AtoB line 17, col 3 to line 18, col 14 of module Revisit>
+pc = "B"
+
+State 3: <BtoC line 21, col 3 to line 22, col 14 of module Revisit>
+pc = "C"
+
+Back to state 2: <CtoB line 29, col 3 to line 30, col 14 of module Revisit>
+
+Finished checking temporal properties in 00s at 2026-08-07 02:06:16
+6 states generated, 4 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-08-07 02:06:16)
+""")
+
+# A temporal property TLC could not evaluate. Real output, and the surprise is the
+# exit status: TLC returns **0** here, having checked nothing, with no success line.
+# Only the `Error:` line separates this from a pass.
+_LIVENESS_EVAL_FAILED = _tlc("""Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Error: The second argument of > should be an integer, but instead it is:
+"x"
+1 states generated, 1 distinct states found, 1 states left on queue.
+Finished in 00s at (2026-08-07 02:08:48)
 """)
 
 _HEAP_AFTER_SUCCESS = _tlc("""Model checking completed. No error has been found.
@@ -398,6 +507,28 @@ def test_a_temporal_violation_is_not_a_pass() -> None:
     assert not result.ok
     assert result.outcome == "violated"
     assert result.distinct_states == 2
+
+
+def test_a_temporal_property_that_cannot_be_evaluated_is_a_checker_failure() -> None:
+    """TLC exits 0 on this one, having decided nothing. If exit status alone were
+    trusted, an unevaluable liveness property would read as termination verified."""
+    result = tla._parse(_LIVENESS_EVAL_FAILED, returncode=0)
+    assert not result.ok
+    assert result.outcome == "failed"
+    assert result.violated is None
+    assert "VIOLATED" not in result.summary
+
+
+def test_a_lasso_counterexample_keeps_the_line_that_closes_the_loop() -> None:
+    """Dropping `Back to state N` would leave the trace reading as a finite prefix,
+    which is the one thing a liveness counterexample is not."""
+    result = tla._parse(_LASSO, returncode=13)
+    assert not result.ok
+    assert result.outcome == "violated"
+    assert result.violated == "TemporalProperty"
+    assert result.trace[-1].startswith("Back to state 2:")
+    assert "CtoB" in result.trace[-1], "the loop-closing action has to be nameable"
+    assert result.distinct_states == 4
 
 
 def test_progress_lines_do_not_break_the_state_counts() -> None:
