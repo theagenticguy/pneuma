@@ -8,10 +8,16 @@ problems you do not want to solve by hand-editing a docstring forever. Rationale
 `docs/design/learning.md`. The loop is: run cases, observe how many looped, phrase that as
 feedback in plain English, let the optimizer rewrite the playbook, run again.
 
-**The recalled parameter must arrive as a call argument.** `LearningNavigator.choose` takes
-`playbook` as a real parameter, so a recalled `ParameterView` lands where `collect_nodes` can
-find it. Hide the same text on `self` and the gradient has nothing to land on — not a degraded
-gradient, none at all. This is `pneuma.method`'s argument in production form.
+**The recalled parameter must arrive as a call argument, and the signature now says so.**
+`LearningNavigator.choose` declares `playbook` as `Annotated[list[str], Recalled("guidance",
+k=TOP_K)]`, so where the value comes from is part of the method's contract, and `pneuma.recall`'s
+binder is what performs it: one fresh search per decision, injected as the argument
+`collect_nodes` scans. Hide the same text on `self` and the gradient has nothing to land on — not
+a degraded gradient, none at all. Declaring it buys more than documentation, because the four
+rules this loop used to restate in prose — recall freshly per call, pass the view whole, never
+interpolate it, never stash it on `self` — are each silent when broken, and `Recall` makes three
+of them unrepresentable and the fourth a refusal. This is `pneuma.method`'s argument in
+production form, with `pneuma.recall` holding the parts that generalise.
 
 **The playbook is a list of addressable entries, not one string, because of gradient
 routing.** A round produces one gradient about one observed failure. Against a single
@@ -43,7 +49,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from ai_functions import TextGradOptimizer
 from pydantic import BaseModel, Field
@@ -52,6 +58,7 @@ from ..memory import TursoMemoryBackend
 from ..method import MethodAgent, ai_method
 from ..process import interpreter
 from ..process.ir import Process, Transition
+from ..recall import Recall, Recalled
 
 SEED_PLAYBOOK = "# No guidance learned yet.\n"
 
@@ -128,7 +135,13 @@ class LearningNavigator(MethodAgent):
         description="Choose the next transition in a business process",
         max_attempts=2,
     )
-    def choose(self, playbook: list[str], state: str, options: str, facts: str) -> Choice:
+    def choose(
+        self,
+        playbook: Annotated[list[str], Recalled("guidance", k=TOP_K)],
+        state: str,
+        options: str,
+        facts: str,
+    ) -> Choice:
         """You are executing the `{self.process.name}` process.
 
         {self.process.description}
@@ -247,32 +260,48 @@ async def run_batch(
 ) -> tuple[TrainingRound, list[Any]]:
     """Run `cases` through the process, returning the round and each traced result.
 
-    `trace` rather than a plain call: the optimizer needs the `Result` graph, and only
-    a traced call carries parameter nodes.
+    `Recall(navigator, memory).trace` rather than a plain call: the optimizer needs the
+    `Result` graph, and only a traced call carries parameter nodes.
 
     The prompt here has to be the one the live experiment measured, or the optimizer
     learns to fix a looping problem the training prompt never exhibits. `offer` reads
     the interpreter's visit history itself, so both call sites get the same text
     without either of them maintaining a list.
 
-    Retrieval is per decision and by query, not a full recall. `search` narrows the
-    gradient (its meta names the entries this decision read, and consolidation edits
-    only those), and it narrows the prompt, which is the same property from the
-    agent's side: it reads the two or three pieces of advice about the choice in front
-    of it rather than everything ever learned.
+    What stays here is the query. Retrieval is per decision and *by query*, not a full
+    recall: `search` narrows the gradient (its meta names the entries this decision
+    read, and consolidation edits only those), and it narrows the prompt, which is the
+    same property from the agent's side — the agent reads the two or three pieces of
+    advice about the choice in front of it rather than everything ever learned. Which
+    entries those are is a judgment about this process's markings, so `decision_query`
+    stays in this module and `k=TOP_K` is declared on the parameter that receives them.
 
-    The recall happens per call, and that detail is load-bearing. A `ParameterView`
-    is emitted once — "one logical recall, one event" — so reusing a single recalled
-    view across a batch produces a parameter node on the *first* traced call and none
-    on any later one. Keeping the last trace then hands the optimizer a graph with
-    nothing to update, and the loop reports rounds while learning nothing.
+    What moved out is the discipline, and each of the three rules it used to enforce by
+    hand right here is silent when broken. The recall must happen per call: a
+    `ParameterView` is emitted once — "one logical recall, one event" — so a view reused
+    across a batch produces a parameter node on the *first* traced call and none on any
+    later one, and keeping the last trace then hands the optimizer a graph with nothing
+    to update. The view must arrive as a handle and never interpolated: `collect_nodes`
+    finds targets by scanning the call's arguments for handle *objects*, so
+    `render_advice(view.value)` would compute the identical prompt with the gradient
+    edge gone. And the query must be this decision's: a defaulted one retrieves
+    confidently-ranked advice about the wrong question and the round still succeeds.
+    `Recall` holds all three — it stores no view, injects into the argument list, and
+    refuses a search-mode parameter with no query — so breaking one is now a
+    `RuntimeError` from `pneuma.recall` rather than a loop that reports rounds while
+    learning nothing.
 
-    The view is passed as a handle, never interpolated. `render_advice(view.value)`
-    would compute the identical prompt and drop the gradient edge, because
-    `collect_nodes` finds targets by scanning the call's arguments for handle
-    *objects*. So the view goes in whole and the prompt template renders it.
+    Everything goes in by keyword, including the plain arguments. `playbook` comes first
+    on `choose`, so a positional would bind to the recalled slot; the binder refuses
+    that rather than letting `state` stand in for the playbook with no retrieval done.
+
+    `retrieved_ids` is read back off `traced.inputs`, which carries the handles this
+    call was scanned for, and the view is matched by the *memory* field name the marker
+    declares rather than by a literal — the signature names the argument for the model
+    and the marker names the field for the store, and nothing requires them to agree.
     """
-    compiled = navigator.compiled("choose")
+    binder = Recall(navigator, memory)
+    source = binder.bound("choose")["playbook"].source
     round_result = TrainingRound(index=0)
     traces: list[Any] = []
 
@@ -287,18 +316,17 @@ async def run_batch(
         ) -> str:
             nonlocal steps, first_trace
             steps += 1
-            view = await memory.search(
-                "guidance",
-                decision_query(state, enabled, variables),
-                k=TOP_K,
+            traced = await binder.trace(
+                "choose",
+                state=state,
+                options=interpreter.offer(state, enabled, variables),
+                facts=facts,
+                queries={"playbook": decision_query(state, enabled, variables)},
             )
-            round_result.retrieved_ids.update(view.meta.get("results", {}))
-            traced = await compiled.trace(
-                view,
-                state,
-                interpreter.offer(state, enabled, variables),
-                facts,
-            )
+            for handle in traced.inputs:
+                if getattr(handle, "name", "") == source:
+                    meta: dict[str, Any] = getattr(handle, "meta", {})
+                    round_result.retrieved_ids.update(meta.get("results", {}))
             if first_trace is None:
                 first_trace = traced
             return traced.value.transition
