@@ -26,6 +26,12 @@ from .ir import Invariant, Process, Transition
 
 Decide = Callable[[str, list[Transition], dict[str, int | str]], Awaitable[str]]
 
+# Called once per state the run occupies. The state *name* and nothing else: whoever
+# installs the hook already holds the `Process` it came from, so handing over the
+# `State` object, the variables, or the trace would grow this file's fixed surface to
+# save the caller a dictionary lookup. See `run`'s docstring for why the hook exists.
+OnEnter = Callable[[str], Awaitable[None]]
+
 # The states this run has occupied, oldest first, current last. Owned by `run` and
 # read by `offer`, because `run` is the only thing that knows the whole path: a state
 # with one enabled transition is stepped through without consulting the decider, so a
@@ -96,6 +102,7 @@ async def run(
     start: dict[str, int | str] | None = None,
     max_steps: int = 50,
     max_rejections: int = 3,
+    on_enter: OnEnter | None = None,
 ) -> Run:
     """Drive `process` to a terminal state.
 
@@ -107,11 +114,33 @@ async def run(
         max_steps: Cap on executed transitions, so a cycle cannot run forever.
         max_rejections: How many illegal proposals to tolerate per step before
             giving up on the agent and refusing to guess on its behalf.
+        on_enter: Called once with the name of every state this run occupies, the
+            initial state included, after that state's invariant check and before
+            anything is decided from it. `None` leaves the walk exactly as it was.
+
+    **Why the hook exists at all.** `decide` covers the decision *between* states and
+    nothing here covered the work *within* one, which is the other half of the
+    pipeline: `State.agent_method` has named a per-state `@ai_method` since the IR was
+    written, and no caller could reach it during a run. The two are not the same
+    callback and must not be collapsed into one. `decide` is consulted only where
+    there is a choice — a state with a single enabled transition is stepped through
+    without it (see `_elicit`) — so a run's work would silently skip every
+    deterministic step. And the work has to happen *during* the walk rather than
+    afterwards over `Run.steps`, because what a handler produces is what the next
+    decision is made from.
+
+    The hook takes the state name and nothing else, which is deliberate. Whoever
+    installs it holds the `Process` this run is walking and can look the `State` up;
+    passing the object, the variables, or the partial trace would widen the surface of
+    the one file in this package that is meant to stay fixed, to save that lookup.
 
     Raises:
         Deadlock: Stuck in a non-terminal state.
         InvariantViolated: A safety property failed at runtime.
         ProcessError: Step budget exhausted, or the agent never proposed a legal move.
+        Exception: Whatever `on_enter` raises, unchanged. A hook that fails is not a
+            process failure, and softening it here would let a run report a completed
+            case whose per-state work never happened.
     """
     variables = dict(start if start is not None else process.initial_assignments()[0])
     states = process.state_map
@@ -122,6 +151,11 @@ async def run(
 
     token = _HISTORY.set((current,))
     try:
+        # Inside the history scope rather than beside the check above, so the hook sees
+        # the same `history()` a decider standing in this state would.
+        if on_enter is not None:
+            await on_enter(current)
+
         for index in range(max_steps):
             if states[current].terminal:
                 trace.final_state = current
@@ -149,6 +183,21 @@ async def run(
                 )
             )
             _assert_invariants(process, current, variables)
+            # Every state the run occupies, terminal ones included, and once per
+            # *visit* rather than once per name: a cycle that comes back to a state
+            # comes back to its work too.
+            if on_enter is not None:
+                await on_enter(current)
+        # A run whose final budgeted step LANDED on a terminal state has completed,
+        # not exceeded anything — the loop's own terminal check sits at the top, so
+        # without this re-check the step executes, the state's per-state work runs,
+        # and then the run raises a message that is factually false. Downstream that
+        # is not cosmetic: `live.py` counts ProcessError as `blocked`, so a case
+        # completing in exactly `max_steps` transitions would corrupt the
+        # completed/blocked split at precisely the budget the experiment uses.
+        if states[current].terminal:
+            trace.final_state = current
+            return trace
     finally:
         _HISTORY.reset(token)
 
