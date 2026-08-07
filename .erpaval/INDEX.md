@@ -11,6 +11,7 @@ lessons before starting work.
 - [STRUCTURED threads work; lifecycle wrappers must not trust local state](solutions/ai-functions-runtime/structured-threads-and-lifecycle-wrappers.md) — send_message gate is tool-side only; ThreadNotFoundError is a KeyError; ScriptedModel is @final; fixture types must be module-level
 - [Gate protocols, fault-wrapping, and fork beams](solutions/ai-functions-runtime/gate-protocol-and-fork-beam.md) — async-admitting protocol attrs block sync subclass methods; wrap every hook on the validation path; fork drops pending notify; measure a guard by breaking it
 - [Recall injection: ambient-scope trap and marker limits](solutions/ai-functions-runtime/recall-injection-and-marker-traps.md) — retrieval under a live thread_scope silently kills the gradient edge (wrap in no_thread_scope); no upstream drop/auto-fill for Annotated params; refuse duplicate markers and positional-only marked slots; BM25 needs N>=4 to rank
+- [Hooks, budgets, and introspection-safe gates](solutions/ai-functions-runtime/hooks-budgets-and-introspection-safe-gates.md) — a new hook makes a loop's cosmetic off-by-ones material (re-audit boundary conditions); wiring gates raise AttributeError so hasattr/getmembers answer; a guard's test can be satisfied by a coincidental fallback; ai_methods walks the MRO
 
 ### verification
 
@@ -19,5 +20,6 @@ lessons before starting work.
 
 ## Recent additions
 
+- 2026-08-07 · session-1b17c3 · hooks/budgets/gates lesson from the ProcessAgent build
 - 2026-08-07 · session-c8116b · recall-injection lesson (ambient scope, marker limits, BM25 fixture floor)
 - 2026-08-07 · session-5abb9e · two verification lessons from the opt-in liveness work
