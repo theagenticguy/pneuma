@@ -47,6 +47,16 @@ _PYTHON_COMPARE: dict[Comparison, str] = {
     "ge": ">=",
 }
 
+# Identifiers the TLA+ renderer defines itself. A transition, invariant, or
+# variable with one of these names would redefine it and break the generated
+# module — loudly (TLC parse error), but better rejected here with a real
+# message. State names are exempt: a state renders only as a string ("Done"),
+# never as a definition. The module name is also safe; TLC accepts a module
+# that shares its name with a definition inside it.
+_TLA_RESERVED = frozenset(
+    {"Spec", "Init", "Next", "Done", "States", "TypeOK", "NoDeadlock", "Termination", "pc", "vars"}
+)
+
 
 class Variable(BaseModel):
     """A process variable with a finite domain.
@@ -233,6 +243,17 @@ class Process(BaseModel):
         transition_names = [t.name for t in self.transitions]
         if len(transition_names) != len(set(transition_names)):
             raise ValueError("duplicate transition names")
+
+        for kind, owned in (
+            ("transition", transition_names),
+            ("invariant", [i.name for i in self.invariants]),
+            ("variable", variables),
+        ):
+            for owner in owned:
+                if owner in _TLA_RESERVED:
+                    raise ValueError(
+                        f"{kind} name {owner!r} is reserved: the TLA+ renderer defines it"
+                    )
 
         for transition in self.transitions:
             for end in (transition.source, transition.target):

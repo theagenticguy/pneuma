@@ -182,6 +182,59 @@ def test_process_with_no_terminal_state_is_rejected() -> None:
         )
 
 
+def test_a_transition_named_termination_is_rejected_as_reserved() -> None:
+    """The renderer defines Termination itself; a colliding name would redefine it.
+
+    Without this check the collision still fails loud (TLC parse error, outcome
+    "failed"), but at check time instead of construction time, and blamed on the
+    checker instead of the name.
+    """
+    with pytest.raises(ValidationError, match="reserved"):
+        Process(
+            name="P",
+            initial_state="A",
+            states=[State(name="A"), State(name="B", terminal=True)],
+            transitions=[Transition(name="Termination", source="A", target="B")],
+        )
+
+
+def test_an_invariant_named_typeok_is_rejected_as_reserved() -> None:
+    with pytest.raises(ValidationError, match="reserved"):
+        Process(
+            name="P",
+            initial_state="A",
+            states=[State(name="A"), State(name="B", terminal=True)],
+            variables=[Variable(name="n", low=0, high=1, initial=0)],
+            transitions=[Transition(name="T", source="A", target="B")],
+            invariants=[
+                Invariant(name="TypeOK", forbidden_when=[Guard(variable="n", op="eq", value=1)])
+            ],
+        )
+
+
+def test_a_variable_named_pc_is_rejected_as_reserved() -> None:
+    """pc is the renderer's own control variable; a second one is unrepresentable."""
+    with pytest.raises(ValidationError, match="reserved"):
+        Process(
+            name="P",
+            initial_state="A",
+            states=[State(name="A"), State(name="B", terminal=True)],
+            variables=[Variable(name="pc", low=0, high=1, initial=0)],
+            transitions=[Transition(name="T", source="A", target="B")],
+        )
+
+
+def test_a_state_named_done_is_allowed() -> None:
+    """States render only as strings, never as definitions — no collision."""
+    process = Process(
+        name="P",
+        initial_state="Init_",
+        states=[State(name="Init_"), State(name="Done", terminal=True)],
+        transitions=[Transition(name="Finish", source="Init_", target="Done")],
+    )
+    assert "Done" in {s.name for s in process.states}
+
+
 def test_unreachable_states_are_reported() -> None:
     process = Process(
         name="P",
