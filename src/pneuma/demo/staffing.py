@@ -1,55 +1,66 @@
-"""Tools that let a running agent staff its own subagents.
+"""The demo's binding of the library's hiring seam onto `ROSTER`.
 
-The library injects two peer tools into every thread — `list_threads` to discover
-peers and `send_message` to delegate to them — so an agent can talk to threads
-that already exist. It cannot create one. The hooks are there: `ThreadConfig`
-documents `config_hook` as the place to inject "`spawn_thread` closed over the
-current runtime and `thread_id`", but nothing in the library ships that tool.
+`team.hiring_tools` ships the three tools — `hire`, `delegate`, `dismiss` — that let a running
+agent create the subagents the runtime cannot create for it. What it deliberately does not ship is
+*who* is hireable: it takes a catalog of `role -> factory(name)`, because what a team may hire is a
+property of that team and `demo/agent.ROSTER` is a module-level registry every agent in the process
+shares (`agent.py:53-56`). This module is the join, plus the two pieces of the demo's behaviour a
+library has no way to assume.
 
-This module ships it. `staffing_tools(agent)` returns a `config_hook` that binds
-three tools to the live cycle context, so the agent hiring the subagent is the
-one the runtime records as its parent:
+    staffing_tools(staff, allow=["historian"], max_hires=2)
 
-    hire(role, name, mandate)  -> spawn a roster class as a child thread
-    delegate(name, request)    -> run a hired subagent and read its answer back
-    dismiss(name)              -> terminate a subagent
-
-Each `hire` passes `parent_id=ctx.thread_id`, which is what writes a
-`ThreadSpawnedEvent` into the *hiring* agent's event log. That edge is the only
-thing the library's `subtree_token_usage` walks, so cost attribution up the tree
-is a free consequence of hiring correctly rather than something this module has
-to account for itself.
+The two pieces. A hire's mandate lands on the hired agent's `mandate` attribute, which every
+hireable class in `cast.py` declares and no `Recruit` promises. And the role catalog the lead reads
+carries each role's *purpose*, not just its name, because the lead is choosing between roles and a
+bare list of three words is not a choice it can make well.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ai_functions.ai_thread.config import ThreadKwargs
-from ai_functions.types import CustomEvent, ThreadContext, ThreadId
-from strands.tools.decorator import tool as strands_tool
-from strands.types.tools import AgentTool
+from ai_functions.types import ThreadContext
 
+from ..team import Recruit, Roster, hiring_tools
 from .agent import ROSTER, Agent
 
 
 @dataclass
-class Staff:
-    """Registry of subagents one agent has hired, keyed by the name it chose."""
+class Staff(Roster):
+    """The demo's roster: it also puts the model's mandate onto the agent it hired.
 
-    hires: dict[str, Agent] = field(default_factory=dict)
-    thread_ids: dict[str, ThreadId] = field(default_factory=dict)
-    log: list[dict[str, Any]] = field(default_factory=list)
+    `hiring_tools` hands the mandate to the *tool*, records it on the log, and stops there,
+    because the `Recruit` protocol says nothing about a mandate and a library that injected one
+    would either fail on a `__slots__` recruit or silently create a field nothing reads
+    (`team.py:273-277`). The demo is where the attribute is real: `Historian`, `Skeptic` and
+    `Correlator` each declare `mandate: str = ""` and interpolate it into their own briefing
+    (`cast.py:133`, `:159`, `:188`), so a hire whose mandate never arrived would run on the words
+    "Your mandate: " and nothing else.
+
+    `record` is the seam because it is the only hook that sees the mandate and the instance at
+    once — the catalog's factory is called as `factory(name)` and never learns why it was hired
+    (`team.py:259`). It works because `hire` registers the recruit and *then* records
+    (`team.py:332-340`), and because the attribute is read at cycle time by a `prompt_fn` closed
+    over the instance (`agent.py:110-111`), so a mandate set here lands long before the first
+    `delegate` runs a model. That ordering is checked rather than assumed: a `hiring_tools` that
+    recorded before registering would drop every mandate, and a hire briefed on nothing is not a
+    hire that visibly failed.
+    """
 
     def record(self, action: str, **fields: Any) -> None:
-        self.log.append({"action": action, **fields})
-
-    @property
-    def headcount(self) -> int:
-        return len(self.hires)
+        if action == "hire":
+            hire = self.hires.get(fields["name"])
+            if hire is None:
+                raise RuntimeError(
+                    f"a hire named {fields['name']!r} was logged before it was registered, so its "
+                    f"mandate has nowhere to land; hiring_tools must add to `hires` before it "
+                    f"calls `record`"
+                )
+            hire.mandate = fields["mandate"]  # type: ignore[attr-defined]
+        super().record(action, **fields)
 
 
 def staffing_tools(
@@ -58,102 +69,67 @@ def staffing_tools(
     allow: Sequence[str] | None = None,
     max_hires: int = 4,
 ) -> Callable[[ThreadContext], ThreadKwargs]:
-    """Build a `config_hook` that grants hire/delegate/dismiss for one cycle.
+    """Build a `config_hook` that grants hire/delegate/dismiss over `ROSTER` for one cycle.
 
-    `allow` restricts which roster roles are hireable; `None` means every
-    registered role. `max_hires` caps the headcount so a confused agent cannot
-    spawn without bound — the library enforces no depth or breadth limit of its
-    own.
+    `allow` restricts which roster roles are hireable; `None` means every registered role. The
+    narrowing is the demo's own, because the library has no `allow` parameter — there the catalog
+    *is* the narrowing, so restricting what one lead may hire is a matter of handing it a smaller
+    mapping. An `allow` entry naming no registered role is dropped rather than refused, which is
+    what a caller wants of a filter over a registry it does not own.
+
+    `max_hires` caps the headcount so a confused agent cannot spawn without bound — the library
+    enforces no depth or breadth limit of its own.
     """
+    roles = ROSTER if allow is None else {r: ROSTER[r] for r in allow if r in ROSTER}
+    catalog: dict[str, Callable[[str], Recruit]] = {r: _factory(c) for r, c in roles.items()}
+    hook = hiring_tools(staff, catalog, max_hires=max_hires)
 
-    def hook(ctx: ThreadContext) -> ThreadKwargs:
-        return {"tools": list(_build(ctx, staff, allow, max_hires))}
+    def demo_hook(ctx: ThreadContext) -> ThreadKwargs:
+        kwargs = hook(ctx)
+        _describe_roles(kwargs.get("tools") or (), roles)
+        return kwargs
 
-    return hook
-
-
-def _roles(allow: Sequence[str] | None) -> dict[str, type[Agent]]:
-    if allow is None:
-        return dict(ROSTER)
-    return {role: ROSTER[role] for role in allow if role in ROSTER}
+    return demo_hook
 
 
-def _build(
-    ctx: ThreadContext,
-    staff: Staff,
-    allow: Sequence[str] | None,
-    max_hires: int,
-) -> list[AgentTool]:
-    available = _roles(allow)
-    catalog = "; ".join(f"{role}: {cls.purpose}" for role, cls in available.items())
+def _factory(cls: type[Agent]) -> Callable[[str], Agent]:
+    """One role's factory, closed over its class in a scope a loop cannot rebind.
 
-    @strands_tool(
-        name="hire",
-        description=(
-            "Create a new subagent that reports to you and works only on what you "
-            "give it. Choose a role from the catalog, give it a short unique name, "
-            f"and state its mandate in one or two sentences. Available roles -- {catalog}. "
-            "Hiring only creates the subagent; call delegate to give it work."
-        ),
-    )
-    async def hire(role: str, name: str, mandate: str) -> str:
-        if role not in available:
-            return f"error: no such role {role!r}; available: {sorted(available)}"
-        if name in staff.hires:
-            return f"error: you already have a subagent named {name!r}"
-        if staff.headcount >= max_hires:
-            return f"error: hiring cap reached ({max_hires}); dismiss someone first"
+    A `lambda name: cls(name=name)` written inline in the comprehension above would close over the
+    comprehension's `cls` *cell*, so every factory would build whichever class the loop saw last —
+    every hire the same role, and nothing would say so.
+    """
+    return lambda name: cls(name=name)
 
-        cls = available[role]
-        sub = cls(name=name)
-        sub.mandate = mandate  # type: ignore[attr-defined]
-        handle = await sub.spawn(ctx.coordinator, parent_id=ctx.thread_id)
 
-        staff.hires[name] = sub
-        staff.thread_ids[name] = handle.id
-        staff.record("hire", role=role, name=name, mandate=mandate, thread_id=str(handle.id))
-        ctx.on_event(
-            CustomEvent(
-                kind="staffing.hire",
-                payload={"role": role, "name": name, "child_thread_id": str(handle.id)},
+def _describe_roles(tools: Sequence[Any], roles: dict[str, type[Agent]]) -> None:
+    """Put each role's purpose back into the `hire` tool's description, in place.
+
+    `_hiring` renders the catalog as `"; ".join(sorted(catalog))` — role names, because a name is
+    all a `Mapping[str, Callable]` has. The demo has more: `Agent.purpose` says what a role is
+    *for*, and the lead is choosing between three of them. `historian` alone leaves that choice to
+    the word; `historian: Builds a cross-plane timeline and flags effects that precede their
+    supposed cause` makes it. Nothing offline pins this text, which is why it is restored here
+    rather than left to be noticed in a live run's verdict.
+
+    The library rebuilds these tools every cycle and `tool_spec` is a plain mutable dict on each
+    fresh object (measured), so editing one cannot leak into another cycle or another team. A
+    missing anchor raises: if that wording changes upstream the substitution would otherwise no-op
+    and the purposes would vanish from a prompt with nothing to report it.
+    """
+    names = "; ".join(sorted(roles)) or "(none)"
+    purposes = "; ".join(f"{role}: {cls.purpose}" for role, cls in roles.items())
+    anchor = f"Available roles -- {names}."
+    for tool in tools:
+        if tool.tool_name != "hire":
+            continue
+        described = tool.tool_spec["description"]
+        if anchor not in described:
+            raise RuntimeError(
+                f"the hire tool's description no longer contains {anchor!r}, so each role's "
+                f"purpose cannot be restored into it; team.hiring_tools has reworded the catalog "
+                f"and this binding has to follow it"
             )
-        )
-        return json.dumps({"hired": name, "role": role, "thread_id": str(handle.id)})
-
-    @strands_tool(
-        name="delegate",
-        description=(
-            "Give a request to a subagent you hired and wait for its answer. "
-            "Pass the exact name you used when hiring. The subagent sees only your "
-            "request and its own mandate, so state everything it needs."
-        ),
-    )
-    async def delegate(name: str, request: str) -> str:
-        sub = staff.hires.get(name)
-        if sub is None:
-            return f"error: you have not hired anyone named {name!r} (hired: {sorted(staff.hires)})"
-        try:
-            answer = await sub.ask(request)
-        except Exception as exc:  # surfaced to the model, which can retry or re-scope
-            staff.record("delegate_failed", name=name, error=repr(exc))
-            return f"error: {name} failed: {exc}"
-        staff.record("delegate", name=name, request=request, answer=str(answer))
-        return str(answer)
-
-    @strands_tool(
-        name="dismiss",
-        description=(
-            "Terminate a subagent you hired when its work is finished. "
-            "Its findings stay in your conversation; only the live thread ends."
-        ),
-    )
-    async def dismiss(name: str) -> str:
-        sub = staff.hires.pop(name, None)
-        if sub is None:
-            return f"error: no subagent named {name!r}"
-        await sub.retire()
-        staff.thread_ids.pop(name, None)
-        staff.record("dismiss", name=name)
-        return f"dismissed {name}"
-
-    return [hire, delegate, dismiss]
+        tool.tool_spec["description"] = described.replace(anchor, f"Available roles -- {purposes}.")
+        return
+    raise RuntimeError("team.hiring_tools returned no tool named 'hire'")
