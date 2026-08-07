@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import re
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -63,8 +64,9 @@ from ..detect.objective import (
     Structure,
     probe,
 )
+from ..gated import GatedProposer
 from ..memory import TursoMemoryBackend
-from ..method import MethodAgent, ai_method
+from ..method import ai_method
 from . import miner, rules
 
 if TYPE_CHECKING:
@@ -566,24 +568,60 @@ class HarnessProposal(BaseModel):
     )
 
 
-class HarnessProposer(MethodAgent):
+class HarnessProposer(GatedProposer):
     """An agent that proposes the harness it will then be graded by.
 
-    One `@ai_method`, and the gate is wired as its post-conditions so a pathological
+    One `@ai_method`, and the gate is wired as its post-condition so a pathological
     proposal is rejected and re-asked with the detector's own report as the feedback. That
     placement is the difference between a gate and a convention: a manual check after the
     call is a check the loop can forget, while a post-condition cannot be skipped and its
     message reaches the model that has to fix it.
 
+    The placement itself now belongs to `GatedProposer`. `admits`, the `rejected` ledger, the
+    wrapping that keeps a bug from wearing a verdict's clothes, and the wiring guard on the
+    result parameter's name are all inherited, because not one of them is about harnesses —
+    they are what *any* proposer judged by its own gate needs, and leaving a second copy here
+    would mean the next such agent either re-derives them or does without. What stays is the
+    whole of what is domain: the log and the sweep settings the gate needs, `admit` as the
+    gate, `coverage_weight` as the candidate inside the proposal, and the re-ask wording that
+    names which direction on this weight axis causes the pathology just refused.
+
     Constructed with the log so the gate can compose the real objective, which means the
-    post-conditions read `self` rather than a call argument. That is safe *for a validator*
+    post-condition reads `self` rather than a call argument. That is safe *for a validator*
     and would not be for a gradient target: `collect_nodes` scans call arguments, so state on
     `self` is invisible to the optimizer. The learnable weight therefore arrives as an
-    argument and the fixed log arrives on `self`, which is the split the two mechanisms
-    require.
+    argument and the fixed log arrives on `self` — unchanged by the lift, and the reason the
+    base takes its gate as a *value* rather than as an abstract method: this gate needs
+    polars, a process miner and a reachability sweep, none of which the library half may
+    import.
     """
 
     name = "harness-proposer"
+
+    gate: Callable[[float], Admission]
+    """The base's injected gate, declared at the narrower type this agent actually binds.
+
+    A declaration rather than a method, and that is not a style choice. `GatedProposer` types
+    the attribute as `Gate`, whose `__call__` returns `Verdict | Awaitable[Verdict]`, because
+    the base must accept an async gate it cannot name the verdict of. This gate is synchronous
+    and its verdict is an `Admission`, and every caller here reads `Admission`-only members —
+    `quality`, `threshold`, `emptying`, `rules`, `refusals` — so inheriting the wide
+    declaration would make `proposer.gate(w).quality` unresolvable for a type checker at a
+    dozen call sites in `train` alone. Re-declaring narrows it once. Defining a *method* named
+    `gate` instead would not: the base's declaration still wins on the attribute, which is why
+    the implementation below is named apart from it and bound in `__init__`.
+    """
+
+    REASK = (
+        "Propose a different coverage_weight. Weighting coverage toward zero removes the only "
+        "term that punishes an empty model, and the emptiest model then wins outright."
+    )
+    """The domain half of a rejection, appended after the detectors' own report.
+
+    The base guarantees a rejection reaches the model with its cause named; this says what to
+    *do* about it, on the one axis this agent can move. Naming the direction is what makes the
+    retry worth an attempt — "rejected" would teach nothing.
+    """
 
     def __init__(
         self,
@@ -600,18 +638,32 @@ class HarnessProposer(MethodAgent):
         self.window = window
         self.resolution = resolution
         self._baseline_rules: int | None = None
-        self.rejected: list[Admission] = []
-        """Every proposal the gate turned away, in order. The evidence the gate has teeth.
+        super().__init__(gate=self._gate)
 
-        Kept because a loop that silently re-asked and then succeeded looks, from the
-        outside, exactly like a loop whose gate never fired.
+    def _gate(self, candidate: float) -> Admission:
+        """Judge one candidate weight, reusing the seed measurement across calls.
+
+        Bound into `self.gate` by `__init__`, which is the base's injection spelled from the
+        inside: it is a method because it needs the log, the sweep settings and the memoized
+        baseline, and it is *injected* rather than overridden because `GatedProposer` must not
+        know what any of those are. The memoization is why this is not a free function closed
+        over the log — a fresh baseline measurement per candidate costs an extra mine plus a
+        rule audit, on every attempt of every round.
+
+        Reached as `self.gate`, never as `self._gate`, by everything including this class's own
+        callers. The two names exist only because the attribute carries the narrower type (see
+        the declaration above) and a method cannot both be that attribute and be typed apart
+        from the base's declaration of it. Monkeypatching `proposer.gate` therefore still
+        replaces the gate the post-condition calls, which is how the fault path is tested.
+
+        The parameter is named `candidate`, not `weight`, because `Gate.__call__` names it that
+        and a protocol member's parameter names are part of its contract for anything callable
+        by keyword — `gate(weight=...)` and `gate(candidate=...)` are different signatures, so
+        the rename is what makes this assignable to `Gate` at all rather than a cosmetic match.
         """
-
-    def gate(self, weight: float) -> Admission:
-        """Judge one candidate weight, reusing the seed measurement across calls."""
         verdict = admit(
             self.events,
-            weight,
+            candidate,
             sample_cases=self.sample_cases,
             baseline_threshold=self.baseline_threshold,
             window=self.window,
@@ -621,36 +673,14 @@ class HarnessProposer(MethodAgent):
         self._baseline_rules = verdict.baseline_rules
         return verdict
 
-    def admits(self, response: HarnessProposal) -> None:
-        """Post-condition: the detectors must admit the proposed weight.
+    def candidate_of(self, response: HarnessProposal) -> float:
+        """The weight is what the gate judges; `evidence` rides along and is not judged.
 
-        Raising is how a post-condition fails; `ai_thread` catches any exception from a
-        validator and reports its text to the model as a validation failure. That is also
-        the trap this method is written around: an unexpected exception is indistinguishable
-        from a rejection and would burn every retry on a bug. So the gate call is wrapped
-        and an internal failure is re-raised as a message that says it is internal, rather
-        than being allowed to masquerade as a verdict about the proposal.
-
-        The parameter is named `response` rather than `proposal` on purpose. A
-        post-condition whose first parameter shares a name with an `ai_function` parameter
-        raises `TypeError: got multiple values for argument`, which is then swallowed as a
-        validation failure — a silent bug wearing a verdict's clothes.
+        The default would hand the whole `HarnessProposal` to `admit`, which takes a float.
+        `evidence` is the auditable artifact — the reasoning that produced the number — and
+        nothing about it is admissible or not.
         """
-        try:
-            verdict = self.gate(response.coverage_weight)
-        except Exception as error:  # noqa: BLE001 — see the docstring: a bug must not read as a verdict
-            raise AssertionError(
-                f"the harness gate could not be evaluated for coverage_weight="
-                f"{response.coverage_weight!r}, which is a fault in the gate rather than a "
-                f"verdict about your proposal: {type(error).__name__}: {error}"
-            ) from error
-        if not verdict.ok:
-            self.rejected.append(verdict)
-            raise AssertionError(
-                f"{verdict.report_text()}\n\nPropose a different coverage_weight. Weighting "
-                "coverage toward zero removes the only term that punishes an empty model, "
-                "and the emptiest model then wins outright."
-            )
+        return response.coverage_weight
 
     @ai_method(
         HarnessProposal,
@@ -923,7 +953,7 @@ async def train(
         window=window,
         resolution=resolution,
     )
-    compiled = proposer.compiled("propose", post_conditions=[proposer.admits])
+    compiled = proposer.gated("propose")
 
     seed = proposer.gate(SEED_WEIGHT)
     training = HarnessTraining(seed_quality=seed.quality)

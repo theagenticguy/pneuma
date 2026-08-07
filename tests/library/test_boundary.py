@@ -43,7 +43,7 @@ def library_test_modules() -> list[Path]:
 
 # Declared by hand because this is the boundary itself: a new top-level module has to be
 # argued onto one side, and `test_every_module_is_declared` fails until it is.
-LIBRARY = {"detect", "process", "memory", "method", "model"}
+LIBRARY = {"detect", "gated", "memory", "method", "model", "process"}
 APPLICATION = {"casestudy", "demo"}
 
 # Reached only from casestudy/, so a library module importing one has moved the boundary.
