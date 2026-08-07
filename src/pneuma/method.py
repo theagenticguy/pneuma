@@ -42,6 +42,7 @@ the docstring with this instance's evidence in it.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import typing
@@ -49,11 +50,22 @@ from collections.abc import Callable
 from typing import Any
 
 import tstr
-from ai_functions import AIFunction
+from ai_functions import AIFunction, Coordinator, ThreadHandle
 from ai_functions.ai_thread.config import ThreadConfig
-from ai_functions.types import InputShape
+from ai_functions.runtime.errors import ThreadNotFoundError
+from ai_functions.types import InputShape, ThreadId
 
 _MARKER = "__ai_method__"
+
+
+def _owner_name(instance: object) -> str:
+    """The name an instance's capabilities are published under.
+
+    One definition, two consumers: the compiled tool name (`{owner}.{method}`)
+    and the lifecycle's error messages. They have to agree, or an error names a
+    thread the caller cannot find in the tool schema it was reading.
+    """
+    return getattr(instance, "name", None) or type(instance).__name__.lower()
 
 
 class AIMethodSpec:
@@ -139,7 +151,7 @@ def compile_ai_method(instance: object, name: str, **overrides: Any) -> AIFuncti
     # not just the agent: an agent with two `@ai_method`s would otherwise hand a
     # caller two tools with the same name, and the second would shadow the first.
     settings = {**spec.config, **overrides}
-    owner = getattr(instance, "name", None) or type(instance).__name__.lower()
+    owner = _owner_name(instance)
     config = ThreadConfig(
         name=settings.pop("name", None) or f"{owner}.{name}",
         description=settings.pop("description", None) or doc.split("\n", 1)[0],
@@ -148,12 +160,179 @@ def compile_ai_method(instance: object, name: str, **overrides: Any) -> AIFuncti
     return AIFunction(prompt_fn, spec.output_type, config)
 
 
+class MethodThread:
+    """One `@ai_method` running as a live thread: typed calls, shared history.
+
+    `compiled(name)` is stateless — awaiting the `AIFunction` spawns a thread, runs
+    one cycle, and tears it down, so two calls share nothing. A `MethodThread` keeps
+    the thread alive between calls, which is what turns a capability into a
+    *conversation*: `run(problem="halting")` then `run(problem="collatz")` and the
+    second cycle's model context contains the first cycle's turns.
+
+    **Why the unit is a method-thread, not an agent-thread.** A runtime thread wraps
+    exactly one `Spawnable` — one `AIFunction`, one `prompt_fn`, one typed signature.
+    An agent with three `@ai_method`s therefore has three threads, not one thread it
+    multiplexes: there is no signature that is simultaneously `verify(claim: str)`
+    and `determine(facts: list[str])`. Threads are cheap, and one Caseworker holding
+    `verify` + `determine` + `advise` live at once is the normal shape. When a
+    capability genuinely needs its sibling's context, `spawn(..., seed_from=other.id)`
+    copies the sibling's log into the new thread — a deliberate handoff at a named
+    point rather than ambient shared mutable state.
+
+    **Why history is not kept on `self`.** It is tempting to accumulate turns on the
+    agent instance and re-render them into each prompt. That would be invisible to the
+    optimizer: `TextGradOptimizer` routes gradients into `ParameterNode`s that
+    `collect_nodes` discovers by walking the *call arguments*, so anything hidden on
+    `self` cannot be a gradient target (see this module's header). It would also
+    duplicate machinery the runtime owns — history is the coordinator's event log,
+    reconstructed fresh per cycle — and the two copies would drift the moment a cycle
+    was summarized, forked, or replayed. So this class holds a `ThreadHandle` and
+    nothing else that resembles state; the log is the single source of truth.
+
+    **The `send_message` boundary.** A `MethodThread` is deliberately not addressable
+    by `send_message`: that tool only targets threads whose input shape is
+    `STR_PROMPT`, and a `MethodAgent` compiles to `STRUCTURED` precisely so its
+    parameters stay typed. That is the tradeoff this module's header argues for, and
+    it costs nothing here — peers reach a capability as a *typed tool* (`agents()`),
+    which is checkable, where a chat box is not. `notify()` is the inbound side
+    channel for the cases that still want one: it appends to the thread's log without
+    starting a cycle, so the next `run` sees it as context.
+    """
+
+    __slots__ = ("_agent", "_method", "_handle", "_coordinator", "_live", "_qualified")
+
+    def __init__(
+        self,
+        agent: MethodAgent,
+        method: str,
+        handle: ThreadHandle[..., Any],
+        coordinator: Coordinator,
+        *,
+        qualified: str | None = None,
+    ) -> None:
+        self._agent = agent
+        self._method = method
+        self._handle = handle
+        self._coordinator = coordinator
+        self._live = True
+        self._qualified = qualified or f"{_owner_name(agent)}.{method}"
+
+    # ── Identity ──
+
+    @property
+    def id(self) -> ThreadId:
+        """The underlying thread id — what `seed_from` and `parent_id` take."""
+        return self._handle.id
+
+    @property
+    def live(self) -> bool:
+        """False once `retire()` has run. No lifecycle op respawns a dead thread."""
+        return self._live
+
+    @property
+    def handle(self) -> ThreadHandle[..., Any]:
+        """The raw handle, for the runtime operations this class does not wrap."""
+        self._require_live("handle")
+        return self._handle
+
+    @property
+    def qualified_name(self) -> str:
+        """The name the compiled tool is published under.
+
+        Usually `{owner}.{method}`, but an `@ai_method(..., name=...)` rename wins,
+        because an error message must name a thread the caller can actually find in
+        the tool schema it was reading. `spawn` passes the compiled name in.
+        """
+        return self._qualified
+
+    # ── Cycles ──
+
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
+        """Run one cycle, with this method's real typed signature.
+
+        Arguments are forwarded verbatim to the compiled `prompt_fn`, so this is
+        `run(problem="halting", mode="thorough")` and never `run(some_string)` —
+        the typed contract survives into the live thread. A binding mistake raises
+        `TypeError` from the signature bind, which is the intended fail-loud path.
+        """
+        self._require_live("run")
+        return await self._handle.run(*args, **kwargs)
+
+    async def notify(self, text: str) -> None:
+        """Push a side-channel message into the thread's history.
+
+        No cycle starts; the text becomes context the next `run` sees. This is the
+        inbound half of the `STRUCTURED` tradeoff described in the class docstring.
+        """
+        self._require_live("notify")
+        await self._handle.notify(text)
+
+    # ── Topology ──
+
+    async def fork(self, *, parent_id: ThreadId | None = None) -> MethodThread:
+        """Branch into a second thread over a copy of this history.
+
+        The fork starts byte-identical and diverges from the fork point on — one
+        capability exploring two continuations of the same context, which is how a
+        proposer tries variants without contaminating the line it came from.
+
+        `parent_id` passes through untouched, so the library's default holds: the
+        fork is attributed to *this thread's* parent, making it a sibling rather than
+        a child. Pass `self.id` to adopt it instead.
+        """
+        self._require_live("fork")
+        forked = await self._handle.fork(parent_id=parent_id)
+        # The library's fork() takes no thread_name, so the coordinator's log names
+        # the fork after the bare prompt_fn. This wrapper keeps the qualified name
+        # for errors and repr; the log-side rename needs upstream support.
+        return MethodThread(
+            self._agent, self._method, forked, self._coordinator, qualified=self._qualified
+        )
+
+    async def retire(self) -> None:
+        """Tear the thread down now, without draining queued cycles.
+
+        Idempotent against this object *and* against the runtime: retiring twice is
+        not an error, and neither is retiring a thread something else already tore
+        down (a supervisor via the raw handle, a coordinator-side terminate). A
+        caller unwinding several threads should not crash mid-unwind because one was
+        already gone — that would leave the rest alive, which is the exact failure
+        an unwind loop exists to prevent. `ThreadNotFoundError` is a `KeyError`, so
+        without this catch it would sail past callers expecting `RuntimeError`.
+        """
+        if not self._live:
+            return
+        self._live = False
+        with contextlib.suppress(ThreadNotFoundError):
+            await self._handle.terminate_now()
+
+    # ── Guards ──
+
+    def _require_live(self, op: str) -> None:
+        """Refuse every operation on a retired thread, naming agent and method.
+
+        Silently respawning would be worse than raising: the caller believes it is
+        continuing a conversation, and it would get a blank one with the same typed
+        signature — a wrong answer that looks like a right one.
+        """
+        if not self._live:
+            raise RuntimeError(f"{self.qualified_name}: {op} after retire (thread {self.id})")
+
+    def __repr__(self) -> str:
+        state = "live" if self._live else "retired"
+        return f"<MethodThread {self.qualified_name} id={self.id!r} {state}>"
+
+
 class MethodAgent:
     """An object whose `@ai_method`s are typed AI functions over its own state.
 
     Every compiled method is an `AIFunction`, which is a `ToolProvider` — so one
     agent hands another a *typed* tool per capability rather than a chat box, and
     `agents(...)` collects them for exactly that purpose.
+
+    Two ways to invoke a capability. `compiled(name)` is the stateless one: await it
+    and one throwaway thread runs one cycle. `spawn(name, coordinator)` is the live
+    one: it returns a `MethodThread` whose successive `run` calls share history.
     """
 
     name: str = "agent"
@@ -184,3 +363,66 @@ class MethodAgent:
     def agents(self, **overrides: Any) -> list[AIFunction[..., Any]]:
         """This object's capabilities as typed tools another agent can call."""
         return [self.compiled(name, **overrides) for name in self.ai_methods()]
+
+    async def spawn(
+        self,
+        name: str,
+        coordinator: Coordinator,
+        *,
+        parent_id: ThreadId | None = None,
+        seed_from: ThreadId | None = None,
+        thread_name: str | None = None,
+        **overrides: Any,
+    ) -> MethodThread:
+        """Put one `@ai_method` on a live thread and return its lifecycle handle.
+
+        Args:
+            name: Which `@ai_method` to spawn. One agent may hold several live at
+                once; each gets its own thread, because a thread wraps one
+                `Spawnable` (see `MethodThread`).
+            coordinator: The coordinator to spawn onto — always the caller's, never
+                an implicit one. `AIFunction.spawn()` taking no coordinator builds a
+                *private* in-memory coordinator plus worker per call, which would put
+                this thread outside the caller's registry: invisible to peers, no
+                parent edge, its own event log. Requiring the coordinator here makes
+                that mistake unrepresentable.
+            parent_id: Parent thread to attribute this one to, for the supervision
+                tree the runtime maintains.
+            seed_from: Another thread's id whose history this thread starts from.
+                This is the sanctioned cross-method handoff: a thread cannot host two
+                signatures, so `determine` inherits `verify`'s context by copying its
+                log at spawn time rather than by sharing a thread with it. When the
+                two methods have different output types, the inherited history
+                carries `toolUse` blocks for a tool absent from this thread's
+                schema; reconstruction handles that offline, but whether a live
+                provider accepts historical tool calls it was not offered is the
+                provider's decision, not this library's.
+            thread_name: Display name in the event log. Defaults to the compiled tool
+                name, so logs and tool schemas use one vocabulary.
+            overrides: `ThreadConfig` overrides, exactly as `compiled` takes them.
+                One key is unreachable from here: `name` collides with the first
+                positional parameter, so renaming the published tool is
+                decorator-config only (`@ai_method(..., name=...)`).
+
+        Compiles through `self.compiled(name, **overrides)` rather than
+        `compile_ai_method` directly, and that indirection is deliberate: tests bind
+        a scripted model by replacing `compiled` on the *instance*, so routing spawn
+        through it makes every live thread scriptable offline for free. Going to the
+        module function would silently bypass those bindings and reach a real model.
+
+        Returns:
+            A `MethodThread`. Not cached on `self`: several may be live at once, and
+            an agent that stashed handles would stop being safely reusable across
+            coordinators.
+        """
+        fn = self.compiled(name, **overrides)
+        # The published tool name, which an @ai_method(name=...) rename controls —
+        # errors and logs must name a thread the caller can find in the tool schema.
+        published = fn.config.name or f"{_owner_name(self)}.{name}"
+        handle = await coordinator.spawn(
+            fn,
+            thread_name=thread_name or published,
+            parent_id=parent_id,
+            seed_from=seed_from,
+        )
+        return MethodThread(self, name, handle, coordinator, qualified=published)
