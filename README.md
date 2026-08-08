@@ -5,13 +5,20 @@ agent is a method. The method's docstring is the prompt. The method's parameters
 inputs a caller fills in for each call. The type hints describe how to call the method.
 Because of this, one agent can give its abilities to another agent as typed tools.
 
-The project also cares about a second problem. A check can pass just because it never had a
-chance to fail. Suppose no reachable state can ever break a rule. Then the rule cannot
-separate a run that follows it from a run that breaks it. A scoring term has the same problem
-when it always returns the same value. It cannot separate good answers from bad ones. The
-code in `src/pneuma/detect/` looks for both problems using one shared check. The check
-returns one of three answers: yes, no, or unknown. The repo also runs these checks on its own
-detection code.
+The project also cares about a second problem: useless safety checks. Here is the idea with
+an everyday example. Suppose a parking garage has a rule that says no car may go over 200
+mph. Every car passes that rule. But the rule has never actually checked anything, because no
+car in a garage can reach 200 mph in the first place. The rule looks like a working safety
+check, and really it is decoration. Scoring formulas can be useless in the same way. If a
+grading formula gives every answer 7 out of 10, the grade tells you nothing, because good
+answers and bad answers get the same number.
+
+Agent systems are full of rules and scores like these, and a useless one is dangerous
+precisely because it always passes. The code in `src/pneuma/detect/` tests whether a given
+rule or scoring formula is actually able to catch anything. It answers one of three ways:
+this check works, this check is decoration, or the test could not tell. The third answer
+exists so that a search that ran out of time gets reported as "could not tell" instead of as
+a confident pass. The repo runs these tests on its own rules and scores too.
 
 The project builds on the [strands-ai-functions](https://github.com/strands-labs/ai-functions)
 library, pinned to upstream commit `e47dc94`. It uses the uv package manager and Python 3.14.
