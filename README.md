@@ -3,7 +3,10 @@
 Pneuma is a library for building AI agents as ordinary Python classes. Each ability of an
 agent is a method. The method's docstring is the prompt. The method's parameters are the
 inputs a caller fills in for each call. The type hints describe how to call the method.
-Because of this, one agent can give its abilities to another agent as typed tools.
+Because of this, one agent can give its abilities to another agent as typed tools. For
+example, a research agent can hand a planner agent its `analyze(topic, depth)` method, and
+the planner calls it like a function, with real argument names and types instead of a free
+text message.
 
 The project also cares about a second problem: useless safety checks. Here is the idea with
 an everyday example. Suppose a parking garage has a rule that says no car may go over 200
@@ -29,7 +32,12 @@ are pre-recorded model responses.
 ## The kernel
 
 The kernel has five classes. Each class removes one way an agent can fail without anyone
-noticing. The classes work together. A `Team`'s members are running `MethodThread`s. They
+noticing. For example, without `GatedProposer`, a loop can forget to check an answer and a
+bad answer slips through looking fine. Without the roster reset in `Team`, a second run can
+quietly inherit dead helpers from the first run. The kernel turns each of these mistakes
+into something the code refuses to do.
+
+The classes also work together. A `Team`'s members are running `MethodThread`s, and they
 join the team lead as typed tools. The lead's answer goes through a `GatedProposer` check.
 Any agent can pull declared memory through `Recall`. A `ProcessAgent` can be the agent that
 walks a verified flowchart.
@@ -137,104 +145,136 @@ flowchart LR
 We checked every claim in this list by reading the vendored library source. The library has
 none of the following features.
 
-1. **Probing an objective before training** (`detect/objective.py`). The library ships
-   `TextGradOptimizer` and `GradFeedback(text, score)`. It does not include a way to inspect
-   the objective function that these optimize. Our prober inspects the objective before any
-   training loop runs. It looks for four failure modes. First, a degenerate input scores as
-   the best answer. Second, the feedback text describes a different quantity than the one
-   used for selection. Third, the objective raises an error on an input inside its declared
-   domain. Fourth, the best score sits on the edge of the swept window, which suggests the
-   window is too small. The prober uses only the Python standard library.
-2. **Detecting rules that can never fire** (`detect/vacuity.py` and `detect/adapter.py`). A
-   model checker answers one question: did any reachable state break this rule? It does not
-   answer a second question: could the rule ever have been broken at all? Our vacuity check
-   answers the second question. It sweeps the reachable states, then retries under four
-   progressively looser versions of the process. The first level at which the rule becomes
-   breakable tells you why the rule was vacuous.
-3. **A shared verdict type** (`detect/discrimination.py`, standard library only). Features 1
-   and 2 both return the same result type. The verdict has three values: yes, no, or unknown.
-   When the check held something back, for example because a search hit a limit, the result
-   names the reason in a `withheld` field. A reader of the result can see which limits
-   applied.
-4. **Searching an objective for cheap wins** (`detect/adversary.py`). This module asks
-   language models to find weaknesses in an objective. Each model gets a tool that calls the
-   objective and shows its source code. The model then searches for an input that scores well
-   but has no real value. This search can find problems that plain enumeration misses,
-   because enumeration only tries the inputs that the declared structure suggests.
-5. **Running only checked processes** (`process/`). One `Process` IR feeds three consumers.
-   The first consumer renders the IR to TLA+ so TLC can check it. The second is a
-   hand-written interpreter that runs the process. The third is a test machine built with
-   Hypothesis, a property-based testing library. It drives the real interpreter with random
-   walks and shrinks any failing trace to a small example. The language model only ever
-   produces data for the IR. It does not produce code.
+1. **Probing an objective before training** (`detect/objective.py`). An objective is the
+   scoring formula a training loop tries to maximize. If the formula is broken, the loop
+   happily trains toward garbage. The library ships the training tools
+   (`TextGradOptimizer` and `GradFeedback(text, score)`) but no way to test the formula
+   itself. Our prober tests it before any training runs. It looks for four failure modes.
+   First, a garbage input gets the best score, for example an empty answer scoring 10 out
+   of 10. Second, the written feedback talks about one number while the selection actually
+   uses a different one, so the model is coached toward the wrong target. Third, the
+   formula crashes on an input it claims to accept. Fourth, the best score sits at the
+   very edge of the range that was searched, which usually means the range was too small
+   and the true best value is outside it. The prober uses only the Python standard
+   library.
+2. **Detecting rules that can never fire** (`detect/vacuity.py` and `detect/adapter.py`).
+   This is the parking-garage problem from the top of this README. A model checker is a
+   tool that explores every state a process can reach and reports whether any of them
+   breaks a rule. It answers "did anything break the rule?" but never "could anything have
+   broken the rule?" Our check answers the second question. It explores the reachable
+   states, and if the rule never even came close to firing, it loosens the process step by
+   step and tries again. Where the rule first becomes breakable tells you what was pinning
+   it down. For example, if the rule only becomes breakable after freeing the starting
+   values, then the starting values were what made it decoration.
+3. **A shared verdict type** (`detect/discrimination.py`, standard library only). Features
+   1 and 2 both return the same kind of answer: this check works, this check is
+   decoration, or the test could not tell. "Could not tell" exists for cases like a search
+   that hit its time limit before finishing. Without it, an unfinished search and a real
+   pass would both come back as the same result. When the test could not tell, the result
+   also names the specific limit it hit, so a reader knows what to raise and rerun.
+4. **Searching an objective for cheap wins** (`detect/adversary.py`). This module hires
+   language models to cheat a scoring formula on purpose. Each model gets a tool that runs
+   the formula and can read its source code. The model then hunts for an answer that
+   scores high but is actually worthless, the way a student might find that writing
+   "see above" earns full marks from a lazy grader. Finding one cheap win before training
+   starts is much better than finding out after a training loop has been optimizing toward
+   it.
+5. **Running only checked processes** (`process/`). A process here is a business workflow
+   written as a flowchart with rules, for example "a permit case must pass verification
+   before payment." The flowchart is stored as one data structure, and three things consume
+   it. A renderer translates it into TLA+, a specification language, so the TLC model
+   checker can prove the rules hold in every reachable state. An interpreter runs the
+   flowchart step by step. A test machine built with Hypothesis, a property-based testing
+   library, drives that same interpreter down random paths and, when a path fails, shrinks
+   it to the smallest failing example. The language model only fills in the data of the
+   flowchart. It never writes the code that runs it, so a bad model output can produce a
+   wrong flowchart, which the checker catches, but never wrong machinery.
 6. **Methods as AI functions** (`method.py`), plus the four kernel classes built on it
-   (`gated.py`, `recall.py`, `process/agent.py`, `team.py`). The library applies its
-   decorator to module-level functions. This project applies `@ai_method` to methods on a
-   class instead. A decorated method keeps three things at once: the typed schema, the
-   docstring used as the prompt, and the parameters that training can improve.
+   (`gated.py`, `recall.py`, `process/agent.py`, `team.py`). The library's decorator works
+   on standalone functions. This project's `@ai_method` works on methods of a class, which
+   means each agent instance can carry its own private context on `self` while the method
+   keeps a clean typed signature for callers. The code example in the kernel section above
+   shows this shape.
 7. **Letting a team hire within a budget** (`team.py`, with the demo's binding in
-   `demo/staffing.py`). The library gives every thread `list_threads` and `send_message`, so
-   an agent can talk to peers that already exist. It does not include a way for an agent to
-   create a peer. This project adds `hire`, `delegate`, and `dismiss` tools. When an agent
-   hires a helper, the helper is recorded with the hiring agent as its parent. Because the
-   parent link exists, the library's token accounting can total costs across the whole tree
-   of hired agents. The library runs tools concurrently, so two hire calls could race past
-   the hiring cap. To prevent that, the hire tool reserves a slot against the cap before it
-   does any waiting.
+   `demo/staffing.py`). The library lets an agent talk to other agents that already exist,
+   but gives it no way to create one. This project adds three tools: `hire` creates a
+   helper agent, `delegate` gives it work, and `dismiss` shuts it down. Each hire records
+   the hiring agent as the helper's parent, so token costs roll up the family tree the way
+   a manager's budget covers their reports. One subtle bug got a specific fix. The runtime
+   runs tools at the same time, so two `hire` calls in one turn could both pass the "are
+   we under the cap?" check before either one registered. The fix reserves the slot first
+   and only then does the slow work of spawning.
 
 The last item improves something the library already has.
 
-8. **Storing and retrieving memory with vectors** (`memory/turso_backend.py`). The library
-   ships two memory backends, and both rank results with BM25, a word-matching score. This
-   backend ranks results with embeddings instead. It stores Cohere Embed v4 vectors and
-   compares them inside the database with the `vector_distance_cos` function. It also learns
-   numeric parameters from `GradFeedback.score`. The learner searches within a small trusted
-   range around the current value, inside the range the schema declares. Finally,
-   `probe_retrieval` and `calibrate_ceiling` measure how well retrieval works. The library
-   does not measure retrieval quality.
+8. **Storing and retrieving memory with vectors** (`memory/turso_backend.py`). An agent's
+   memory here is a set of text entries it can search when making a decision. The
+   library's built-in backends rank search results by word overlap (a scheme called BM25),
+   which misses entries that say the same thing in different words. This backend ranks by
+   meaning instead. It converts each entry into an embedding, a list of numbers that
+   captures meaning, using the Cohere Embed v4 model, and compares them inside the
+   database. It can also learn simple numeric settings from scored feedback, adjusting a
+   value a little at a time within the bounds its schema declares. Finally, it measures its
+   own retrieval quality with test probes, so "search works" is a measured claim and not
+   an assumption. The library does not measure retrieval quality at all.
 
 ## Library and application packages
 
-The library packages are detect, gated, memory, method, model, process, recall, and team.
-The application packages are casestudy and demo. A test, `tests/library/test_boundary.py`,
-enforces the split. It parses each library file's syntax tree and rejects any import of an
-application package, including imports written inside function bodies. A second test imports
-each library module in a fresh subprocess and fails if the import pulls in an application
-package indirectly. Library modules also may not import `polars`, `libsql`, or `pm4py`.
+The code is split into two layers. The library layer (detect, gated, memory, method, model,
+process, recall, team) is the reusable part someone else could adopt. The application layer
+(casestudy, demo) is this project's own use of it. The rule is that the library must never
+depend on the application, the same way a toolbox should not depend on one particular house
+it helped build.
 
-During each kernel refactor, the application's test files were not edited. They still passed
-after the refactor, so the refactor did not change any behavior those tests observe.
+A test enforces the rule instead of trusting people to follow it. `tests/library/test_boundary.py`
+reads every library file and rejects any import of an application package, even an import
+hidden inside a function body. A second test imports each library module in a fresh Python
+process and fails if anything from the application layer sneaks in indirectly. Library
+modules also may not import the heavy data packages `polars`, `libsql`, or `pm4py`.
+
+During each kernel refactor, the application's test files were left untouched on purpose.
+They still passed afterward, which is the evidence that the refactor changed the code's
+shape without changing what it does.
 
 ## The two data sets
 
 **A business-process log.** `data/receipt.xes` holds 1,434 real building-permit cases from
-Dutch municipalities, with 8,577 events across 27 activities. A mined process model can be
-well-formed and still break policy. In this log, 118 of the 1,434 cases skip a verification
-step that policy requires. That is 8.2 percent of cases. Two separate checks find the same
-118 cases, and both run before any agent starts. The live run made 100 decisions, and every
-proposal was legal. The run also showed a new failure mode. The agent never broke a rule.
-Instead, in 6 of the 10 cases, it dithered: it cycled between valid states until the step cap
-stopped it. The learning loop in `casestudy/learning.py` targets this dithering.
+Dutch municipalities, with 8,577 events across 27 activities. This log matters because it
+shows the problem is real and not invented. A process model mined from it looks perfectly
+healthy, and yet 118 of the 1,434 cases (8.2 percent) skip a verification step that policy
+requires. Two separate checks find the same 118 cases, and both run before any agent
+starts. The live agent run on this process made 100 decisions, and every proposal was
+legal. That run also revealed a failure nobody had predicted. The agent never broke a rule.
+Instead, in 6 of 10 cases, it dithered. It moved back and forth between valid states, like
+someone pacing between two rooms, until it ran out of allowed steps. Rule-checking cannot
+catch dithering because no rule is broken. The learning loop in `casestudy/learning.py`
+exists to train the dithering out.
 
 **An agent-transcript log.** `data/transcripts_fleet.json` holds this project's own Claude
-Code tool-use records, with 3,055 events over 88 cases. This log has the opposite shape from
-the permit log. In this log, 91 percent of cases follow a path that no other case follows. In
-the permit log, only 6 percent of cases do.
+Code tool-use records, with 3,055 events over 88 cases. This second log exists to stress the
+tools on data with the opposite shape. Permit cases mostly follow the same few paths, so
+only 6 percent of them are unique. Agent sessions almost never repeat, so 91 percent of them
+are unique. A tool that only works on tidy, repetitive data breaks here.
 
-Running the detectors on the second data set found two bugs in the detectors themselves.
+And two tools did break. Running the detectors on the second data set found two bugs in the
+detectors themselves.
 
-- One detector hit a search limit but still reported a confident finding. After this bug,
-  `discriminates` was changed to return three values instead of two, and `withheld` was
-  changed to name the limits that applied.
-- The objective prober passed a genuinely degenerate objective with zero findings, because it
-  relied on a list of bad answers supplied by the caller. The same person wrote that list and
-  the scoring formula, and both contained the same mistake. Callers now declare a
-  `Structure`, and the prober computes the degenerate points from it.
+- One detector hit its search limit partway through, but still reported its partial result
+  as a confident finding. That is the exact mistake these tools exist to catch, happening
+  inside the tool. The fix is the "could not tell" verdict described above, plus a field
+  that names which limit was hit.
+- The objective prober asked the caller to supply examples of bad answers, and then checked
+  whether they scored poorly. The problem is that the same person writes the bad-answer
+  list and the scoring formula, so both can share the same blind spot. In our case they
+  did, and a genuinely broken formula passed with zero findings. The fix removes the
+  honor system. Callers now describe the shape of the answer space, and the prober derives
+  the bad answers itself.
 
-One measured result was negative. The agent that writes its own mining code was compared with
-the fixed miner. On the permit log, the agent scored higher than the fixed miner at the
-miner's default threshold. Then the fixed miner was re-run using the threshold the agent had
-chosen. At that threshold, the fixed miner scored higher than the agent on both logs.
+One measured result was negative, and the README keeps it. The agent that writes its own
+mining code was compared with the fixed miner. The agent won on the permit log when the
+fixed miner used its default setting. Then the fixed miner was re-run with the setting the
+agent had chosen for itself, and the fixed miner won on both logs. In plain terms, the
+agent's real contribution was picking a better setting, not writing better code.
 
 ## Run it
 
