@@ -1,62 +1,65 @@
 # pneuma
 
-Build AI agents as ordinary Python classes. Each thing an agent can do is a method: the
-docstring is the prompt, the parameters are the blanks a caller fills in per call, and the type
-hints tell other agents exactly how to call it — so one agent hands another its abilities as
-properly typed tools, not as a chat box.
+Pneuma is a library for building AI agents as ordinary Python classes. Each ability of an
+agent is a method. The method's docstring is the prompt. The method's parameters are the
+inputs a caller fills in for each call. The type hints describe how to call the method.
+Because of this, one agent can give its abilities to another agent as typed tools.
 
-Around that sits a second idea: **a check that passes without ever being in a position to fail
-is not a passing check.** A rule no reachable state can break cannot tell a compliant run from a
-violation; a scoring term whose value never moves cannot tell a good answer from a bad one.
-`src/pneuma/detect/` reduces both to one primitive with a three-valued verdict, and the rest of
-the repo is organised around making that defect class mechanically detectable — including in
-its own machinery.
+The project also cares about a second problem. A check can pass just because it never had a
+chance to fail. Suppose no reachable state can ever break a rule. Then the rule cannot
+separate a run that follows it from a run that breaks it. A scoring term has the same problem
+when it always returns the same value. It cannot separate good answers from bad ones. The
+code in `src/pneuma/detect/` looks for both problems using one shared check. The check
+returns one of three answers: yes, no, or unknown. The repo also runs these checks on its own
+detection code.
 
-Built on [`strands-ai-functions`](https://github.com/strands-labs/ai-functions), pinned to
-upstream commit `e47dc94`. uv + Python 3.14, `global.anthropic.claude-opus-5` on Bedrock.
-Test suite: **738 passed, 10 skipped** (748 collected), fully offline against scripted models.
+The project builds on the [strands-ai-functions](https://github.com/strands-labs/ai-functions)
+library, pinned to upstream commit `e47dc94`. It uses the uv package manager and Python 3.14.
+Live runs call the claude-opus-5 model through AWS Bedrock. The test suite collects 748
+tests. 738 pass and 10 are skipped. Every test runs offline against scripted models, which
+are pre-recorded model responses.
 
 ## The kernel
 
-Five classes, each making one silent failure mode unrepresentable. They stack: a `Team`'s
-members are live `MethodThread`s joining the lead as typed tools, the lead's answer is gated
-the `GatedProposer` way, any of them can pull declared memory through `Recall`, and a
-`ProcessAgent` can be the one walking a verified flowchart underneath.
+The kernel has five classes. Each class removes one way an agent can fail without anyone
+noticing. The classes work together. A `Team`'s members are running `MethodThread`s. They
+join the team lead as typed tools. The lead's answer goes through a `GatedProposer` check.
+Any agent can pull declared memory through `Recall`. A `ProcessAgent` can be the agent that
+walks a verified flowchart.
 
 ```mermaid
 graph TD
-    MA["MethodAgent<br/><code>method.py</code><br/>typed capabilities from decorated methods"]
-    MT["MethodThread<br/><code>method.py</code><br/>one capability as a live conversation"]
-    GP["GatedProposer<br/><code>gated.py</code><br/>answers checked before they count"]
-    RC["Recalled + Recall<br/><code>recall.py</code><br/>memory as a learnable call argument"]
-    PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process, works each state"]
-    TM["Team<br/><code>team.py</code><br/>deterministic orchestrator with budget + oracle"]
+    MA["MethodAgent<br/><code>method.py</code><br/>turns decorated methods into typed abilities"]
+    MT["MethodThread<br/><code>method.py</code><br/>runs one ability as a live conversation"]
+    GP["GatedProposer<br/><code>gated.py</code><br/>checks each answer before accepting it"]
+    RC["Recalled + Recall<br/><code>recall.py</code><br/>fills a parameter from memory on each call"]
+    PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process and does the work in each state"]
+    TM["Team<br/><code>team.py</code><br/>runs the group with a hiring budget and a final answer check"]
 
     MA -->|"spawn()"| MT
     MA --> GP
     MA --> PA
     RC -.->|"fills marked parameters<br/>on any @ai_method"| MA
     TM -->|"members are"| MT
-    TM -->|"lead gated like"| GP
-    PA -->|"decider + handlers are"| MA
+    TM -->|"lead is checked like"| GP
+    PA -->|"decider and handlers are"| MA
 ```
 
 | Piece | Module · lines | What it does |
 | --- | --- | --- |
-| `MethodThread` | `method.py` · 428 | Keeps one ability running as a live conversation. Call it twice and the second call remembers the first. Pause it, branch it into a copy, or shut it down cleanly — shutdown is safe even if something else already killed the thread. |
-| `GatedProposer` | `gated.py` · 414 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. A bug in the checker is reported as a bug, never disguised as a rejection. |
-| `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, "this parameter comes from memory." The library fetches it fresh on every call and passes it in as a normal argument — which is what lets the training loop see it and improve what's stored. |
-| `ProcessAgent` | `process/agent.py` · 396 | An agent tied to a verified flowchart. It proposes the next step (illegal proposals are refused and re-asked) and does the work inside each step it enters. One object walks the process and works it. |
-| `Team` | `team.py` · 968 | Runs a group: spin up the members, brief them all, run a lead that can hire helpers up to a budget, check the final answer against an oracle, and clean everything up no matter what — even when a step fails. |
+| `MethodThread` | `method.py` · 428 | Keeps one ability running as a live conversation. Call it twice and the second call remembers the first. You can pause it, copy it into a branch, or shut it down. Shutdown also works when the thread was already killed. |
+| `GatedProposer` | `gated.py` · 414 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. If the checker itself has a bug, the agent reports it as a bug. It does not treat the bug as a rejected answer. |
+| `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, that a parameter comes from memory. The library fetches the value on every call and passes it in as a normal argument. Because the value arrives as an argument, the training loop can see it and improve the stored content. |
+| `ProcessAgent` | `process/agent.py` · 396 | An agent tied to a verified flowchart. The agent proposes the next step. If the proposal is not allowed, the interpreter refuses it and asks again. The same agent then does the work inside each step it enters. |
+| `Team` | `team.py` · 968 | Runs a group. It spins up the members, briefs them all, and runs a lead agent that can hire helpers up to a budget. It checks the final answer against an oracle. It cleans everything up at the end. Cleanup runs even when a step fails. |
 
-### The design rule underneath
+### How agents split private context from call inputs
 
-`self` is where each agent instance keeps its private context — its evidence, its process, its
-settings. The docstring prompt reads it directly (`{self.evidence}`), and answer-checkers can
-use it too. It just isn't part of the call: callers never fill it in, and the training
-machinery never rewrites it. Anything supplied per call or improved by training comes in
-through the parameters. Private context on `self`, per-call inputs as parameters — the whole
-kernel is built around that split.
+Each agent instance keeps its private context on `self`. Private context means things like
+its evidence, its process, and its settings. The docstring prompt can read it directly, and
+answer-checkers can read it too. Callers do not fill it in, and the training machinery does
+not rewrite it. Anything a caller supplies, or anything training improves, comes in through
+the method parameters instead. All five kernel classes follow this rule.
 
 ```python
 class Analyst(MethodAgent):
@@ -66,14 +69,18 @@ class Analyst(MethodAgent):
     @ai_method(Finding, description="Analyze one plane over a window")
     def analyze(
         self,
-        advice: Annotated[list[str], Recalled("guidance", k=2)],  # from memory, fresh per call
-        window: str,                                              # a plain per-call input
+        advice: Annotated[list[str], Recalled("guidance", k=2)],  # filled from memory on each call
+        window: str,                                              # supplied by the caller on each call
     ) -> Finding:
         """Guidance for this decision: {advice}
 
         My evidence: {self.evidence}
         Analyze the window {window}."""
 ```
+
+This one method shows the whole rule. The caller supplies `window`. The library fills
+`advice` from memory on each call. The prompt reads `self.evidence`, and callers never see
+it.
 
 ### How a Team run flows
 
@@ -87,24 +94,26 @@ sequenceDiagram
 
     C->>T: handle.run(request)
     T->>M: assemble — spawn each member as a child thread
-    T->>M: brief all members concurrently (barrier)
-    M-->>T: briefings (a failure becomes a rendered error, not a crash)
-    T->>L: run lead with briefings + hire/delegate/dismiss tools
-    loop until admitted (bounded retries)
+    T->>M: brief all members at the same time, then wait for all briefings
+    M-->>T: briefings (a failed briefing is returned as an error message)
+    T->>L: run lead with briefings and hire/delegate/dismiss tools
+    loop until the oracle accepts, up to a retry limit
         L->>O: proposed answer
-        O-->>L: rejected — reason goes back as the next prompt
+        O-->>L: rejected; the reason becomes the next prompt
     end
-    L-->>T: admitted verdict
-    T->>T: grade + roll up token usage
-    T->>M: retire everyone — unconditionally, even on failure
+    L-->>T: accepted verdict
+    T->>T: grade the verdict and total the token usage
+    T->>M: retire every member, even after a failure
     T-->>C: TeamRun (verdict, briefings, hiring log, usage)
 ```
 
 ### How a ProcessAgent walks a verified process
 
-The process is mined from a real event log into a typed IR, model-checked with TLA+/TLC, and
-only then executed. The agent is an untrusted proposer: it may only take transitions the
-verified skeleton permits.
+The process starts as a real event log. A miner turns the log into a typed intermediate
+representation, called the IR. TLC, the model checker for the TLA+ specification language,
+then checks the IR. The interpreter only runs the process after that check passes. The agent
+proposes each next step, and the interpreter only allows steps that the checked process
+permits.
 
 ```mermaid
 flowchart LR
@@ -112,91 +121,113 @@ flowchart LR
     IR --> TLA["TLA+ render"] --> TLC["TLC model check"]
     IR --> INT["interpreter.run"]
     TLC -->|"verified"| INT
-    AGENT["ProcessAgent.choose<br/>(proposes a transition)"] <-->|"illegal proposals<br/>refused + re-asked"| INT
-    INT -->|"on entering a state"| WORK["State.agent_method<br/>→ the agent's own typed handler"]
+    AGENT["ProcessAgent.choose<br/>(proposes a transition)"] <-->|"an illegal proposal is<br/>refused and asked again"| INT
+    INT -->|"on entering a state"| WORK["calls the agent's typed<br/>handler for that state"]
 ```
 
 ## What this adds over the library
 
-Verified against the vendored library source, not inferred.
+We checked every claim in this list by reading the vendored library source. The library has
+none of the following features.
 
-**No library analogue at all.**
+1. **Probing an objective before training** (`detect/objective.py`). The library ships
+   `TextGradOptimizer` and `GradFeedback(text, score)`. It does not include a way to inspect
+   the objective function that these optimize. Our prober inspects the objective before any
+   training loop runs. It looks for four failure modes. First, a degenerate input scores as
+   the best answer. Second, the feedback text describes a different quantity than the one
+   used for selection. Third, the objective raises an error on an input inside its declared
+   domain. Fourth, the best score sits on the edge of the swept window, which suggests the
+   window is too small. The prober uses only the Python standard library.
+2. **Detecting rules that can never fire** (`detect/vacuity.py` and `detect/adapter.py`). A
+   model checker answers one question: did any reachable state break this rule? It does not
+   answer a second question: could the rule ever have been broken at all? Our vacuity check
+   answers the second question. It sweeps the reachable states, then retries under four
+   progressively looser versions of the process. The first level at which the rule becomes
+   breakable tells you why the rule was vacuous.
+3. **A shared verdict type** (`detect/discrimination.py`, standard library only). Features 1
+   and 2 both return the same result type. The verdict has three values: yes, no, or unknown.
+   When the check held something back, for example because a search hit a limit, the result
+   names the reason in a `withheld` field. A reader of the result can see which limits
+   applied.
+4. **Searching an objective for cheap wins** (`detect/adversary.py`). This module asks
+   language models to find weaknesses in an objective. Each model gets a tool that calls the
+   objective and shows its source code. The model then searches for an input that scores well
+   but has no real value. This search can find problems that plain enumeration misses,
+   because enumeration only tries the inputs that the declared structure suggests.
+5. **Running only checked processes** (`process/`). One `Process` IR feeds three consumers.
+   The first consumer renders the IR to TLA+ so TLC can check it. The second is a
+   hand-written interpreter that runs the process. The third is a test machine built with
+   Hypothesis, a property-based testing library. It drives the real interpreter with random
+   walks and shrinks any failing trace to a small example. The language model only ever
+   produces data for the IR. It does not produce code.
+6. **Methods as AI functions** (`method.py`), plus the four kernel classes built on it
+   (`gated.py`, `recall.py`, `process/agent.py`, `team.py`). The library applies its
+   decorator to module-level functions. This project applies `@ai_method` to methods on a
+   class instead. A decorated method keeps three things at once: the typed schema, the
+   docstring used as the prompt, and the parameters that training can improve.
+7. **Letting a team hire within a budget** (`team.py`, with the demo's binding in
+   `demo/staffing.py`). The library gives every thread `list_threads` and `send_message`, so
+   an agent can talk to peers that already exist. It does not include a way for an agent to
+   create a peer. This project adds `hire`, `delegate`, and `dismiss` tools. When an agent
+   hires a helper, the helper is recorded with the hiring agent as its parent. Because the
+   parent link exists, the library's token accounting can total costs across the whole tree
+   of hired agents. The library runs tools concurrently, so two hire calls could race past
+   the hiring cap. To prevent that, the hire tool reserves a slot against the cap before it
+   does any waiting.
 
-1. **Objective probing** (`detect/objective.py`). The library ships `TextGradOptimizer` and
-   `GradFeedback(text, score)` and gives you no way to inspect the objective those climb.
-   Ours sweeps, refines, and refuses before a training loop runs, over four failure modes:
-   a degenerate input is the optimum, feedback states a different quantity than selection
-   uses, the objective raises inside its declared domain, and the optimum sits on the swept
-   window's own edge. Pure stdlib.
-2. **Rule-vacuity detection** (`detect/vacuity.py` + `adapter.py`). A model-checker answers
-   "did any reachable state break this rule", never "was the rule ever in a position to
-   break". A reachability sweep plus four relaxations answers the second, and the level at
-   which a rule first becomes breakable is its diagnosis.
-3. **The discrimination primitive** (`detect/discrimination.py`, pure stdlib). The shared
-   shape of 1 and 2: a three-valued verdict plus named `withheld` reasons, so every bound
-   applied is visible in the result it produced.
-4. **Adversarial search over an objective** (`detect/adversary.py`). LLM adversaries given a
-   tool that *calls* the objective and its source, searching for an input that scores well
-   and is worthless. Enumeration only finds what the declared structure implies.
-5. **A verified-IR execution model** (`process/`). One `Process` IR, three consumers: a TLA+
-   renderer TLC checks, a hand-written interpreter, and a Hypothesis machine that drives the
-   real interpreter and shrinks failing traces. The model emits data, never code.
-6. **`@ai_method` on bound methods** (`method.py`) — and the four kernel classes built on it
-   (`gated.py`, `recall.py`, `process/agent.py`, `team.py`). The library is decorator-first
-   on module-level functions; a bound method recovers the typed schema, the
-   docstring-as-prompt, and learnable parameters at once.
-7. **Budgeted self-staffing** (`team.py`'s hiring seam; demo binding in `demo/staffing.py`).
-   The library injects `list_threads`/`send_message` into every thread so an agent can talk
-   to peers that exist, and ships no way to create one. `hire`/`delegate`/`dismiss` are bound
-   to the live cycle context so the hiring agent is recorded as parent — which is what makes
-   the library's token rollup work across a tree the agent built itself. Hardened against
-   the concurrent tool executor: the hiring cap reserves before it awaits.
+The last item improves something the library already has.
 
-**Hardening something the library does provide.**
+8. **Storing and retrieving memory with vectors** (`memory/turso_backend.py`). The library
+   ships two memory backends, and both rank results with BM25, a word-matching score. This
+   backend ranks results with embeddings instead. It stores Cohere Embed v4 vectors and
+   compares them inside the database with the `vector_distance_cos` function. It also learns
+   numeric parameters from `GradFeedback.score`. The learner searches within a small trusted
+   range around the current value, inside the range the schema declares. Finally,
+   `probe_retrieval` and `calibrate_ceiling` measure how well retrieval works. The library
+   does not measure retrieval quality.
 
-8. **The memory backend** (`memory/turso_backend.py`). Retrieval is Cohere Embed v4 vectors
-   with in-database `vector_distance_cos` where both shipped backends use BM25; numeric
-   parameters are learned from `GradFeedback.score` via a trust-region search over the
-   schema-declared domain; and retrieval quality is *measured* (`probe_retrieval`,
-   `calibrate_ceiling`), which has no library analogue.
+## Library and application packages
 
-## Library / application boundary
+The library packages are detect, gated, memory, method, model, process, recall, and team.
+The application packages are casestudy and demo. A test, `tests/library/test_boundary.py`,
+enforces the split. It parses each library file's syntax tree and rejects any import of an
+application package, including imports written inside function bodies. A second test imports
+each library module in a fresh subprocess and fails if the import pulls in an application
+package indirectly. Library modules also may not import `polars`, `libsql`, or `pm4py`.
 
-`LIBRARY = {detect, gated, memory, method, model, process, recall, team}` and
-`APPLICATION = {casestudy, demo}`, enforced by `tests/library/test_boundary.py` at the AST
-level (function-body imports included) plus a subprocess import blocker that catches transitive
-reaches. No library module can import the application or `polars`/`libsql`/`pm4py`, ever.
-During every kernel refactor, the application's test files were kept frozen as regression
-oracles — the proof that the generalization changed nothing observable.
+During each kernel refactor, the application's test files were not edited. They still passed
+after the refactor, so the refactor did not change any behavior those tests observe.
 
-## The two fixtures, as evidence
+## The two data sets
 
-**A curated business-process log.** `data/receipt.xes`: 1,434 real Dutch municipality building
-permits, 8,577 events, 27 activities. A mined model can be structurally sound and still violate
-policy: 118 of 1,434 cases (8.2%) never perform a mandatory verification step, proved two
-independent ways before any agent runs. The live run made 100 real decisions with zero illegal
-proposals and surfaced a failure mode nobody predicted: the agent never broke a rule, it
-*dithered*, cycling between valid states until the step cap stopped it in 6 of 10 cases —
-which is what the learning loop (`casestudy/learning.py`) exists to fix.
+**A business-process log.** `data/receipt.xes` holds 1,434 real building-permit cases from
+Dutch municipalities, with 8,577 events across 27 activities. A mined process model can be
+well-formed and still break policy. In this log, 118 of the 1,434 cases skip a verification
+step that policy requires. That is 8.2 percent of cases. Two separate checks find the same
+118 cases, and both run before any agent starts. The live run made 100 decisions, and every
+proposal was legal. The run also showed a new failure mode. The agent never broke a rule.
+Instead, in 6 of the 10 cases, it dithered: it cycled between valid states until the step cap
+stopped it. The learning loop in `casestudy/learning.py` targets this dithering.
 
-**An agent-transcript log.** `data/transcripts_fleet.json`: this project's own Claude Code
-tool-use, 3,055 events over 88 cases. Structurally the opposite fixture: 91% of cases walk a
-trace nobody else walks, against 6% in the permit log.
+**An agent-transcript log.** `data/transcripts_fleet.json` holds this project's own Claude
+Code tool-use records, with 3,055 events over 88 cases. This log has the opposite shape from
+the permit log. In this log, 91 percent of cases follow a path that no other case follows. In
+the permit log, only 6 percent of cases do.
 
-Validating the detectors on the second fixture found two defects in the detectors themselves,
-and this is the most credible thing here:
+Running the detectors on the second data set found two bugs in the detectors themselves.
 
-- One detector reported a truncated search as a confident finding — the very defect it exists
-  to detect. That is why `discriminates` is three-valued and why `withheld` carries named
-  reasons.
+- One detector hit a search limit but still reported a confident finding. After this bug,
+  `discriminates` was changed to return three values instead of two, and `withheld` was
+  changed to name the limits that applied.
 - The objective prober passed a genuinely degenerate objective with zero findings, because it
-  relied on a caller-supplied list of bad answers — a harness artifact written by the same
-  hand as the scoring formula and wrong in the same direction. Callers now declare `Structure`
-  and the degenerate points are computed from it.
+  relied on a list of bad answers supplied by the caller. The same person wrote that list and
+  the scoring formula, and both contained the same mistake. Callers now declare a
+  `Structure`, and the prober computes the degenerate points from it.
 
-Where a mechanism was measured and did not win, it says so. The agent that writes its own
-mining code beats the fixed miner's *default* threshold on permits and loses to that same miner
-run at the agent's own threshold, on both logs.
+One measured result was negative. The agent that writes its own mining code was compared with
+the fixed miner. On the permit log, the agent scored higher than the fixed miner at the
+miner's default threshold. Then the fixed miner was re-run using the threshold the agent had
+chosen. At that threshold, the fixed miner scored higher than the agent on both logs.
 
 ## Run it
 
@@ -207,85 +238,91 @@ uv run pneuma                    # live Bedrock run, writes artifacts/
 uv run pneuma --truth            # print the demo's planted ground truth and exit
 ```
 
-Pass `-p no:randomly`: the suite randomizes order by default and a bare run can look
-differently broken. `pneuma` exits non-zero when the oracle rejects the verdict.
+Always pass `-p no:randomly`. The suite runs tests in a random order by default, so two bare
+runs can fail in different ways. The `pneuma` command exits with a non-zero code when the
+oracle rejects the final answer.
 
-The 10 skips are the live-gated tests, each measuring something a scripted model cannot:
+Ten tests are skipped by default because they need a live model. Set the matching variable to
+`1` to run one.
 
-| Variable | What setting it to `1` measures |
+| Variable | What the test does |
 | --- | --- |
-| `PNEUMA_LIVE` | the adversarial search against a real objective |
-| `PNEUMA_LIVE_HARNESS` | the agent proposing a harness parameter, with the detectors as gate |
-| `PNEUMA_LIVE_MINE` | gradient routing to two parameters, and toolkit vs. its own seed baseline |
-| `PNEUMA_LIVE_EMBED` | real Cohere Embed v4 retrieval quality |
+| `PNEUMA_LIVE` | Runs the adversarial search against a real objective. |
+| `PNEUMA_LIVE_HARNESS` | Has the agent propose a harness parameter, with the detectors deciding whether to accept it. |
+| `PNEUMA_LIVE_MINE` | Checks that gradient feedback reaches both learnable parameters, and compares the learned toolkit with its starting seed. |
+| `PNEUMA_LIVE_EMBED` | Measures retrieval quality with real Cohere Embed v4 embeddings. |
 
 ## Layout
 
-**Library.** Reusable; nothing here imports from `casestudy/` or `demo/`.
+**Library.** These packages are reusable. Nothing here imports from `casestudy/` or `demo/`.
 
 | File | What it holds |
 | --- | --- |
-| `src/pneuma/method.py` | `@ai_method` + `MethodAgent` + `MethodThread`: typed AI functions over instance state, with a thread lifecycle |
-| `src/pneuma/gated.py` | `GatedProposer`: the gate as a post-condition, the rejection ledger, the fork beam |
-| `src/pneuma/recall.py` | `Recalled` marker + `Recall` binder: memory as a call-argument discipline |
-| `src/pneuma/team.py` | `Team`: the deterministic orchestrator — phases, barrier, hire budget, oracle, teardown |
-| `src/pneuma/process/ir.py` | The process IR: states, guards, effects, invariants |
-| `src/pneuma/process/tla.py` | Renders the IR to TLA+ and runs TLC over it |
-| `src/pneuma/process/interpreter.py` | Executes a verified IR, validating every agent choice; per-state `on_enter` hook |
-| `src/pneuma/process/agent.py` | `ProcessAgent`: the walker and the worker as one agent |
-| `src/pneuma/process/agent_driver.py` | `Navigator`, the thin `ProcessAgent` subclass the case study drives |
-| `src/pneuma/process/properties.py` | Hypothesis machine built from the same IR |
-| `src/pneuma/detect/discrimination.py` | The three-valued verdict both detectors share |
-| `src/pneuma/detect/vacuity.py` | Reachability sweep plus four relaxations; rule vacuity |
-| `src/pneuma/detect/objective.py` | Sweeps, refines, and refuses a scoring function |
-| `src/pneuma/detect/adversary.py` | LLM adversaries searching for a worthless high scorer |
-| `src/pneuma/detect/adapter.py` | The one seam binding `vacuity` to pneuma's `Process` IR |
-| `src/pneuma/memory/turso_backend.py` | libSQL `MemoryBackend`: vector recall, score learning |
-| `src/pneuma/memory/embedding.py` | Cohere Embed v4 on Bedrock, cached in the same file |
-| `src/pneuma/model.py` | Opus 5 Bedrock config (adaptive thinking, effort tiers) |
+| `src/pneuma/method.py` | Defines `@ai_method`, `MethodAgent`, and `MethodThread`. A decorated method becomes a typed AI function, and a thread keeps it running with history. |
+| `src/pneuma/gated.py` | Defines `GatedProposer`. The answer check runs as a post-condition. Rejections are stored in a ledger. A proposer thread can fork into parallel branches. |
+| `src/pneuma/recall.py` | Defines the `Recalled` marker and the `Recall` binder. Memory arrives as a normal call argument. |
+| `src/pneuma/team.py` | Defines `Team`. It runs the phases, waits for all briefings, enforces the hire budget, checks answers with the oracle, and tears everything down. |
+| `src/pneuma/process/ir.py` | Defines the process IR: states, guards, effects, and invariants. |
+| `src/pneuma/process/tla.py` | Renders the IR to TLA+ and runs the TLC checker over it. |
+| `src/pneuma/process/interpreter.py` | Runs a verified IR and validates every choice the agent makes. It calls an optional hook when the run enters a state. |
+| `src/pneuma/process/agent.py` | Defines `ProcessAgent`, which both walks the process and does the work in each state. |
+| `src/pneuma/process/agent_driver.py` | Defines `Navigator`, a small `ProcessAgent` subclass the case study drives. |
+| `src/pneuma/process/properties.py` | Builds a Hypothesis test machine from the same IR. |
+| `src/pneuma/detect/discrimination.py` | Defines the three-valued verdict both detectors share. |
+| `src/pneuma/detect/vacuity.py` | Finds rules that no reachable state can break, using a sweep and four looser retries. |
+| `src/pneuma/detect/objective.py` | Probes a scoring function for the four failure modes listed above. |
+| `src/pneuma/detect/adversary.py` | Asks language models to find inputs that score well but have no value. |
+| `src/pneuma/detect/adapter.py` | Connects `vacuity` to pneuma's `Process` IR. |
+| `src/pneuma/memory/turso_backend.py` | Defines a libSQL memory backend with vector retrieval and score learning. |
+| `src/pneuma/memory/embedding.py` | Calls Cohere Embed v4 on Bedrock and caches the vectors in the same database file. |
+| `src/pneuma/model.py` | Holds the claude-opus-5 Bedrock configuration. |
 
-**Case studies.** The measurements the library's claims rest on.
-
-| File | What it holds |
-| --- | --- |
-| `src/pneuma/casestudy/eventlog.py` | XES → Polars → libSQL (WAL) persistence |
-| `src/pneuma/casestudy/miner.py` | Process discovery, conformance, bottlenecks, rework |
-| `src/pneuma/casestudy/pipeline.py` | The six-step study, end to end |
-| `src/pneuma/casestudy/rules.py` | Derive precedence rules from any log, attach to any process |
-| `src/pneuma/casestudy/handlers.py` | `Caseworker(ProcessAgent)`: per-state agents that also walk the process |
-| `src/pneuma/casestudy/live.py` | The live-LLM experiment: neutral vs. pressured framing |
-| `src/pneuma/casestudy/learning.py` | The training loop, driving per-decision recall through `Recall` |
-| `src/pneuma/casestudy/aimine.py` | The model writes the mining code; graded against the fixed one |
-| `src/pneuma/casestudy/minelearn.py` | The miner's guidance *and* its tools, both learnable |
-| `src/pneuma/casestudy/harnesslearn.py` | `HarnessProposer(GatedProposer)`: a parameter learned only if the detectors gate it |
-| `src/pneuma/casestudy/transcriptlog.py` | Agent tool-use transcripts as the second fixture |
-| `src/pneuma/casestudy/benchmark.py` | Scores our model against the standard miners |
-
-**Demo.** The incident war-room, and the only shipping console script.
+**Case studies.** These modules produce the measurements cited above.
 
 | File | What it holds |
 | --- | --- |
-| `src/pneuma/demo/warroom.py` | `WarRoom(Team)`: the incident room as a `Team` subclass, plus the oracle |
-| `src/pneuma/demo/staffing.py` | `Staff`/`staffing_tools`: the demo's binding of the library's hiring seam |
-| `src/pneuma/demo/agent.py` | The str-prompt `Agent` facade the message-bus experiment uses |
-| `src/pneuma/demo/cast.py` | Specialists, the hireable roster, the incident lead |
-| `src/pneuma/demo/typed_cast.py` | The same cast in the decorator paradigm — no message bus |
-| `src/pneuma/demo/incident.py` | Synthetic incident with machine-checked information asymmetry |
-| `src/pneuma/demo/cli.py` | The `pneuma` console script: one war-room run, writes artifacts |
+| `src/pneuma/casestudy/eventlog.py` | Loads XES event logs into Polars tables and stores them in a libSQL database. |
+| `src/pneuma/casestudy/miner.py` | Discovers a process model from a log and measures conformance, bottlenecks, and rework. |
+| `src/pneuma/casestudy/pipeline.py` | Runs the six-step study from end to end. |
+| `src/pneuma/casestudy/rules.py` | Derives precedence rules from a log and attaches them to a process. |
+| `src/pneuma/casestudy/handlers.py` | Defines `Caseworker`, a `ProcessAgent` whose typed methods do the work inside each state. |
+| `src/pneuma/casestudy/live.py` | Runs the live experiment that compares neutral and pressured framing. |
+| `src/pneuma/casestudy/learning.py` | Runs the training loop. It pulls advice from memory through `Recall` on every decision. |
+| `src/pneuma/casestudy/aimine.py` | Has the model write its own mining code, then grades it against the fixed miner. |
+| `src/pneuma/casestudy/minelearn.py` | Makes both the miner's guidance and its tools learnable. |
+| `src/pneuma/casestudy/harnesslearn.py` | Defines `HarnessProposer`, a `GatedProposer` whose parameter is only accepted when the detectors approve it. |
+| `src/pneuma/casestudy/transcriptlog.py` | Loads agent tool-use transcripts as the second data set. |
+| `src/pneuma/casestudy/benchmark.py` | Scores our mined model against the standard miners. |
 
-Design rationale docs, one per kernel module: `docs/design/method.md`, `gated.md`, `recall.md`,
-`process_agent.md`, `team.md`. Longer write-ups: `docs/case-study.md` and `docs/process.md`.
+**Demo.** This package holds the incident war-room. It ships the project's only console
+script.
+
+| File | What it holds |
+| --- | --- |
+| `src/pneuma/demo/warroom.py` | Defines `WarRoom`, the incident room as a `Team` subclass, plus its answer check. |
+| `src/pneuma/demo/staffing.py` | Defines `Staff` and `staffing_tools`, the demo's binding of the library's hiring tools. |
+| `src/pneuma/demo/agent.py` | Defines the string-prompt `Agent` class the message-bus experiment uses. |
+| `src/pneuma/demo/cast.py` | Defines the specialists, the hireable roster, and the incident lead. |
+| `src/pneuma/demo/typed_cast.py` | Builds the same cast with typed methods and no message bus. |
+| `src/pneuma/demo/incident.py` | Generates a synthetic incident and machine-checks that no single clue gives the answer away. |
+| `src/pneuma/demo/cli.py` | Runs the `pneuma` console script: one war-room run that writes `artifacts/`. |
+
+Each kernel module has a design document under `docs/design/`: `method.md`, `gated.md`,
+`recall.md`, `process_agent.md`, and `team.md`. Two longer write-ups live at
+`docs/case-study.md` and `docs/process.md`.
 
 ## Notes
 
 The library is pinned by git rev rather than PyPI, to
 `e47dc94e7b8e4b1e3f3e85587d0bc60e78c30296` in both `pyproject.toml` and `uv.lock`.
 
-`data/receipt.xes` (permits) and `data/roadfines.xes` (the portability log) are public XES
-logs; tests that need them skip if absent. The transcript fixtures are committed.
+`data/receipt.xes` and `data/roadfines.xes` are public XES logs. The second one is used to
+check that the tools work on a log they were not built around. Tests that need either file
+skip when it is absent. The transcript data sets are committed.
 
-The TLC step needs `java` and `tools/tla2tools.jar` (gitignored; fetch from the TLA+ releases
-page). Tests needing it skip when absent; everything else runs offline against scripted models.
+The TLC step needs `java` and `tools/tla2tools.jar`. The jar is gitignored; fetch it from the
+TLA+ releases page. Tests that need it skip when it is absent. Everything else runs offline
+against scripted models.
 
-A live run needs AWS credentials with Bedrock access to `global.anthropic.claude-opus-5`, plus
-`cohere.embed-v4` for the embedding path. The test suite needs neither.
+A live run needs AWS credentials with Bedrock access to `global.anthropic.claude-opus-5`,
+plus `cohere.embed-v4` for the embedding path. The test suite needs neither.
