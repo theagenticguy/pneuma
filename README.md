@@ -31,50 +31,11 @@ are pre-recorded model responses.
 
 ## The kernel
 
-The kernel has five classes. Each class removes one way an agent can fail without anyone
-noticing. For example, without `GatedProposer`, a loop can forget to check an answer and a
-bad answer slips through looking fine. Without the roster reset in `Team`, a second run can
-quietly inherit dead helpers from the first run. The kernel turns each of these mistakes
-into something the code refuses to do.
-
-The classes also work together. A `Team`'s members are running `MethodThread`s, and they
-join the team lead as typed tools. The lead's answer goes through a `GatedProposer` check.
-Any agent can pull declared memory through `Recall`. A `ProcessAgent` can be the agent that
-walks a verified flowchart.
-
-```mermaid
-graph TD
-    MA["MethodAgent<br/><code>method.py</code><br/>turns decorated methods into typed abilities"]
-    MT["MethodThread<br/><code>method.py</code><br/>runs one ability as a live conversation"]
-    GP["GatedProposer<br/><code>gated.py</code><br/>checks each answer before accepting it"]
-    RC["Recalled + Recall<br/><code>recall.py</code><br/>fills a parameter from memory on each call"]
-    PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process and does the work in each state"]
-    TM["Team<br/><code>team.py</code><br/>runs the group with a hiring budget and a final answer check"]
-
-    MA -->|"spawn()"| MT
-    MA --> GP
-    MA --> PA
-    RC -.->|"fills marked parameters<br/>on any @ai_method"| MA
-    TM -->|"members are"| MT
-    TM -->|"lead is checked like"| GP
-    PA -->|"decider and handlers are"| MA
-```
-
-| Piece | Module · lines | What it does |
-| --- | --- | --- |
-| `MethodThread` | `method.py` · 428 | Keeps one ability running as a live conversation. Call it twice and the second call remembers the first. You can pause it, copy it into a branch, or shut it down. Shutdown also works when the thread was already killed. |
-| `GatedProposer` | `gated.py` · 414 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. If the checker itself has a bug, the agent reports it as a bug. It does not treat the bug as a rejected answer. |
-| `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, that a parameter comes from memory. The library fetches the value on every call and passes it in as a normal argument. Because the value arrives as an argument, the training loop can see it and improve the stored content. |
-| `ProcessAgent` | `process/agent.py` · 396 | An agent tied to a verified flowchart. The agent proposes the next step. If the proposal is not allowed, the interpreter refuses it and asks again. The same agent then does the work inside each step it enters. |
-| `Team` | `team.py` · 968 | Runs a group. It spins up the members, briefs them all, and runs a lead agent that can hire helpers up to a budget. It checks the final answer against an oracle. It cleans everything up at the end. Cleanup runs even when a step fails. |
-
-### How agents split private context from call inputs
-
-Each agent instance keeps its private context on `self`. Private context means things like
-its evidence, its process, and its settings. The docstring prompt can read it directly, and
-answer-checkers can read it too. Callers do not fill it in, and the training machinery does
-not rewrite it. Anything a caller supplies, or anything training improves, comes in through
-the method parameters instead. All five kernel classes follow this rule.
+Everything starts with `MethodAgent`. You subclass it, and every method you mark with
+`@ai_method` becomes an ability the model can perform: the docstring is the prompt, the
+parameters are the typed inputs, and the return annotation is the typed result. Each agent
+instance keeps its private context on `self`, and the prompt can read it. This is the
+foundation the rest of the kernel builds on.
 
 ```python
 class Analyst(MethodAgent):
@@ -93,9 +54,48 @@ class Analyst(MethodAgent):
         Analyze the window {window}."""
 ```
 
-This one method shows the whole rule. The caller supplies `window`. The library fills
-`advice` from memory on each call. The prompt reads `self.evidence`, and callers never see
-it.
+This one method shows the placement rule the whole kernel follows. The caller supplies
+`window`. The library fills `advice` from memory on each call. The prompt reads
+`self.evidence`, and callers never see it. Callers do not fill in `self`, and the training
+machinery never rewrites it. Anything a caller supplies, or anything training improves,
+comes in through the parameters.
+
+The other four classes each add one capability on top of `MethodAgent`, and each removes one
+way an agent can fail without anyone noticing. For example, without `GatedProposer`, a loop
+can forget to check an answer and a bad answer slips through looking fine. Without the
+roster reset in `Team`, a second run can quietly inherit dead helpers from the first run.
+The kernel turns each of these mistakes into something the code refuses to do.
+
+The classes also work together. A `Team`'s members are running `MethodThread`s, and they
+join the team lead as typed tools. The lead's answer goes through a `GatedProposer` check.
+Any agent can pull declared memory through `Recall`. A `ProcessAgent` can be the agent that
+walks a verified flowchart.
+
+```mermaid
+graph TD
+    MA["MethodAgent + @ai_method<br/><code>method.py</code><br/>the foundation: decorated methods become typed abilities"]
+    MT["MethodThread<br/><code>method.py</code><br/>runs one ability as a live conversation"]
+    GP["GatedProposer<br/><code>gated.py</code><br/>checks each answer before accepting it"]
+    RC["Recalled + Recall<br/><code>recall.py</code><br/>fills a parameter from memory on each call"]
+    PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process and does the work in each state"]
+    TM["Team<br/><code>team.py</code><br/>runs the group with a hiring budget and a final answer check"]
+
+    MA -->|"spawn() puts one ability<br/>on a live thread"| MT
+    MA -->|"subclass"| GP
+    MA -->|"subclass"| PA
+    RC -.->|"fills marked parameters<br/>on any @ai_method"| MA
+    TM -->|"members are"| MT
+    TM -->|"lead is checked like"| GP
+```
+
+| Piece | Module · lines | What it does |
+| --- | --- | --- |
+| `MethodAgent` + `@ai_method` | `method.py` · 428 | The foundation. A subclass's decorated methods become typed abilities: docstring as prompt, parameters as typed inputs, private context on `self`. `agents()` publishes the abilities as tools another agent can call. |
+| `MethodThread` | `method.py` · 428 | Keeps one ability running as a live conversation. Call it twice and the second call remembers the first. You can pause it, copy it into a branch, or shut it down. Shutdown also works when the thread was already killed. |
+| `GatedProposer` | `gated.py` · 414 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. If the checker itself has a bug, the agent reports it as a bug. It does not treat the bug as a rejected answer. |
+| `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, that a parameter comes from memory. The library fetches the value on every call and passes it in as a normal argument. Because the value arrives as an argument, the training loop can see it and improve the stored content. |
+| `ProcessAgent` | `process/agent.py` · 396 | An agent tied to a verified flowchart. The agent proposes the next step. If the proposal is not allowed, the interpreter refuses it and asks again. The same agent then does the work inside each step it enters. |
+| `Team` | `team.py` · 968 | Runs a group. It spins up the members, briefs them all, and runs a lead agent that can hire helpers up to a budget. It checks the final answer against an oracle. It cleans everything up at the end. Cleanup runs even when a step fails. |
 
 ### How a Team run flows
 
@@ -289,15 +289,23 @@ Always pass `-p no:randomly`. The suite runs tests in a random order by default,
 runs can fail in different ways. The `pneuma` command exits with a non-zero code when the
 oracle rejects the final answer.
 
-Ten tests are skipped by default because they need a live model. Set the matching variable to
-`1` to run one.
+Some tests are skipped by default because they need a live model. Set the matching variable
+to `1` to run them.
 
-| Variable | What the test does |
+| Variable | What the tests do |
 | --- | --- |
+| `PNEUMA_LIVE_KERNEL` | Runs all five kernel classes against real Bedrock: a thread that remembers its first call, a gated proposal corrected after rejection, a memory recall the optimizer can see, a legal process walk, and a full team run. About seven model calls at low effort, roughly 20 seconds. |
 | `PNEUMA_LIVE` | Runs the adversarial search against a real objective. |
 | `PNEUMA_LIVE_HARNESS` | Has the agent propose a harness parameter, with the detectors deciding whether to accept it. |
 | `PNEUMA_LIVE_MINE` | Checks that gradient feedback reaches both learnable parameters, and compares the learned toolkit with its starting seed. |
 | `PNEUMA_LIVE_EMBED` | Measures retrieval quality with real Cohere Embed v4 embeddings. |
+
+The kernel run needs only AWS credentials with Bedrock access, for example an EC2 instance
+profile:
+
+```bash
+PNEUMA_LIVE_KERNEL=1 uv run pytest tests/app/test_kernel_live.py -p no:randomly -v
+```
 
 ## Layout
 
