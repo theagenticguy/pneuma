@@ -48,7 +48,7 @@ from ai_functions import AIFunction
 from ai_functions.ai_thread.config import ThreadKwargs
 from ai_functions.runtime.usage import last_event_id, subtree_usage
 from ai_functions.types import CustomEvent, InputShape, ThreadContext, ThreadId
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 from strands.tools.decorator import tool as strands_tool
 from strands.types.tools import AgentTool
 
@@ -218,10 +218,36 @@ class TeamRun(BaseModel):
     oracle_failures: list[str]
     briefings: dict[str, str]
     hiring_log: list[dict[str, Any]]
+    negotiation: list[dict[str, Any]] = Field(default_factory=list)
+    """The negotiation transcript: one entry per round, empty when the phase did not run.
+
+    Each entry carries `round`, `plan` (what was fanned out), `objections` (member name → its
+    answer, rendered exactly as `brief` renders — errors included), `approved` (who approved),
+    `outcome` (`unanimous`, `revised`, or `cap_reached`), and `revision` (the revised plan, absent
+    on a unanimous round). Plain dicts rather than a model, for `hiring_log`'s reason: the
+    transcript is an audit surface a reader walks, not a contract a caller binds to.
+    """
+
     input_tokens: int
     output_tokens: int
     turns: int
     wall_seconds: float
+
+    @model_serializer(mode="wrap")
+    def _without_empty_negotiation(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Serialise without the `negotiation` key when the phase did not run.
+
+        Backward compatibility as a property of the artifact rather than a hope: the demo's
+        `investigation.json` is published with nine keys (`demo/warroom.py` pins "same nine keys,
+        same order"), and a team that never negotiated must keep producing exactly that shape.
+        Dropped only when empty, so a run that *did* negotiate reports it; validation fills the
+        default back in, so `deserialize_result(serialize_result(run)) == run` still holds for a
+        narrowed run type.
+        """
+        data = handler(self)
+        if not self.negotiation:
+            data.pop("negotiation", None)
+        return data
 
 
 # ── The hiring seam ──
@@ -432,6 +458,24 @@ class Team:
 
     name: str = "team"
     max_hires: int = 3
+    negotiation_rounds: int = 0
+    """How many plan→objection→revision rounds may run between the briefing and the verdict.
+
+    Zero — the default — is the pre-negotiation skeleton exactly: one gated lead cycle over
+    `render_brief`, no fan-out, and a `TeamRun` whose `negotiation` list is empty and absent from
+    the serialised artifact. A positive value bounds the phase; it never mandates it, because a
+    round in which every member approves ends the negotiation early.
+
+    A field rather than a run parameter for the reason every other knob here is one: `Team` is a
+    dataclass whose configuration is its fields (`max_hires` above), a run is driven by one string
+    the protocol fixes, and the round budget is a property of the *team* — how much deliberation
+    this cast is worth — not of any single question it is asked.
+
+    Evidence for the phase existing at all: AgentRadio (arXiv 2607.28430) measured negotiation as
+    its single biggest layer (+67 net rubrics); one-shot plans shared a blind spot their members
+    could each see. `docs/design/team.md` carries the argument and the caveats.
+    """
+
     input_shape: InputShape = InputShape.STR_PROMPT
     """The team itself is drivable by one string, so a CLI can `handle.run(question)`.
 
@@ -466,8 +510,18 @@ class Team:
     when a run with a dead cast quietly reaches its lead.
     """
 
+    APPROVAL = "APPROVED"
+    """The token a member answers with to approve the lead's plan, single-sourced.
+
+    Two places read it — the instruction `plan_request` renders for the member and the check
+    `approves` runs over the answer — and they have to agree, for `BRIEFING_ERROR`'s reason: the
+    check's whole job is to notice the token the instruction asked for. A class attribute so a
+    subclass that wants another vocabulary moves both at once.
+    """
+
     def __post_init__(self) -> None:
         self._check_required_overrides()
+        self._check_negotiation_rounds()
 
     # ── What the subclass supplies ──
 
@@ -572,6 +626,66 @@ class Team:
         lines = "\n".join(f"{name}: {text}" for name, text in briefings.items())
         return f"{request}\n\nWhat your team reported:\n{lines}".strip()
 
+    def render_plan(self, verdict: Any) -> str:
+        """The lead's verdict as the text a member reviews. Default: `str(verdict)`.
+
+        A seam for the same reason `render_brief` is one: the plan crosses to the members as text
+        because text is the only channel every member shape shares — `Recruit` guarantees `ask`
+        and nothing richer (`Member.ask` lands it in the typed keyword the adapter names). What
+        *of* the verdict is worth a member's review is the subclass's judgment; a lead whose
+        output carries private fields the members must not see overrides this and says so.
+        """
+        return str(verdict)
+
+    def plan_request(self, plan: str) -> str:
+        """What each member is asked when the plan fans out. Contains the plan verbatim.
+
+        The instruction and the check have to agree on the token, which is why both read
+        `APPROVAL` — an instruction asking for one word and a check looking for another would
+        make unanimity unreachable and every negotiation run to its cap, silently. The plan is
+        embedded rather than referenced because the member's model sees only what this string
+        carries: a delivery claim needs a wire (the `render_brief` precedent), and the wire here
+        is this text.
+        """
+        return (
+            f"Your lead proposes the following plan. Review it against what you alone know. "
+            f"If it is sound, answer with the single word {self.APPROVAL}. Otherwise state "
+            f"your objections and what you would change.\n\nPlan:\n{plan}"
+        )
+
+    def approves(self, answer: str) -> bool:
+        """Whether a member's negotiation answer counts as approval.
+
+        Containment rather than equality, deliberately: a typed member answers with a pydantic
+        model, and `str(model)` embeds the token inside `field='APPROVED'` rather than standing
+        alone — an equality check would silently veto every typed member and every negotiation
+        would run to its cap. The tradeoff mirrors `BRIEFING_ERROR`'s: an objection that *quotes*
+        the token would be miscounted as approval, and a subclass with a stricter vocabulary
+        overrides this and `plan_request` together. A rendered error can never approve — a member
+        whose thread died did not review anything, so it blocks unanimity rather than faking it.
+        """
+        return not answer.startswith(self.BRIEFING_ERROR) and self.APPROVAL in answer
+
+    def render_objections(self, objections: Mapping[str, str], approved: Sequence[str]) -> str:
+        """What the lead is asked when revising: every non-approving answer, attributed.
+
+        One text block, for `render_brief`'s reason — the lead's first parameter is the only
+        channel every lead shape shares. The approving members are named rather than dropped
+        because a lead revising against two objections should know the other two signed off:
+        a revision that undoes what the approvers approved is a worse plan wearing a fix's
+        clothes. Errors ride along under their `BRIEFING_ERROR` rendering, exactly as briefings
+        do — a member that could not review is a fact about the plan's audit, not a secret.
+        """
+        lines = "\n".join(
+            f"{name}: {text}" for name, text in objections.items() if name not in approved
+        )
+        approvals = f"\n\nAlready approved by: {', '.join(approved)}." if approved else ""
+        return (
+            f"Your team reviewed your plan and not everyone approved. Revise the plan to "
+            f"answer the objections, or defend the parts they read wrongly."
+            f"\n\nObjections:\n{lines}{approvals}"
+        ).strip()
+
     def run_type(self) -> type[TeamRun]:
         """Which `TeamRun` class `execute` builds and `deserialize_result` validates against.
 
@@ -647,6 +761,7 @@ class Team:
             )
             ctx.on_event(CustomEvent(kind="team.lead_running", payload={"request": request}))
             verdict = await lead_handle.run(self.render_brief(request, briefings))
+            verdict, negotiation = await self.negotiate(ctx, cast, lead_handle, verdict)
         finally:
             # Unconditional, and covering the lead too: a mid-run fault must not leave a cast of
             # live threads behind on the coordinator. `return_exceptions=True` because one
@@ -669,6 +784,7 @@ class Team:
             oracle_failures=failures,
             briefings=briefings,
             hiring_log=self.roster.log,
+            negotiation=negotiation,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             turns=turns,
@@ -733,6 +849,97 @@ class Team:
         }
         ctx.on_event(CustomEvent(kind="team.briefings_in", payload={"count": len(briefings)}))
         return briefings
+
+    async def negotiate(
+        self, ctx: ThreadContext, cast: Sequence[Recruit], lead_handle: Any, verdict: Any
+    ) -> tuple[Any, list[dict[str, Any]]]:
+        """Phase 2½, optional: fan the lead's plan to the members, gather objections, revise.
+
+        Bounded by `negotiation_rounds` and off by default — with the budget at zero this
+        returns `(verdict, [])` before touching anything, and `execute` is byte-for-byte the
+        pre-negotiation skeleton. The evidence for wanting it at all is AgentRadio's
+        (arXiv 2607.28430): the members hold disjoint evidence *by design*, so a plan drafted
+        from their one-shot briefings can carry a flaw any one of them would catch on sight —
+        and negotiation was their single biggest measured layer (+67 net rubrics).
+
+        One round is: `render_plan(verdict)` fans out inside `plan_request` via each member's
+        own `ask` — the same barrier, the same `return_exceptions=True`, the same error
+        rendering as `brief`, because a member that dies mid-objection is a briefing failure's
+        twin and must not take the run down. Then either every member `approves` and the
+        negotiation ends early (`unanimous`), or the objections go back to the lead as one
+        `run(render_objections(...))` — a full gated cycle, so the *revised* plan faces the
+        oracle exactly as the draft did. A round whose revision lands on the cap is marked
+        `cap_reached`: the run proceeds with that last gated revision, and the transcript says
+        the team never reached unanimity rather than implying it did.
+
+        The objections travel through `ask` rather than `notify`, deliberately. `Recruit`
+        guarantees three verbs (`team.py`'s protocol) and `notify` is not one of them — the
+        `Member` adapter deliberately does not wrap it — and an answer is *wanted* here, which
+        notify by construction never produces. The lead's revision likewise rides `run` rather
+        than a side channel, because the runtime turns a refused revision into re-ask feedback
+        only on that path.
+
+        Returns the final verdict and the transcript `execute` records on the `TeamRun` —
+        delivery into the report is this method's contract, and delivery into the *prompts* is
+        pinned by tests reading the scripted models' own contexts, for the `render_brief`
+        precedent's reason: a transcript can be populated by a phase whose text never arrived.
+        """
+        if not cast:
+            # A team with no members has nobody to negotiate with, and the alternative is worse
+            # than a no-op: an empty round is vacuously unanimous (everyone of nobody approved),
+            # so the transcript would record a consensus that no member ever gave. `Toy(cast=[])`
+            # is the shape half the hiring tests use, and it must stay negotiation-silent.
+            return verdict, []
+
+        transcript: list[dict[str, Any]] = []
+        for round_number in range(1, self.negotiation_rounds + 1):
+            plan = self.render_plan(verdict)
+            answers = await asyncio.gather(
+                *(member.ask(self.plan_request(plan)) for member in cast),
+                return_exceptions=True,
+            )
+            objections = {
+                member.name: (
+                    f"{self.BRIEFING_ERROR}{answer!r}"
+                    if isinstance(answer, BaseException)
+                    else str(answer)
+                )
+                for member, answer in zip(cast, answers, strict=True)
+            }
+            approved = [name for name, text in objections.items() if self.approves(text)]
+            entry: dict[str, Any] = {
+                "round": round_number,
+                "plan": plan,
+                "objections": objections,
+                "approved": approved,
+            }
+
+            if len(approved) == len(objections):
+                entry["outcome"] = "unanimous"
+                transcript.append(entry)
+                ctx.on_event(
+                    CustomEvent(
+                        kind="team.negotiated",
+                        payload={"rounds": round_number, "outcome": "unanimous"},
+                    )
+                )
+                return verdict, transcript
+
+            verdict = await lead_handle.run(self.render_objections(objections, approved))
+            entry["revision"] = self.render_plan(verdict)
+            entry["outcome"] = (
+                "cap_reached" if round_number == self.negotiation_rounds else "revised"
+            )
+            transcript.append(entry)
+
+        if transcript:
+            ctx.on_event(
+                CustomEvent(
+                    kind="team.negotiated",
+                    payload={"rounds": len(transcript), "outcome": transcript[-1]["outcome"]},
+                )
+            )
+        return verdict, transcript
 
     def _gated_lead(self) -> AIFunction[..., Any]:
         """The lead with the oracle prepended and the hiring hook attached, losing nothing.
@@ -938,6 +1145,21 @@ class Team:
             if parameter.kind in positional
         ]
         return names[0] if names else None
+
+    def _check_negotiation_rounds(self) -> None:
+        """Refuse a negative round budget at construction, where every wiring refusal lives.
+
+        `range(1, 0)` is empty, so a negative value would *behave* exactly like zero — a
+        configuration that reads as "negotiate backwards" silently meaning "never negotiate" is
+        the fail-soft this kernel keeps refusing. Zero is the meaningful default and stays
+        allowed; anything below it is a typo, and a typo is the caller's to see now rather than
+        a run's to hide.
+        """
+        if self.negotiation_rounds < 0:
+            raise RuntimeError(
+                f"{self.name}: negotiation_rounds={self.negotiation_rounds} is negative, which "
+                f"would silently behave as 0 — pass 0 to disable negotiation, or a positive cap."
+            )
 
     def _check_required_overrides(self) -> None:
         """Refuse a team missing any required override, naming all of them at once.

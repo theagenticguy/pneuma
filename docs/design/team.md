@@ -204,6 +204,91 @@ seam alone.
 `brief` and the check here have to agree — the check's whole job is to notice that every string is
 one of those. A subclass rendering failures differently moves both at once.
 
+## The negotiation phase: optional, bounded, off by default
+
+`negotiation_rounds: int = 0` on `Team` adds a phase between the briefing and the verdict: the
+lead's first gated ruling is treated as a draft plan, `render_plan` renders it, and each round
+fans that text to every member (`plan_request`, through the member's own `ask` — one cycle, same
+barrier, same `return_exceptions=True` and `BRIEFING_ERROR` rendering as `brief`). A member
+answers with objections or with the `APPROVAL` token; unanimity ends the negotiation early,
+anything less goes back to the lead as one `run(render_objections(...))` — a full gated cycle, so
+every revision faces the oracle exactly as the draft did. The transcript (plan, objections,
+approvals, outcome, revision per round) lands on `TeamRun.negotiation`.
+
+### The evidence for wanting it
+
+AgentRadio (arXiv 2607.28430) measured a negotiation round as its single biggest layer: +67 net
+rubrics, against +24 for passive awareness. Their MinIO case is the failure shape this phase
+exists for, and it is *this* skeleton's failure shape too: the members hold disjoint evidence by
+design — that is why there is a team — so a plan drafted from one-shot briefings can carry a flaw
+any single member would catch on sight, and `brief` was a one-shot barrier: members answered
+once, only the lead saw the answers, and the plan was never reviewed by the people holding the
+evidence it was built from. Caveats carried honestly: their n=124, single run per task, LLM
+judge, and the +29.8 headline bundles three layers — which is why the phase is off by default and
+bounded rather than the new normal.
+
+### Why zero is the default and what zero means
+
+With the budget at zero, `negotiate` returns before touching anything and `execute` is the
+pre-negotiation skeleton byte-for-byte: one member cycle each, one lead cycle, the same event
+sequence. The compatibility claim extends to the artifact — `TeamRun`'s serializer drops the
+`negotiation` key when the list is empty, so the demo's published `investigation.json` keeps its
+nine keys without `demo/` changing at all (measured: same keys, same order, aliases intact,
+round-trip equal). The test pins the *call counts* and the event sequence rather than the empty
+list, because an empty list is also what a broken phase that ran and recorded nothing returns.
+
+### Why the plan travels through `ask` and not `notify`
+
+`Recruit` guarantees three verbs — spawn, ask, retire — and `notify` is not one of them; the
+`Member` adapter deliberately does not wrap it. And an *answer* is wanted here: `notify` appends
+to a thread's log without starting a cycle, so a notify-based fan-out would deliver the plan and
+collect nothing until some later cycle that may never come. One `ask` per member per round is one
+channel every member shape already supports, one model cycle, and a captured request a test can
+read — which is the requirement the next paragraph makes load-bearing.
+
+### The delivery lesson, applied twice
+
+The briefings once never reached the lead (`render_brief`'s history above): the phase recorded
+its data faithfully and the wire was missing, and only reading the model's actual context could
+have said so. Negotiation has two such wires — plan → member, objections → lead — and both are
+pinned from scripted-model contexts, not from the transcript: the plan text is asserted inside
+each member's own model context, the objection text and the objector's name inside the lead's
+revision context, and the round-2 fan-out is asserted to carry the *revision* and not the draft.
+Measured with the wire deliberately severed (revision prompt replaced by a generic "your team
+objected"): the transcript still recorded every objection and only the context assertions failed
+— the render_brief bug's exact shape, reproduced on purpose to prove the tests can catch it. The
+negative half needed scoping: a thread's history is cumulative, so "the draft did not fan out
+again" is a claim about round 2's *own request*, not about a context that legitimately carries
+round 1 above it.
+
+### Approval is containment, and the tradeoff is `BRIEFING_ERROR`'s
+
+`approves` checks that the answer contains `APPROVAL` and does not start with `BRIEFING_ERROR`.
+Containment rather than equality because a typed member answers with a pydantic model whose
+`str()` embeds the token inside a field's repr — an equality check would silently veto every
+typed member and every negotiation would run to its cap, with nothing raised. The cost is the
+same one the `BRIEFING_ERROR` prefix carries: an objection that *quotes* the token is miscounted.
+Both the instruction (`plan_request`) and the check read the one class attribute, so a subclass
+with a stricter vocabulary moves them together — a drifted pair would make unanimity unreachable
+and every negotiation silently cap out.
+
+### The edges, refused rather than smoothed
+
+A member that raises mid-review is a briefing failure's twin: rendered under `BRIEFING_ERROR`,
+never fatal, never counted as approving — it blocks unanimity (the lead revises knowing one
+reviewer died) and the cap bounds what that blocking can cost. A cap reached without unanimity
+marks its last round `cap_reached` rather than `revised`, and the run proceeds with the last
+gated revision — the transcript says the team never agreed rather than implying it did. An empty
+cast never negotiates: `all([])` is true, so without the guard a `Toy(cast=[])` at rounds>0 would
+record a unanimous round no member ever gave. And a negative budget is refused at construction —
+`range(1, 0)` is empty, so "negotiate backwards" would silently mean "never negotiate", which is
+the fail-soft this kernel keeps refusing.
+
+What this phase deliberately is not: a member↔member channel. Objections flow member → lead and
+the revision flows lead → members; no member sees another's objection except as the lead's
+revision reflects it. A lateral channel is a different design with its own determinism argument
+to make.
+
 ## Why a duplicate member name is refused at wiring time
 
 `brief` keys its mapping by `member.name`, because a name is the only identity `Recruit`
