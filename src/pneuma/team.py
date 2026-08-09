@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Self, runtime_checkable
 
@@ -52,7 +52,17 @@ from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_seri
 from strands.tools.decorator import tool as strands_tool
 from strands.types.tools import AgentTool
 
-__all__ = ["Member", "Recruit", "Roster", "Team", "TeamRun", "hiring_tools"]
+__all__ = [
+    "DISCOVERY_KINDS",
+    "Member",
+    "Recruit",
+    "Roster",
+    "Team",
+    "TeamRun",
+    "Worklog",
+    "discovery_tools",
+    "hiring_tools",
+]
 
 
 @runtime_checkable
@@ -117,7 +127,7 @@ class Member:
     not wrap it — a caller wanting it holds the `MethodThread` this exposes.
     """
 
-    __slots__ = ("agent", "method", "name", "_parameter", "_overrides", "_thread")
+    __slots__ = ("agent", "method", "name", "_parameter", "_overrides", "_equipped", "_thread")
 
     def __init__(
         self,
@@ -132,6 +142,7 @@ class Member:
         self.name = f"{getattr(agent, 'name', type(agent).__name__.lower())}.{method}"
         self._parameter = parameter or self._first_parameter(agent, method)
         self._overrides = overrides
+        self._equipped: Any = None
         self._thread: Any = None
 
     @staticmethod
@@ -162,9 +173,43 @@ class Member:
             raise RuntimeError(f"{self.name}: not spawned yet")
         return self._thread
 
+    def equip(self, config_hook: Callable[[ThreadContext], ThreadKwargs]) -> None:
+        """Attach a per-cycle `config_hook`, applied at the next `spawn`.
+
+        The seam the worklog rides in on: `Team.execute` equips each member with its
+        discovery tool between `members()` and `assemble`, without the subclass writing any
+        wiring. Refused when the member was constructed with its own `config_hook=` override,
+        for `_gated_lead`'s reason — the runtime calls exactly one hook per cycle
+        (`ai_thread.py:548-553`), so silently dropping either side costs tools invisibly.
+        A *previously equipped* hook is replaced rather than refused: the equipped slot is
+        team-owned, and a second run on the same handle re-equips the same cast.
+
+        The hook's `tools` patch replaces the compiled tools for the cycle (the merge
+        semantics `config.py:166-185` documents), so `spawn` composes the member's own
+        `tools=` override back in ahead of whatever the hook adds — a member that carried
+        tools must not lose them to a worklog it never asked about.
+        """
+        if self._overrides.get("config_hook") is not None:
+            raise RuntimeError(
+                f"{self.name}: this member already carries a config_hook, and the runtime "
+                f"calls exactly one hook per cycle — compose them into one hook instead"
+            )
+        self._equipped = config_hook
+
     async def spawn(self, coordinator: Any, *, parent_id: Any = None) -> Any:
+        overrides = dict(self._overrides)
+        if self._equipped is not None:
+            own_tools = list(overrides.get("tools") or [])
+            equipped = self._equipped
+
+            def hook(ctx: ThreadContext) -> ThreadKwargs:
+                patch = dict(equipped(ctx))
+                patch["tools"] = [*own_tools, *patch.get("tools", [])]
+                return patch  # type: ignore[return-value]
+
+            overrides["config_hook"] = hook
         self._thread = await self.agent.spawn(
-            self.method, coordinator, parent_id=parent_id, **self._overrides
+            self.method, coordinator, parent_id=parent_id, **overrides
         )
         return self._thread
 
@@ -228,6 +273,17 @@ class TeamRun(BaseModel):
     transcript is an audit surface a reader walks, not a contract a caller binds to.
     """
 
+    worklog: list[dict[str, Any]] = Field(default_factory=list)
+    """The team worklog: every posted discovery, in posting order, empty when disabled.
+
+    Each entry carries `kind` (one of `DISCOVERY_KINDS`), `body`, `source` (the posting member's
+    name, bound by the tool rather than reported by the model), `delivered` (who the fan-out
+    reached, `"lead"` included), and `failed` (name → the error that notify raised). Plain dicts
+    for `hiring_log`'s reason: an audit surface a reader walks, not a contract a caller binds to.
+    The durable record — a fork drops pending notifies (`gated.py`, measured), so this list is
+    what survives when the in-flight deliveries do not.
+    """
+
     input_tokens: int
     output_tokens: int
     turns: int
@@ -235,18 +291,20 @@ class TeamRun(BaseModel):
 
     @model_serializer(mode="wrap")
     def _without_empty_negotiation(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """Serialise without the `negotiation` key when the phase did not run.
+        """Serialise without the `negotiation` and `worklog` keys when those phases did not run.
 
         Backward compatibility as a property of the artifact rather than a hope: the demo's
         `investigation.json` is published with nine keys (`demo/warroom.py` pins "same nine keys,
-        same order"), and a team that never negotiated must keep producing exactly that shape.
-        Dropped only when empty, so a run that *did* negotiate reports it; validation fills the
-        default back in, so `deserialize_result(serialize_result(run)) == run` still holds for a
-        narrowed run type.
+        same order"), and a team that never negotiated — and never enabled a worklog — must keep
+        producing exactly that shape. Dropped only when empty, so a run that *did* use either
+        phase reports it; validation fills the default back in, so
+        `deserialize_result(serialize_result(run)) == run` still holds for a narrowed run type.
         """
         data = handler(self)
         if not self.negotiation:
             data.pop("negotiation", None)
+        if not self.worklog:
+            data.pop("worklog", None)
         return data
 
 
@@ -258,6 +316,7 @@ def hiring_tools(
     catalog: Mapping[str, Callable[[str], Recruit]],
     *,
     max_hires: int = 4,
+    worklog: Worklog | None = None,
 ) -> Callable[[ThreadContext], ThreadKwargs]:
     """Build a `config_hook` granting hire/delegate/dismiss for one cycle.
 
@@ -307,7 +366,7 @@ def hiring_tools(
     """
 
     def hook(ctx: ThreadContext) -> ThreadKwargs:
-        return {"tools": list(_hiring(ctx, roster, catalog, max_hires))}
+        return {"tools": list(_hiring(ctx, roster, catalog, max_hires, worklog))}
 
     return hook
 
@@ -317,6 +376,7 @@ def _hiring(
     roster: Roster,
     catalog: Mapping[str, Callable[[str], Recruit]],
     max_hires: int,
+    worklog: Worklog | None = None,
 ) -> list[AgentTool]:
     """The three tools, bound to one cycle's context.
 
@@ -349,6 +409,10 @@ def _hiring(
         # Built only after all three refusals, so a rejected hire spawns nothing. A cap checked
         # after the spawn would be a cap that still spent the thread it was refusing.
         recruit = catalog[role](name)
+        if worklog is not None:
+            equip = getattr(recruit, "equip", None)
+            if callable(equip):
+                equip(discovery_tools(worklog, name))
 
         # Registered *before* the await, in the same synchronous stretch as the three checks
         # above. The tool executor is concurrent, so a second `hire` in this turn resumes on the
@@ -363,6 +427,13 @@ def _hiring(
             raise
 
         roster.thread_ids[name] = handle.id
+        if worklog is not None:
+            notify = getattr(handle, "notify", None)
+            if callable(notify):
+                # Replay first (`register` delivers every prior entry), so a hire joins knowing
+                # what the team already flagged — a helper hired *because* of an obstacle
+                # should not be the one teammate who never heard of it.
+                await worklog.register(name, notify)
         roster.record("hire", role=role, name=name, mandate=mandate, thread_id=str(handle.id))
         ctx.on_event(
             CustomEvent(
@@ -417,10 +488,163 @@ def _hiring(
 
         del roster.hires[name]
         roster.thread_ids.pop(name, None)
+        if worklog is not None:
+            # Closed with the thread, so later posts do not record a predictable failure
+            # against a teammate the team already agreed is gone.
+            worklog.channels.pop(name, None)
         roster.record("dismiss", name=name)
         return f"dismissed {name}"
 
     return [hire, delegate, dismiss]
+
+
+# ── The worklog seam ──
+
+DISCOVERY_KINDS = ("bears-on-teammate", "contradicts-plan", "obstacle", "dead-end")
+"""The four things worth interrupting nobody about.
+
+A closed vocabulary rather than free text, which is the worklog's whole difference from a chat
+channel: AgentRadio (arXiv 2607.28430) ran its passive step over free-text broadcasts and still
+measured +10.5 points, and typed payloads are this library's standing bet everywhere free text
+was the alternative (`method.py`'s header). A kind the model invents is refused as text, so the
+model picks a real one and posts again.
+"""
+
+
+@dataclass
+class Worklog:
+    """The team-owned discovery log for one run, plus the fan-out that makes it *passive*.
+
+    Two halves, deliberately in one object. `entries` is the durable record `TeamRun.worklog`
+    publishes — a fork drops pending notifies (`gated.py`, measured), so the list is what
+    survives when in-flight deliveries do not. `channels` is the fan-out surface: member name →
+    an async send that lands the text where that member reads it at its own next step. `notify`
+    appends to a thread's log without starting a cycle (`method.py:261-268`), so a delivery here
+    is *step-boundary* by construction — a teammate sees the discovery at its next model call
+    and is never interrupted mid-thought, which is the interruption cost passive awareness
+    exists to avoid.
+
+    **`post` reserves before it awaits**, the hiring seam's lesson restated: the entry is
+    appended to `entries` in the same synchronous stretch that builds it, and only then is any
+    `send` awaited. The tool executor is concurrent (`strands/agent/agent.py:462`), so two posts
+    in one assistant turn interleave — with the append on the far side of an await, both posts
+    would build against the same list tail and a collision could drop one. A list rather than a
+    dict-keyed aggregation for the same reason: appends cannot collide, keys can.
+
+    **One channel failing never stops the rest.** Each delivery is awaited under its own
+    handler; a retired thread raises out of `notify` and the failure is recorded on the entry —
+    `failed[name] = repr(error)` — while the loop continues. A crashed fan-out would turn one
+    dead teammate into a run-ending fault, which is `brief`'s `return_exceptions=True` argument
+    at worklog scale.
+    """
+
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    channels: dict[str, Callable[[str], Awaitable[None]]] = field(default_factory=dict)
+
+    def render(self, entry: Mapping[str, Any]) -> str:
+        """The text a teammate reads: attributed, kind first, one block."""
+        return (
+            f"[team worklog] {entry['source']} flagged {entry['kind']}: {entry['body']}\n"
+            f"This is awareness, not an instruction — weigh it against what you alone know."
+        )
+
+    async def register(self, name: str, send: Callable[[str], Awaitable[None]]) -> None:
+        """Open a channel, and replay every prior entry into it.
+
+        The replay is what makes registration order not matter: the lead's channel opens only
+        after its thread exists, which is *after* the briefing phase — exactly when members
+        post their first discoveries. Without the replay those entries would reach every
+        member and never the lead, invisibly. Deliveries here record on the entries exactly
+        as `post`'s do, so the audit does not distinguish a replayed delivery from a live one
+        — both answer "who saw this".
+        """
+        self.channels[name] = send
+        for entry in list(self.entries):
+            if entry["source"] == name or name in entry["delivered"] or name in entry["failed"]:
+                continue
+            await self._deliver(entry, name, send)
+
+    async def post(self, kind: str, body: str, source: str) -> dict[str, Any]:
+        """Append one discovery and fan it to every channel except the poster's own.
+
+        The poster is excluded because it already knows: a discovery echoed back would spend a
+        slot in its next context restating what it just said. Everyone else — the other
+        members, the hires, the lead — gets the rendered text at their own next step.
+        """
+        entry: dict[str, Any] = {
+            "kind": kind,
+            "body": body,
+            "source": source,
+            "delivered": [],
+            "failed": {},
+        }
+        self.entries.append(entry)  # reserved before any await — see the class docstring
+        for name, send in list(self.channels.items()):
+            if name == source:
+                continue
+            await self._deliver(entry, name, send)
+        return entry
+
+    async def _deliver(
+        self, entry: dict[str, Any], name: str, send: Callable[[str], Awaitable[None]]
+    ) -> None:
+        try:
+            await send(self.render(entry))
+        except Exception as error:  # noqa: BLE001 — one dead teammate must not stop the rest
+            entry["failed"][name] = repr(error)
+        else:
+            entry["delivered"].append(name)
+
+
+def discovery_tools(worklog: Worklog, poster: str) -> Callable[[ThreadContext], ThreadKwargs]:
+    """Build a `config_hook` granting `post_discovery` for one member's cycles.
+
+    The `hiring_tools` precedent, member-side: `ThreadConfig` documents `config_hook` as the
+    place to inject cycle-bound tools (`config.py:166-185`), and nothing upstream ships this
+    one. `poster` is bound here rather than taken as a tool parameter, so the `source` on every
+    entry is the name the team wired and not a name the model chose — attribution an audit can
+    trust is attribution the model cannot spoof.
+    """
+
+    def hook(ctx: ThreadContext) -> ThreadKwargs:
+        return {"tools": [_discovery(ctx, worklog, poster)]}
+
+    return hook
+
+
+def _discovery(ctx: ThreadContext, worklog: Worklog, poster: str) -> AgentTool:
+    """The one tool, bound to one cycle's context. Failures are text, for `_hiring`'s reason:
+    a wrong kind is a mistake the model can fix, so it reads the refusal and posts again."""
+    kinds = ", ".join(DISCOVERY_KINDS)
+
+    @strands_tool(
+        name="post_discovery",
+        description=(
+            "Flag a discovery your teammates should see at their next step. Use it when you "
+            "find something that bears on a teammate's work, contradicts the current plan, is "
+            "an obstacle, or marks a dead end nobody should re-explore. Your teammates read it "
+            f"as context, not as an interruption. kind must be one of: {kinds}."
+        ),
+    )
+    async def post_discovery(kind: str, body: str) -> str:
+        if kind not in DISCOVERY_KINDS:
+            return f"error: no such kind {kind!r}; pick one of: {kinds}"
+        entry = await worklog.post(kind, body, poster)
+        ctx.on_event(
+            CustomEvent(
+                kind="team.discovery",
+                payload={
+                    "source": poster,
+                    "discovery": kind,
+                    "delivered": list(entry["delivered"]),
+                    "failed": sorted(entry["failed"]),
+                },
+            )
+        )
+        reached = ", ".join(entry["delivered"]) or "nobody yet"
+        return f"posted {kind}; reached {reached}"
+
+    return post_discovery
 
 
 # ── The orchestrator ──
@@ -452,8 +676,9 @@ class Team:
     the next one would make all three quietly false there.
 
     **What this class deliberately does not do.** No learning loop, no persistent roster, no
-    cross-team messaging, no forkable run, no `send_message` anywhere. See
-    `docs/design/team.md`.
+    cross-*team* messaging, no forkable run, no `send_message` anywhere. Cross-*member*
+    awareness exists behind `worklog_enabled` — typed, step-boundary, off by default — and
+    `docs/design/team.md` carries the argument for relaxing exactly that much and no more.
     """
 
     name: str = "team"
@@ -476,12 +701,39 @@ class Team:
     could each see. `docs/design/team.md` carries the argument and the caveats.
     """
 
+    worklog_enabled: bool = False
+    """Whether members get a `post_discovery` tool whose posts fan back to their teammates.
+
+    Off — the default — is the pre-worklog skeleton exactly: no tool injected, no channel
+    opened, and a `TeamRun` whose `worklog` list is empty and absent from the serialised
+    artifact. On, each `Member` in the cast is equipped with `discovery_tools` before it is
+    spawned, every member's `MethodThread.notify` and the lead's handle become fan-out
+    channels, and posted discoveries land in each teammate's *next* model context — passive
+    awareness, never an interruption.
+
+    Evidence for the feature existing at all: AgentRadio (arXiv 2607.28430) measured passive
+    awareness at +10.5 points net, concentrated on cross-cutting tasks — and this skeleton's
+    members hold disjoint evidence by design, which is exactly the shape where one member's
+    dead end is another's answer. `docs/design/team.md` carries the argument and the
+    relaxation of the no-cross-team-messaging non-goal it required.
+    """
+
     input_shape: InputShape = InputShape.STR_PROMPT
     """The team itself is drivable by one string, so a CLI can `handle.run(question)`.
 
     Not a claim about the members. This shape makes the *team* addressable as a chat-style peer;
     each member's own shape is its own business, and the library's first-class member is
     `STRUCTURED`.
+    """
+
+    worklog: Worklog = field(default_factory=Worklog)
+    """The discovery log for the run currently in flight, replaced at the top of `execute`.
+
+    Per run for the roster's reason, one line down: every promise on it — the poster exclusion,
+    the delivery record, the published `TeamRun.worklog` — is a promise about one run, and a
+    log carried into run 2 would open run 2's report with run 1's discoveries and replay them
+    into run 2's freshly spawned threads. Reset as `type(self.worklog)()` so a narrowed
+    subclass keeps its class. Read it after a run for the log that run kept.
     """
 
     roster: Roster = field(default_factory=Roster)
@@ -738,6 +990,7 @@ class Team:
         started = time.monotonic()
         baseline = await last_event_id(ctx.coordinator, ctx.thread_id)
         self.roster = type(self.roster)()
+        self.worklog = type(self.worklog)()
 
         # The cast is *listed* and the lead is *composed* before anything is spawned, and the
         # order between them matters twice. `members()` first, because a subclass may build its
@@ -748,6 +1001,8 @@ class Team:
         # both members had been spawned, briefed with a real model call, and retired.
         cast = list(self.members())
         self._check_no_duplicate_members(cast)
+        if self.worklog_enabled:
+            self._equip_worklog(cast)
         lead_fn = self._gated_lead()
 
         lead_handle: Any = None
@@ -759,6 +1014,12 @@ class Team:
             lead_handle = await ctx.coordinator.spawn(
                 lead_fn, thread_name=f"{self.name}-lead", parent_id=ctx.thread_id
             )
+            if self.worklog_enabled:
+                # Registered as late as a channel can be, and the replay inside `register` is
+                # what makes that safe: a discovery posted during the briefing phase — before
+                # this thread existed — is delivered here, and the pending notify drains into
+                # the lead's *first* model context, ahead of the `run` below.
+                await self.worklog.register("lead", lead_handle.notify)
             ctx.on_event(CustomEvent(kind="team.lead_running", payload={"request": request}))
             verdict = await lead_handle.run(self.render_brief(request, briefings))
             verdict, negotiation = await self.negotiate(ctx, cast, lead_handle, verdict)
@@ -785,6 +1046,7 @@ class Team:
             briefings=briefings,
             hiring_log=self.roster.log,
             negotiation=negotiation,
+            worklog=self.worklog.entries,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             turns=turns,
@@ -805,7 +1067,9 @@ class Team:
         own.
         """
         for member in cast:
-            await member.spawn(ctx.coordinator, parent_id=ctx.thread_id)
+            handle = await member.spawn(ctx.coordinator, parent_id=ctx.thread_id)
+            if self.worklog_enabled:
+                self._open_channel(member.name, handle)
         ctx.on_event(
             CustomEvent(kind="team.assembled", payload={"members": [m.name for m in cast]})
         )
@@ -941,6 +1205,37 @@ class Team:
             )
         return verdict, transcript
 
+    def _equip_worklog(self, cast: Sequence[Recruit]) -> None:
+        """Give every equippable member a `post_discovery` tool bound to its own name.
+
+        Only `Member`s (and anything else exposing `equip`) get the tool: `Recruit` guarantees
+        three verbs and a hook seam is not one of them, so a recruit shape without the seam
+        joins the team exactly as before — it can still *receive* discoveries if its handle
+        exposes `notify` (see `_open_channel`), it just cannot post them. Skipped rather than
+        refused because the mixed cast is legitimate: a scripted spy next to two typed members
+        is half this suite's shape.
+        """
+        for member in cast:
+            equip = getattr(member, "equip", None)
+            if callable(equip):
+                equip(discovery_tools(self.worklog, member.name))
+
+    def _open_channel(self, name: str, handle: Any) -> None:
+        """Register one spawned thread as a worklog channel, if it can receive at all.
+
+        The channel is the handle's own `notify` (`method.py:261-268` for a `Member`'s
+        `MethodThread`, `handle.py:120` for a raw `ThreadHandle`): append to the thread's log,
+        no cycle started, read at the next model-call boundary — step-boundary delivery by
+        construction. A handle without `notify` (a test spy's fake) simply gets no channel,
+        for `_equip_worklog`'s reason: the mixed cast is legitimate and a member that cannot
+        receive is a fact, not a fault. Synchronous registration, deliberately — at
+        `assemble` time the worklog is empty, so `register`'s replay has nothing to do, and
+        opening the channel inside the spawn loop keeps the assembled order the declared one.
+        """
+        notify = getattr(handle, "notify", None)
+        if callable(notify):
+            self.worklog.channels[name] = notify
+
     def _gated_lead(self) -> AIFunction[..., Any]:
         """The lead with the oracle prepended and the hiring hook attached, losing nothing.
 
@@ -976,7 +1271,12 @@ class Team:
             )
         return lead.replace(
             post_conditions=conditions,
-            config_hook=hiring_tools(self.roster, catalog, max_hires=self.max_hires),
+            config_hook=hiring_tools(
+                self.roster,
+                catalog,
+                max_hires=self.max_hires,
+                worklog=self.worklog if self.worklog_enabled else None,
+            ),
         )
 
     # ── Remaining Thread protocol surface ──
