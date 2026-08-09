@@ -271,6 +271,7 @@ class ProcessAgent(MethodAgent):
         start: dict[str, int | str] | None = None,
         max_steps: int = 50,
         max_rejections: int = 3,
+        max_revisits: int | None = interpreter.DEFAULT_MAX_REVISITS,
         **overrides: Any,
     ) -> interpreter.Run:
         """Drive the bound process to a terminal state, working inside every state entered.
@@ -286,6 +287,8 @@ class ProcessAgent(MethodAgent):
             start: Initial variable assignment, forwarded to `interpreter.run`.
             max_steps: Cap on executed transitions, forwarded.
             max_rejections: Illegal proposals tolerated per decision, forwarded.
+            max_revisits: Consecutive no-progress revisits tolerated before the run
+                halts with `NoProgress`, forwarded. `None` disables the halt.
             overrides: `ThreadConfig` overrides applied to *every* compilation this run
                 makes — the decider's and each handler's. `model=` is the one that matters:
                 it makes a whole process, decisions and work together, scriptable offline
@@ -302,10 +305,11 @@ class ProcessAgent(MethodAgent):
             RuntimeError: A state names the decider as its handler. Refused before
                 anything is compiled or spent.
             HandlerFailed: A handler or `on_result` raised.
-            Deadlock, InvariantViolated, ProcessError: Straight through from
-                `interpreter.run`. The verified skeleton's refusals are not this class's to
-                soften, and a caller that catches `ProcessError` to count blocked cases has
-                to keep seeing exactly what it saw before.
+            Deadlock, InvariantViolated, NoProgress, ProcessError: Straight through
+                from `interpreter.run`. The verified skeleton's refusals are not this
+                class's to soften, and a caller that catches `ProcessError` to count
+                blocked cases has to keep seeing exactly what it saw before —
+                `NoProgress` IS a `ProcessError`, so that accounting is undisturbed.
         """
         self._check_no_decider_handler()
         # Resolved once rather than per state entry: `state_map` rebuilds the dict on every
@@ -321,6 +325,7 @@ class ProcessAgent(MethodAgent):
             start=start,
             max_steps=max_steps,
             max_rejections=max_rejections,
+            max_revisits=max_revisits,
             on_enter=on_enter,
         )
 

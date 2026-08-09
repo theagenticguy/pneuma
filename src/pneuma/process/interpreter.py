@@ -26,6 +26,31 @@ from .ir import Invariant, Process, Transition
 
 Decide = Callable[[str, list[Transition], dict[str, int | str]], Awaitable[str]]
 
+
+@dataclass(frozen=True)
+class Revisit:
+    """One re-entry into a state this run had already occupied: a voiced dead end.
+
+    The `[REVISIT]` marker in `offer` tells the *model* a target is a repeat, and
+    nothing else could hear it — the fact lived in prompt prose and died with the
+    prompt. This is the same fact as data, recorded on `Run.revisits` and readable
+    mid-run through `revisits()`, so a retrieval query or a report can say which
+    states the case circled and what else it could have done instead.
+
+    Attributes:
+        state: The state re-entered.
+        step: `Step.index` of the transition that re-entered it.
+        alternatives: Names of the *other* transitions that were enabled at the
+            source — what the run could have chosen instead of circling. Empty means
+            the revisit was forced: the interpreter steps through a lone enabled
+            transition without consulting anyone.
+    """
+
+    state: str
+    step: int
+    alternatives: tuple[str, ...] = ()
+
+
 # Called once per state the run occupies. The state *name* and nothing else: whoever
 # installs the hook already holds the `Process` it came from, so handing over the
 # `State` object, the variables, or the trace would grow this file's fixed surface to
@@ -40,10 +65,35 @@ OnEnter = Callable[[str], Awaitable[None]]
 # asyncio task its own copy so concurrent runs cannot see each other's paths.
 _HISTORY: ContextVar[tuple[str, ...]] = ContextVar("pneuma_process_history", default=())
 
+# The dead ends the enclosing `run` has recorded so far, oldest first. A second
+# ContextVar rather than a field a decider digs out of a `Run`, for the same reason
+# `_HISTORY` is one: the decider's signature stays unchanged, and the entries are
+# visible *during* the run — which is when a retrieval query wants to say "this case
+# has already dead-ended twice" — not only after it ends.
+_REVISITS: ContextVar[tuple[Revisit, ...]] = ContextVar("pneuma_process_revisits", default=())
+
+DEFAULT_MAX_REVISITS = 5
+"""Consecutive revisits tolerated before `run` halts with `NoProgress`.
+
+Conservative on purpose: a legitimate detour re-enters a state once or twice, while
+the dithering the live experiment measured re-enters them until the step budget
+stops it. Five consecutive re-entries with no new state in between is the latter.
+Pass `max_revisits=None` to disable the halt and burn the budget as before.
+"""
+
 
 def history() -> list[str]:
     """The states the enclosing `run` has occupied so far, current state last."""
     return list(_HISTORY.get())
+
+
+def revisits() -> list[Revisit]:
+    """The dead ends the enclosing `run` has recorded so far, oldest first.
+
+    Empty outside a run, like `history()`. A decider building a retrieval query reads
+    this to voice the run's dead ends at the moment a choice is being made.
+    """
+    return list(_REVISITS.get())
 
 
 class ProcessError(RuntimeError):
@@ -52,6 +102,33 @@ class ProcessError(RuntimeError):
 
 class Deadlock(ProcessError):
     """A non-terminal state with no enabled transition."""
+
+
+class NoProgress(ProcessError):
+    """The run halted early because consecutive revisits reached its limit.
+
+    Modeled on `detect.discrimination`'s three-valued honesty: an outcome that stops
+    short must *name the bound it hit*, or a reader cannot tell the finding from the
+    harness's own cap. So this is not `Deadlock` — every transition here was enabled
+    and legal — and not the `max_steps` `ProcessError` — the budget was not spent; the
+    run declared it *would have been*, and says which limit made it stop. It still IS
+    a `ProcessError`, so `casestudy/live.py:170-175`'s blocked accounting sees exactly
+    what it saw before.
+
+    Attributes:
+        limit: The `max_revisits` value that was hit.
+        revisits: The consecutive `Revisit` entries that hit it, oldest first.
+    """
+
+    def __init__(self, limit: int, revisits: tuple[Revisit, ...]) -> None:
+        circled = " → ".join(entry.state for entry in revisits)
+        super().__init__(
+            f"no progress: {limit} consecutive revisits ({circled}) without reaching a new "
+            f"state, halting at the max_revisits={limit} limit rather than burning the "
+            f"remaining step budget"
+        )
+        self.limit = limit
+        self.revisits = revisits
 
 
 class InvariantViolated(ProcessError):
@@ -85,6 +162,8 @@ class Run:
     steps: list[Step] = field(default_factory=list)
     final_state: str = ""
     variables: dict[str, int | str] = field(default_factory=dict)
+    revisits: list[Revisit] = field(default_factory=list)
+    """Every re-entry into an already-visited state, in step order. See `Revisit`."""
 
     @property
     def path(self) -> list[str]:
@@ -102,6 +181,7 @@ async def run(
     start: dict[str, int | str] | None = None,
     max_steps: int = 50,
     max_rejections: int = 3,
+    max_revisits: int | None = DEFAULT_MAX_REVISITS,
     on_enter: OnEnter | None = None,
 ) -> Run:
     """Drive `process` to a terminal state.
@@ -114,9 +194,17 @@ async def run(
         max_steps: Cap on executed transitions, so a cycle cannot run forever.
         max_rejections: How many illegal proposals to tolerate per step before
             giving up on the agent and refusing to guess on its behalf.
+        max_revisits: Consecutive re-entries into already-visited states tolerated
+            before the run halts with `NoProgress` — "consecutive" meaning no state
+            this run had never seen was reached in between. `None` disables the halt
+            and a dithering run burns the whole step budget, exactly as before this
+            parameter existed. The default is conservative; see `DEFAULT_MAX_REVISITS`.
         on_enter: Called once with the name of every state this run occupies, the
             initial state included, after that state's invariant check and before
             anything is decided from it. `None` leaves the walk exactly as it was.
+            Not called for the visit that trips `max_revisits`: the run has just
+            declared that visit progress-free, and spending the state's work on it
+            would contradict the verdict being raised.
 
     **Why the hook exists at all.** `decide` covers the decision *between* states and
     nothing here covered the work *within* one, which is the other half of the
@@ -137,6 +225,8 @@ async def run(
     Raises:
         Deadlock: Stuck in a non-terminal state.
         InvariantViolated: A safety property failed at runtime.
+        NoProgress: `max_revisits` consecutive revisits without a new state. Names
+            the limit it hit, so it cannot be mistaken for the exhausted budget.
         ProcessError: Step budget exhausted, or the agent never proposed a legal move.
         Exception: Whatever `on_enter` raises, unchanged. A hook that fails is not a
             process failure, and softening it here would let a run report a completed
@@ -146,10 +236,13 @@ async def run(
     states = process.state_map
     current = process.initial_state
     trace = Run(process=process.name, variables=variables)
+    seen = {current}
+    consecutive: list[Revisit] = []
 
     _assert_invariants(process, current, variables)
 
     token = _HISTORY.set((current,))
+    revisit_token = _REVISITS.set(())
     try:
         # Inside the history scope rather than beside the check above, so the hook sees
         # the same `history()` a decider standing in this state would.
@@ -182,7 +275,32 @@ async def run(
                     rejected=rejected,
                 )
             )
+            # The `[REVISIT]` marker in `offer` voices this fact to the model and to
+            # nobody else. Recording it as data — on the trace for afterwards, in the
+            # ContextVar for during — is what lets a retrieval query or a report see
+            # the dead end instead of re-deriving it from the path.
+            revisiting = current in seen
+            if revisiting:
+                entry = Revisit(
+                    state=current,
+                    step=index,
+                    alternatives=tuple(t.name for t in enabled if t.name != chosen.name),
+                )
+                trace.revisits.append(entry)
+                _REVISITS.set((*_REVISITS.get(), entry))
+                consecutive.append(entry)
+            else:
+                seen.add(current)
+                consecutive.clear()
+
             _assert_invariants(process, current, variables)
+            # After the invariant check — a violation outranks dithering — and before
+            # `on_enter`, so no work is spent on the visit the run just declared
+            # progress-free. A revisited state is never terminal (a run returns the
+            # moment it occupies a terminal state, so there is no second entry), so
+            # this cannot pre-empt a completion.
+            if revisiting and max_revisits is not None and len(consecutive) >= max_revisits:
+                raise NoProgress(max_revisits, tuple(consecutive))
             # Every state the run occupies, terminal ones included, and once per
             # *visit* rather than once per name: a cycle that comes back to a state
             # comes back to its work too.
@@ -200,6 +318,7 @@ async def run(
             return trace
     finally:
         _HISTORY.reset(token)
+        _REVISITS.reset(revisit_token)
 
     raise ProcessError(f"exceeded {max_steps} steps without reaching a terminal state")
 
