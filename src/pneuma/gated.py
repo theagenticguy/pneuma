@@ -369,6 +369,15 @@ class GatedProposer(MethodAgent):
         Each seed entry is one cycle's keyword arguments, because that is `MethodThread.run`'s
         contract and a thread hosts exactly one signature.
 
+        **Prompt-cache reuse across branches.** Every branch replays the same seeded log
+        through the same model with the same arguments, so the requests are byte-identical up
+        to the trailing cache point `pneuma.model.opus5` has the runtime inject (its default
+        `cache_config`). Branches run serially below, so branch 0's response — which writes
+        the provider cache — completes before branch 1's request, and from the second branch
+        on the shared prefix is billed at cache-read rates rather than re-ingested. This
+        depends on the model being built with caching on; a model without a cache point gets
+        correct but uncached beams.
+
         Returns:
             `(candidate, verdict)` for every admitted branch, in branch order, and nothing for
             the rejected ones — those are in `rejected`. No ordering is imposed and no scalar
