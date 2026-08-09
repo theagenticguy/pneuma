@@ -30,7 +30,11 @@ namespace` kills the cycle — and losing every accumulated helper to that is no
 `rehearse` runs first and a failing toolkit rolls back to the last that passed, kept in a
 `Frozen[Procedural]` the optimizer cannot target, with the rollback recorded on the `Attempt` and
 printed. Rehearsal catches load and call-time failures, not a helper that runs and returns
-something subtly worse. Two wiring details the loop needs: a recalled value arrives as a **call
+something subtly worse. Whether a rehearsal may instead fork the prior attempt's recorded thread
+and replay only the suffix after the edit (counterfactual replay) is decided per round by
+`replay_decision` and recorded as `Attempt.rehearsal_path`; for this parameter the answer is
+always no, measured not assumed — see `check_toolkit`. Two wiring details the loop needs: a
+recalled value arrives as a **call
 argument**, since gradient targets are discovered there and anything on `self` is invisible; and
 each recall happens **per call**, since a `ParameterView` is emitted once and reusing one across a
 batch leaves only the first traced call carrying a gradient target.
@@ -64,12 +68,18 @@ from ..detect.objective import (
     probe,
 )
 from ..memory import TursoMemoryBackend
-from ..method import MethodAgent, ai_method
+from ..method import MethodAgent, MethodThread, ai_method
 from .aimine import ANALYSIS_IMPORTS, Discovered, Edge, grade, to_csv
 from .miner import directly_follows, start_and_end_activities
 from .toolkit import SEED_TOOLKIT, rehearsal_probe
 
 SEED_GUIDANCE = "# No guidance learned yet.\n"
+
+SCRATCH = "scratch"
+"""The rehearsal ran from scratch: fresh sandbox, no recorded history reused."""
+
+REPLAY = "replay"
+"""The rehearsal forked a recorded thread and replayed only the suffix after the edit."""
 
 
 class Guidance(BaseModel):
@@ -289,6 +299,21 @@ class Attempt:
 
     rehearsal_error: str = ""
     """Why rehearsal failed, when it did. Empty on a healthy round."""
+
+    rehearsal_path: str = SCRATCH
+    """`REPLAY` or `SCRATCH`: how the rewritten toolkit was rehearsed.
+
+    On the `Attempt` because the two paths cost differently and answer slightly
+    different questions — a replayed suffix re-tests the recorded trajectory under the
+    edit, a scratch rehearsal tests the code against fixed fixtures — and a reader of
+    the training record must be able to tell which evidence each round's verdict is.
+    For this workload the value is always `SCRATCH`; see `check_toolkit` for why the
+    replay path is structurally vacuous here, and `rehearsal_fallback_reason` for the
+    per-round cause.
+    """
+
+    rehearsal_fallback_reason: str = ""
+    """Why the scratch path ran instead of a suffix replay. Empty when replay ran."""
 
     @property
     def gap(self) -> float:
@@ -858,6 +883,112 @@ def rehearse(code: str) -> Rehearsal:
     )
 
 
+def toolkit_edit_reach(prior: str, candidate: str) -> int | None:
+    """The first decision index a toolkit edit alters, or None when nothing changed.
+
+    Counterfactual suffix replay (Shepherd) forks a recorded thread at the decision an
+    edit first alters and replays only from there, so this function is the coupling
+    measurement the replay/scratch choice turns on. Its answer for this parameter is
+    structural, not empirical: a toolkit is a `Procedural`, which the runtime executes
+    at sandbox setup (`rehearse` constructs the executor with `initial_code=[code]`,
+    the exact path `CodeExecutionPlan.fresh_tool` takes) and advertises by signature
+    and docstring in the *first* prompt the model sees. Any textual change therefore
+    reaches decision 0 — the strong edit↔side-effect coupling Shepherd names as the
+    limit of the technique, where the suffix after the first altered decision is the
+    whole trajectory and replay degenerates into a full re-run.
+
+    Returning 0 for every real edit is the honest measurement, not a shortcut. A
+    cleverer analysis (which helper changed, which cycle first called it) would be
+    wrong twice over: the advertisement in the prompt preamble changes even for a
+    helper never called, and the sandbox namespace the whole trajectory executed in
+    changes at setup regardless of call order.
+    """
+    return None if prior == candidate else 0
+
+
+@dataclass(frozen=True)
+class ReplayDecision:
+    """Which rehearsal path ran, and why — recorded rather than inferred from cost.
+
+    A loop that silently fell back to scratch every round would look identical to one
+    replaying suffixes, from the outside, until the bill arrived. So the decision is a
+    value the `Attempt` carries, and the reason is prose a reader can audit.
+    """
+
+    path: str
+    """`REPLAY` or `SCRATCH`."""
+
+    reason: str
+    """Why this path, in terms of the two fallback conditions."""
+
+    fork_source: str = ""
+    """The recorded thread id a replay would fork. Empty on the scratch path."""
+
+
+def replay_decision(
+    recorded: MethodThread | None, *, first_altered_decision: int | None
+) -> ReplayDecision:
+    """Choose suffix replay or from-scratch rehearsal for a rewritten toolkit.
+
+    The replay path exists for edits that first bite mid-trajectory: fork the recorded
+    thread at that decision (`MethodThread.fork`, or `spawn(seed_from=recorded.id)`)
+    and re-run only the suffix with the edited toolkit, paying for the shared prefix at
+    prompt-cache-read rates since `opus5` enables caching — the fork-beam benefit
+    compounding into replay. Both fallback conditions are checked here and the losing
+    one is named:
+
+    - **Globally coupled edit.** `toolkit_edit_reach` returns 0 for any real toolkit
+      edit, because the toolkit is consumed at sandbox setup and advertised in the
+      first prompt: the suffix from decision 0 *is* the whole trajectory, so replay
+      buys nothing over scratch and costs the model cycles scratch does not spend
+      (`rehearse` is model-free). This condition is why the replay path is vacuous for
+      this workload — see `check_toolkit`. Checked before thread availability because
+      when both conditions hold, this is the durable, structural cause and the record
+      should name it rather than the incidental one.
+    - **No recorded thread.** Training rounds run through `AIFunction.trace`, which
+      tears its thread down before returning, and a torn-down thread is deregistered —
+      `fork` and `spawn(seed_from=)` both raise `ThreadNotFoundError` for its id. A
+      retired or absent `MethodThread` therefore cannot seed anything, and the check is
+      `recorded.live`, not trust in the caller's bookkeeping.
+
+    Two runtime caveats bound what a replay, where one ever runs, may assume. A seeded
+    history can carry `toolUse` blocks for tools absent from the new thread's schema
+    (`method.py`, `spawn(seed_from=)` docs): safe here because a fork replays the *same*
+    method with the same schema, and a cross-method seed is out of scope. And a pending
+    `notify` is worker-side inject state that `fork` does not copy (measured in
+    `gated.propose_k`): a replay forked after an un-consumed `notify` would silently
+    drop it, so a caller holding one must `run` it into the log first.
+    """
+    if first_altered_decision is None:
+        return ReplayDecision(path=SCRATCH, reason="no edit to replay")
+    if first_altered_decision == 0:
+        return ReplayDecision(
+            path=SCRATCH,
+            reason=(
+                "the edit is globally coupled: the toolkit is executed at sandbox setup "
+                "and advertised in the first prompt, so it alters decision 0 and the "
+                "suffix is the whole trajectory — replay would cost model cycles the "
+                "model-free scratch rehearsal does not"
+            ),
+        )
+    if recorded is None or not recorded.live:
+        return ReplayDecision(
+            path=SCRATCH,
+            reason=(
+                "no recorded thread exists for the prior attempt (trace tears its thread "
+                "down, and a dead id cannot seed a fork), so there is nothing to replay"
+            ),
+        )
+    return ReplayDecision(
+        path=REPLAY,
+        reason=(
+            f"the edit first alters decision {first_altered_decision} of a live recorded "
+            "thread, so the prefix is reusable"
+        ),
+        fork_source=str(recorded.id),
+    )
+
+
 @dataclass(frozen=True)
 class ToolkitCheck:
     """What the pre-round toolkit check decided, and why.
@@ -877,8 +1008,15 @@ class ToolkitCheck:
     reason: str = ""
     """The failing candidate's error, when a rollback happened."""
 
+    replay: ReplayDecision = field(
+        default_factory=lambda: ReplayDecision(path=SCRATCH, reason="no edit to replay")
+    )
+    """Which rehearsal path ran and why. Scratch when the toolkit did not change."""
 
-def check_toolkit(memory: TursoMemoryBackend) -> ToolkitCheck:
+
+def check_toolkit(
+    memory: TursoMemoryBackend, *, recorded_thread: MethodThread | None = None
+) -> ToolkitCheck:
     """Decide which toolkit this round runs with, rolling back a broken rewrite.
 
     Reads the current `toolkit`, rehearses it, and on failure restores
@@ -892,21 +1030,40 @@ def check_toolkit(memory: TursoMemoryBackend) -> ToolkitCheck:
     is returned unchanged and no rollback is claimed — the caller then lets the round
     die loudly rather than mining with code known to be broken, which is the whole
     point of `Procedural` setup raising in the first place.
+
+    **Suffix replay is decided here and, for this parameter, always declined.** When a
+    rewritten toolkit differs from the last good one, `replay_decision` asks whether a
+    recorded thread can be forked at the first decision the edit alters and only the
+    suffix replayed (counterfactual replay). Both fallback conditions fire for this
+    workload: `toolkit_edit_reach` measures every real toolkit edit as reaching
+    decision 0, since the code executes at sandbox setup and its signatures are the
+    first prompt's preamble; and `train` runs rounds through `trace`, which tears its
+    thread down, so `recorded_thread` is None unless a caller kept one alive. The
+    scratch path is also strictly cheaper here — `rehearse` makes no model call, while
+    a replayed suffix from decision 0 would re-take every model decision (albeit with
+    the shared prefix at cache-read pricing, per `opus5`'s cache point). So the
+    decision is recorded on the `ToolkitCheck` and the `Attempt` rather than hidden,
+    and the replay path stays honestly unreachable instead of being faked.
     """
     candidate = str(memory.fetch("toolkit"))
+    prior = str(memory.fetch("last_good_toolkit"))
+    decision = replay_decision(
+        recorded_thread, first_altered_decision=toolkit_edit_reach(prior, candidate)
+    )
     report = rehearse(candidate)
     if report.ok:
         memory.save("last_good_toolkit", candidate)
-        return ToolkitCheck(report=report)
+        return ToolkitCheck(report=report, replay=decision)
 
-    fallback = str(memory.fetch("last_good_toolkit"))
-    if fallback == candidate:
-        return ToolkitCheck(report=report)
-    fallback_report = rehearse(fallback)
+    if prior == candidate:
+        return ToolkitCheck(report=report, replay=decision)
+    fallback_report = rehearse(prior)
     if not fallback_report.ok:
-        return ToolkitCheck(report=report)
-    memory.save("toolkit", fallback)
-    return ToolkitCheck(report=fallback_report, rolled_back=True, reason=report.error)
+        return ToolkitCheck(report=report, replay=decision)
+    memory.save("toolkit", prior)
+    return ToolkitCheck(
+        report=fallback_report, rolled_back=True, reason=report.error, replay=decision
+    )
 
 
 async def train(
@@ -999,6 +1156,10 @@ async def train(
                     unrehearsed=report.unrehearsed,
                     rolled_back=check.rolled_back,
                     rehearsal_error=check.reason or report.error,
+                    rehearsal_path=check.replay.path,
+                    rehearsal_fallback_reason=(
+                        "" if check.replay.path == REPLAY else check.replay.reason
+                    ),
                     method=discovered.method,
                 )
                 training.attempts.append(attempt)

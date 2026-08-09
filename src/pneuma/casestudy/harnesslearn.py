@@ -68,6 +68,7 @@ from ..gated import GatedProposer
 from ..memory import TursoMemoryBackend
 from ..method import ai_method
 from . import miner, rules
+from .minelearn import SCRATCH, ReplayDecision
 
 if TYPE_CHECKING:
     from ..process.ir import Process
@@ -721,6 +722,39 @@ class HarnessProposer(GatedProposer):
         """
 
 
+def replay_path(prior_weight: float, candidate_weight: float) -> ReplayDecision:
+    """Suffix replay or from-scratch, for a rewritten harness weight. Always scratch.
+
+    The same question `minelearn.check_toolkit` answers for the toolkit, asked of
+    `coverage_weight`, with the same structural answer and a sharper reason. The weight
+    is consumed at *every* step of everything that judges it: `compose` closes the
+    objective over it, so the gate's sweep evaluates it at every threshold on the grid,
+    and the propose prompt interpolates it in its opening lines — so any change alters
+    decision 0 and the suffix after the first altered decision is the whole trajectory
+    (Shepherd's strong-coupling limit, exactly). The gate is also deterministic and
+    model-free, and the propose cycles run through `trace`, which tears its thread down
+    before returning, so there is neither a saving to capture nor a recorded thread to
+    fork. Were a replay ever to run, the shared prefix would at least bill at
+    cache-read rates (`opus5` injects a cache point), but a prefix of length zero
+    compounds nothing.
+
+    Recorded per round rather than asserted once, because the record is the point: a
+    loop whose replay path never fires and a loop with no replay path look identical
+    unless each round says which it was and why.
+    """
+    if prior_weight == candidate_weight:
+        return ReplayDecision(path=SCRATCH, reason="no edit to replay")
+    return ReplayDecision(
+        path=SCRATCH,
+        reason=(
+            "the edit is globally coupled: the weight parameterises the objective at "
+            "every swept threshold and opens the propose prompt, so it alters decision "
+            "0 and the suffix is the whole trajectory; the gate is model-free, so "
+            "scratch is also strictly cheaper"
+        ),
+    )
+
+
 @dataclass
 class Round:
     """One harness proposal and everything measured about it."""
@@ -735,6 +769,16 @@ class Round:
     refusals: tuple[str, ...] = ()
     rejected_before: int = 0
     """Proposals the gate turned away before this one was admitted. Zero on a clean round."""
+
+    path: str = SCRATCH
+    """`REPLAY` or `SCRATCH`: how this round's candidate was judged.
+
+    Always `SCRATCH` for this workload — see `replay_path` for the measurement — and
+    carried per round so a record reader can tell a declined replay from a missing one.
+    """
+
+    path_reason: str = ""
+    """Why the scratch path ran instead of a suffix replay. Empty when replay ran."""
 
 
 @dataclass
@@ -968,6 +1012,9 @@ async def train(
                 proposal: HarnessProposal = traced.value
 
                 verdict = proposer.gate(proposal.coverage_weight)
+                # `weight` is a ParameterView; `str` renders its value without touching
+                # the dataflow edge that `trace` above already consumed.
+                decision = replay_path(float(str(weight)), proposal.coverage_weight)
                 training.rounds.append(
                     Round(
                         index=index,
@@ -987,6 +1034,8 @@ async def train(
                         admitted=verdict.ok,
                         refusals=verdict.refusals,
                         rejected_before=len(proposer.rejected) - before,
+                        path=decision.path,
+                        path_reason=decision.reason,
                     )
                 )
                 training.rejections.extend(a.report_text() for a in proposer.rejected[before:])
