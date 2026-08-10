@@ -321,12 +321,6 @@ def test_a_search_that_hits_its_limit_reports_unknown_not_vacuous(
     assert exhaustive.live is True
 
 
-# Two tests that used to sit here — effect accumulation, and a self-contradictory
-# conjunction — moved to `test_vacuity.py` with `rules.liveness_of`. They were tests of
-# the reachability walk rather than of rule derivation, and the walk is now
-# `pneuma.detect`'s, which this module only consumes.
-
-
 # ── The shipped defaults, on the real logs ──
 
 

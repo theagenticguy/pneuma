@@ -18,18 +18,52 @@ That is the whole reason `TextGradOptimizer` is here rather than another IR cons
 alternative is hand-editing a docstring forever, once per observed failure, with no record of
 which edit helped.
 
+## Why the interpreter also halts a dither, and why the halt is not the fix
+
+`interpreter.run` takes `max_revisits` (`DEFAULT_MAX_REVISITS` of 5) and raises `NoProgress`
+once that many consecutive re-entries happen with no new state in between. Five is
+conservative on purpose: a legitimate detour re-enters a state once or twice, while the
+dithering measured here re-enters until the budget stops it.
+
+That halt does not compete with this loop, and the distinction is the reason `NoProgress` is a
+`ProcessError` subclass rather than a third outcome. A halt changes what a failure *costs*, not
+whether it happened: the agent still dithered, and the advice that should have prevented it is
+still the thing to sharpen. So `run_batch` counts a `NoProgress` case in `looped` exactly as it
+counts a burnt budget, which keeps `completion_rate` measuring what it always measured, and
+records it a second time in `halted_early`. A round where `halted_early` equals `looped` is
+failing cheaply; a round where it is zero with `looped` high is paying full price for the same
+lesson. `summarise` prints both columns for that reason — the `looped` column alone cannot tell
+the two apart, and only one of them was cheap.
+
+The halt is also what makes the dither *legible to retrieval*, which is the next section's
+argument: a case cannot be told it is at risk of looping unless something recorded that it
+already circled.
+
 ## The wiring, and the failure mode it avoids
 
-`LearningNavigator.choose` takes `playbook` as a **real parameter**, so a recalled
-`ParameterView` arrives in the call arguments where `collect_nodes` can find it. Hide the same
-text on `self` and the gradient has nothing to land on: not a degraded gradient, none at all.
-This is `pneuma.method`'s argument in production form — see [method.md](method.md), where the
-same constraint is stated from the decorator's side.
+`LearningNavigator.choose` declares `playbook` as `Annotated[list[str], Recalled("guidance",
+k=TOP_K)]`, so where the value comes from is part of the method's contract and
+`pneuma.recall`'s `Recall` binder is what performs it: one fresh search per decision, injected
+into the call arguments where `collect_nodes` can find it. Hide the same text on `self` and the
+gradient has nothing to land on: not a degraded gradient, none at all.
+
+Declaring it on the signature buys more than documentation. The rules this loop depends on —
+recall freshly per call, pass the view whole, never interpolate it, never stash it on `self` —
+are each silent when broken, and a loop that breaks one reports rounds while learning nothing.
+The binder stores no view, injects into the argument list, and refuses a search-mode parameter
+with no query, so three of them are unrepresentable and the fourth is a `RuntimeError`. This is
+`pneuma.method`'s argument in production form — see [method.md](method.md), where the same
+constraint is stated from the decorator's side, and [recall.md](recall.md) for the parts that
+generalise past this module.
 
 The loop itself is deliberately plain: run cases, observe how many looped, phrase that as
 feedback in plain English, let the optimizer rewrite the playbook, run again. The rules are
 never touched, so verification stays valid without being re-run — the process did not change,
 only the advice the agent reads before choosing.
+
+What stays here is the query, because it is the one part that does not generalise: which
+entries bear on a decision is a judgment about this process's markings, and that is the next
+section.
 
 ## Why the playbook is a list of addressable entries rather than one string
 
@@ -46,14 +80,24 @@ Splitting the playbook into addressable entries and recalling by *search* fixes 
 `TursoMemoryBackend.search` puts `{entry_id: value}` for the retrieved entries in the recall
 event's meta; that travels to the reconstructed `ParameterNode` and back out as
 `consolidate`'s `retrieved=`, so consolidation edits those entries and leaves the rest
-byte-identical. `test_turso_memory.py` asserts exactly that: a gradient about entry A does not
-modify entry B. See [turso_backend.md](turso_backend.md) for the storage side.
+byte-identical. `tests/library/test_turso_memory.py` asserts exactly that: a gradient about
+entry A does not modify entry B. See [turso_backend.md](turso_backend.md) for the storage side.
 
-The query is built from the decision context — the state, the legal moves, whether any of them
-is a revisit — so what the agent reads is the advice that bears on the choice in front of it
-rather than everything ever learned. That is also a retrieval risk worth naming: advice that is
-never retrieved is never reinforced and never corrected, so an entry can sit in the store
-being wrong at a decision the query does not describe.
+The query is built from the decision context, and `decision_query` puts four things in it: the
+state, the names of the legal moves, whether any of them is a revisit, and the dead ends this
+run has already voiced. So what the agent reads is the advice that bears on the choice in front
+of it rather than everything ever learned.
+
+The fourth is worth separating from the third, because they are different situations. "One of
+these moves goes somewhere you have been" is a fact about the options; "this case has already
+dead-ended twice" is a fact about the run, and it is read off the interpreter's typed `Revisit`
+record rather than re-derived from the path. A case that has circled twice is not in the same
+position as one facing its first backward edge, and advice about breaking out of a loop can
+only be retrieved when the query says a loop is in progress.
+
+That is also a retrieval risk worth naming: advice that is never retrieved is never reinforced
+and never corrected, so an entry can sit in the store being wrong at a decision the query does
+not describe.
 
 ## The safety property, and why it survives the parameter changing shape
 

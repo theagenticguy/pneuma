@@ -437,21 +437,3 @@ def grade(
         baseline_edges=len(baseline.process.transitions),
     )
 
-
-async def discover_and_grade(
-    events: pl.DataFrame,
-    *,
-    name: str = "AgentMined",
-    sample_cases: int | None = 400,
-    baseline_threshold: int = 25,
-    **overrides: object,
-) -> Graded:
-    """Have the agent mine `events`, then grade what it produced."""
-    miner_agent = Miner()
-    compiled = miner_agent.compiled("discover", **overrides)
-    discovered = await compiled(
-        to_csv(events, sample_cases=sample_cases),
-        events["activity"].n_unique(),
-        events["case_id"].n_unique(),
-    )
-    return grade(events, discovered, name=name, baseline_threshold=baseline_threshold)

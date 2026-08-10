@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from ..process.ir import Guard, Invariant, Process, State, Transition, Variable
+from ..process.ir import Process, State, Transition
 
 
 @dataclass(frozen=True)
@@ -240,33 +240,3 @@ def bottlenecks(events: pl.DataFrame) -> pl.DataFrame:
         .sort("total_hours", descending=True)
     )
 
-
-def compliance_invariant(
-    process: Process,
-    *,
-    name: str,
-    stated_as: str,
-    forbidden_state: str,
-    counter: str,
-    at_least: int,
-) -> Process:
-    """Attach a business rule to a mined model.
-
-    The rule is the part mining cannot give you. A log says what happened; whether
-    it *should* have is a policy question, so the invariant comes from a human and
-    the verifier decides whether the mined reality respects it.
-    """
-    variables = [
-        *process.variables,
-        Variable(name=counter, low=0, high=max(at_least, 1) + 1, initial=0),
-    ]
-    invariants = [
-        *process.invariants,
-        Invariant(
-            name=name,
-            stated_as=stated_as,
-            forbidden_state=forbidden_state,
-            forbidden_when=[Guard(variable=counter, op="lt", value=at_least)],
-        ),
-    ]
-    return process.model_copy(update={"variables": variables, "invariants": invariants})

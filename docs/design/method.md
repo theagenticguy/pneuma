@@ -1,8 +1,9 @@
 # `method.py` — design rationale
 
-Why `@ai_method` exists alongside `@ai_function`, and what the object-oriented route costs.
-The module docstring states the three losses and the trick that recovers them; this file
-carries the argument.
+Why `@ai_method` exists alongside `@ai_function`, what the object-oriented route costs, and why
+the live unit built on top of it is one method rather than one agent. The module docstring states
+the three losses and the trick that recovers them; this file carries the argument, and then the
+consequence the same argument has for a capability that has to stay alive across cycles.
 
 ## The route this is a reaction to
 
@@ -53,6 +54,64 @@ an event log, a fleet topology — belongs on `self`, where the optimizer cannot
 `HarnessProposer` in `casestudy/harnesslearn.py`, whose post-conditions read `self` while its
 learnable weight arrives as an argument; that split is not a convention, it is what the two
 mechanisms each require.
+
+## Why the live unit is a method-thread rather than an agent-thread
+
+A compiled method is stateless: awaiting the `AIFunction` spawns a thread, runs one cycle, tears
+it down, and two calls share nothing. That is the right default and the wrong shape for anything
+that is a *conversation*, so `spawn(name, coordinator)` returns a `MethodThread` whose successive
+`run` calls see each other's turns.
+
+The unit is one method and not one agent, and that is forced rather than chosen. A runtime thread
+wraps exactly one `Spawnable` — one `AIFunction`, one `prompt_fn`, one typed signature — and there
+is no signature that is simultaneously `verify(claim: str)` and `determine(facts: list[str])`. An
+agent with three `@ai_method`s therefore holds three threads if it wants three live capabilities,
+which sounds like a cost until you notice it is the same argument the whole module rests on: the
+thing that cannot be multiplexed is precisely the typed contract the single `str` would have
+erased. An agent-thread would have to accept some union of its methods' parameters, and the only
+union that always works is a string.
+
+The handoff between siblings is therefore explicit. `spawn(..., seed_from=other.id)` copies
+another thread's log into the new one at spawn time, so `determine` can inherit `verify`'s context
+without sharing a thread with it — a named point in the code rather than ambient shared state. It
+has one honest rough edge: when the two methods have different output types, the inherited history
+carries `toolUse` blocks naming a tool absent from this thread's schema. Reconstruction handles
+that offline; whether a live provider accepts historical tool calls it was never offered is the
+provider's decision, not this library's.
+
+**History stays in the event log, not on `self`.** Accumulating turns on the instance and
+re-rendering them into each prompt is the obvious alternative, and it fails for the same reason
+`Agent` cannot be optimized: anything on `self` is invisible to `collect_nodes`. It would also
+duplicate machinery the runtime already owns — history *is* the coordinator's event log,
+reconstructed fresh per cycle — and the two copies would drift the first time a cycle was
+summarized, forked, or replayed. So `MethodThread` holds a `ThreadHandle` and nothing else that
+resembles state.
+
+**What the typed contract costs here, stated plainly.** A `MethodThread` is not addressable by
+`send_message`: that tool only targets threads whose input shape is `STR_PROMPT`, and a
+`MethodAgent` compiles to `STRUCTURED` exactly so its parameters stay typed. This is the module's
+central tradeoff arriving at its bill, and it is a small one — peers reach a capability as a typed
+tool through `agents()`, which is checkable where a chat box is not. `notify()` covers the cases
+that still want an inbound side channel: it appends to the log without starting a cycle, so the
+next `run` reads it as context.
+
+Two smaller lifecycle decisions are worth recording, because each turns a silent failure into a
+loud one. `spawn` requires the caller's `coordinator` rather than defaulting to one:
+`AIFunction.spawn()` with no coordinator builds a *private* in-memory coordinator and worker per
+call, which would place the thread outside the caller's registry — invisible to peers, no parent
+edge, its own event log — and taking the parameter makes that unrepresentable. And `retire` is
+idempotent against the runtime and not merely against the object, suppressing
+`ThreadNotFoundError` because that is a `KeyError` and would otherwise sail past a caller's
+`RuntimeError` handler and abort an unwind halfway, leaving alive exactly the threads the unwind
+existed to release. Every operation on a retired thread raises instead of silently respawning: a
+caller that believes it is continuing a conversation would get a blank one with the same typed
+signature, which is a wrong answer wearing a right one's shape.
+
+`_owner_name` is one function for one reason. The name an instance publishes under is both the
+compiled tool's prefix (`{owner}.{method}`) and the subject of every lifecycle error message, and
+if those two disagree an error names a thread the caller cannot find in the tool schema it was
+reading. `spawn` passes the *compiled* name through to the thread, so an `@ai_method(..., name=...)`
+rename wins in both places at once.
 
 ## What this does not fix
 

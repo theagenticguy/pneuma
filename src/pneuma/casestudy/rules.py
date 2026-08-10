@@ -127,10 +127,9 @@ def derive_precedences(
     return sorted(found, key=lambda p: -p.cases)
 
 
-# `detect.RuleVerdict` is a superset of the `Liveness` record this module used to
-# define: same four fields and the same three-valued `live`, plus a named cause, a
-# shortest witness trace and per-relaxation counts. Kept as an alias so a caller that
-# annotates against `rules.Liveness` still type-checks.
+# Alias: a caller that annotates against `rules.Liveness` gets `detect.RuleVerdict`,
+# the record with the three-valued `live`, a named cause, a shortest witness trace
+# and per-relaxation counts.
 Liveness = RuleVerdict
 
 

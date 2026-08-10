@@ -60,8 +60,6 @@ from ..process import interpreter
 from ..process.ir import Process, Transition
 from ..recall import Recall, Recalled
 
-SEED_PLAYBOOK = "# No guidance learned yet.\n"
-
 SEED_ENTRIES: tuple[str, ...] = (
     "Prefer a transition whose target you have not already visited in this case; "
     "revisiting a state is legal but makes no progress.",

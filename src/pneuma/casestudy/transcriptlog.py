@@ -54,11 +54,9 @@ from .miner import _identifier
 
 CLAUDE_SQL = "claude-sql"
 
-# Two globs worth naming: the bonk fleet's own agent runs, and every transcript on the
-# box. The fleet corpus is the honest comparator for the permit log (similar event
-# count); the full corpus is the scale test.
+# The bonk fleet's own agent runs: the honest comparator for the permit log
+# (similar event count).
 FLEET_GLOB = "/home/lalsaado/bonk-fs/bonk-config-dirs/.claude/projects/**/*.jsonl"
-FULL_GLOB = "/home/lalsaado/.claude/projects/**/*.jsonl"
 
 Granularity = Literal["tool", "family", "server"]
 Sampling = Literal["longest", "random"]

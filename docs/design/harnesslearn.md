@@ -73,8 +73,8 @@ shape of the graph rather than about the rule.
 That is a rule made unsatisfiable by a threshold change and then reported green by the checker,
 reachable through a harness parameter, and *invisible to the objective probe*. A parameter that
 can turn a live rule into decoration while every score-shaped check reports PASS is not a tuning
-knob. It stays a constant, and `admits` measures rule liveness precisely so the exclusion is
-enforced by a number rather than trusted.
+knob. It stays a constant, and `rule_liveness` measures rule liveness precisely so the exclusion
+is enforced by a number rather than trusted.
 
 **Not delegated, because the gate cannot judge it: `sweep_resolution`.** The prober's own grid
 density. Measured on the permit log, whose composed objective is sound:
@@ -132,9 +132,10 @@ Three structural enforcements, in descending order of how much they rely on argu
 
 2. **The gate runs on the proposal before the proposal is used, and refusal is the default.**
    `admit` composes the objective at the *candidate* value and probes it. A refusing probe means
-   the candidate never reaches a training round. Wired as a post-condition on `propose`, so a
-   pathological proposal is rejected and re-asked with the detector's own report as the feedback
-   rather than requiring a manual check.
+   the candidate never reaches a training round. Wired as the post-condition on `propose` —
+   `proposer.gated("propose")` is what installs it — so a pathological proposal is rejected and
+   re-asked with the detector's own report as the feedback rather than requiring a manual check.
+   The placement itself is `GatedProposer`'s; see the section below for the split.
 
 3. **Admission is conjunctive across two independent detectors, and the safety half cannot be
    traded away.** `Admission.ok` requires the objective probe to pass *and* every derived rule
@@ -142,6 +143,37 @@ Three structural enforcements, in descending order of how much they rely on argu
    separate state spaces, and the window measurement above is why: an objective-only gate reports
    PASS on a setting that makes all three compliance rules vacuous. The rule half is not folded
    into the quality score where a high objective number could outvote it; it is a veto.
+
+## What of that enforcement is this module's, and what belongs to the library
+
+Enforcement 2 above splits cleanly in two, and the split is worth naming because only one half is
+about harnesses.
+
+The *placement* generalises. `HarnessProposer` subclasses `GatedProposer`, which owns `admits` as
+a post-condition, the `rejected` ledger, the wrapping that stops an internal fault from wearing a
+verdict's clothes, and the guard on the post-condition's parameter name. Not one of those is a
+statement about mining objectives — they are what any proposer judged by its own gate needs — and
+a second copy of them here would mean the next such agent either re-derives them or does without.
+See [gated.md](gated.md) for the arguments behind each.
+
+The *judgment* does not generalise, and the reason is measurable rather than aesthetic: `admit`
+needs polars, a process miner and a reachability sweep, and the library boundary forbids all
+three. So the base takes its gate as a **value** rather than as an abstract method, and this
+module passes one in. What stays here is the whole of what is domain: the log and the sweep
+settings the gate composes over, `admit` itself, `candidate_of` picking `coverage_weight` out of
+the proposal because `evidence` is an auditable artifact and not a thing that is admissible, and
+`REASK` — the sentence naming *which direction* on this weight axis causes the pathology just
+refused. The base guarantees a rejection reaches the model with its cause named; `REASK` is what
+makes the retry worth an attempt, because "rejected" teaches nothing.
+
+Two details of the binding are load-bearing and easy to undo by accident. The gate is declared as
+an attribute at the narrower `Callable[[float], Admission]` type and *bound* in `__init__` from
+the private `_gate` method, because the base's declaration returns the wide `Verdict` and every
+caller here reads `Admission`-only members. Defining a method named `gate` instead would not
+narrow it — the base's attribute declaration still wins — which is the only reason two names
+exist. And `_gate` names its parameter `candidate` rather than `weight`, because a protocol
+member's parameter names are part of its contract for anything callable by keyword: the rename is
+what makes this assignable to the base's gate type at all.
 
 ## The score channel: a number, not a rewrite
 
@@ -175,6 +207,28 @@ from a bad one. See [discrimination.md](discrimination.md). `Admission.discrimin
 them in that vocabulary, and it is what disqualifies the obvious alternative signal — the
 honest-optimum-versus-degenerate separation is exactly 1.0 at every passing weight, so it is flat
 and useless.
+
+## Why every round records that it did not replay a suffix
+
+`replay_path` asks, per round, whether the new weight could be judged by forking the prior round's
+recorded thread at the first decision the edit alters and replaying only the suffix. The answer is
+always from-scratch, and the reason is sharper here than it is for a toolkit.
+
+A weight is consumed at *every* step of everything that judges it. `compose` closes the objective
+over it, so the gate's sweep evaluates it at every threshold on the grid, and the propose prompt
+interpolates it in its opening lines. Any change therefore alters decision 0, and the suffix after
+the first altered decision is the whole trajectory. On top of that the gate is deterministic and
+model-free, and the propose cycles run through `trace`, which tears its thread down before
+returning: there is neither a saving to capture nor a live thread to fork. Prompt caching does not
+change the arithmetic — a shared prefix would bill at cache-read rates, but a prefix of length
+zero compounds nothing.
+
+So the decline is structural, and it would be tempting to assert it once in prose and stop. The
+reason `Round.path` and `Round.path_reason` exist instead is that a loop whose replay path never
+fires and a loop with no replay path look identical unless each round says which it was and why.
+The `ReplayDecision` type is shared with `minelearn` deliberately: the same question about a
+different parameter should be legible in the same vocabulary, and see
+[minelearn.md](minelearn.md) for the code-parameter form of the same finding.
 
 ## What this does not claim
 

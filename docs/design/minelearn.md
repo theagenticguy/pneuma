@@ -76,6 +76,56 @@ supposed to be learning reports rounds it never ran the rewrite through.
 Rehearsal catches load failures and call-time failures on the seed inputs. It does not catch a
 helper that loads, runs, and returns something subtly worse — that is what the score is for.
 
+## Why the rehearsal never replays a suffix, and why that is recorded per round
+
+There is a cheaper-looking way to test a rewritten toolkit: fork the thread the prior attempt
+recorded at the first decision the edit alters and replay only the suffix from there. That is
+counterfactual suffix replay, and `replay_decision` asks for it every round and declines it every
+round. The decline is a measurement rather than a policy, and it is worth having both.
+
+`toolkit_edit_reach` is the measurement, and its answer for this parameter is structural rather
+than empirical: any textual change reaches decision **0**. A toolkit is a `Procedural`, so the
+runtime executes it at sandbox setup and advertises its signatures in the *first* prompt the model
+sees. The suffix after the first altered decision is therefore the whole trajectory — the strong
+edit-to-side-effect coupling that bounds the technique — and replay degenerates into a full
+re-run. Returning 0 for every real edit is the honest answer, not a shortcut: a cleverer analysis
+of which helper changed and which cycle first called it would be wrong twice over, because the
+advertisement changes even for a helper nobody calls and the sandbox namespace the whole
+trajectory ran in changes at setup regardless of call order.
+
+Two more things follow, and they push the same way. The scratch path is strictly cheaper here,
+because `rehearse` makes no model call at all while a suffix from decision 0 would re-take every
+model decision. That holds even though `pneuma.model.opus5` enables prompt caching, so a
+shared prefix bills at cache-read rates rather than being re-ingested: a discount on a prefix of
+length zero is still zero, and the comparison is against a rehearsal that spends nothing. And
+`train` runs its rounds through `trace`, which tears its thread down before returning — a
+torn-down thread is deregistered, so its id cannot seed a fork — and `train` passes no
+`recorded_thread` at all, so there is no live thread to fork even if there were a saving to
+capture. `replay_decision` checks `recorded.live` rather than trusting a caller's bookkeeping.
+It reports the coupling first when both conditions hold, because that is the durable cause and
+the record should name the durable one rather than the incidental one.
+
+So why keep the path at all, and why write the reason down every round? Because a loop whose
+replay never fires and a loop with no replay path look identical from outside until the bill
+arrives. `ToolkitCheck.replay` carries the `ReplayDecision`, the `Attempt` carries
+`rehearsal_path` and `rehearsal_fallback_reason`, and a reader of the training record can tell a
+declined replay from a missing one and see which evidence each round's verdict rests on. The
+alternative — asserting the vacuity once in prose — leaves the record unable to say it.
+
+The two values are named `SCRATCH` and `REPLAY` after the *path taken*, not after the outcome,
+and the fallback reason names the condition that lost. That pairing is what makes the record
+auditable: `SCRATCH` alone would be a verdict with no argument in it, while "scratch, because the
+edit is globally coupled" and "scratch, because no recorded thread exists" are two different
+findings about this loop that a reader should not have to guess between. The same question is
+asked and answered the same way one level up, for a number instead of code: see
+`harnesslearn.replay_path`.
+
+Where a replay ever does run, two runtime caveats bound what it may assume, both named on
+`replay_decision`. A seeded history can carry tool-use blocks for tools absent from the new
+thread's schema, which is safe here only because a fork replays the *same* method with the same
+schema. And a pending `notify` is worker-side inject state a fork does not copy, so a caller
+holding one must run it into the log first or the replay silently drops it.
+
 ## Two wiring details the loop does not work without
 
 A recalled value arrives as a **call argument**, because gradient targets are discovered in call

@@ -20,7 +20,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
 
 from .ir import Invariant, Process, Transition
 
@@ -401,7 +400,3 @@ def offer(
     ]
     return "\n".join(lines)
 
-
-def pick_first(_state: str, enabled: list[Transition], _variables: dict[str, Any]) -> str:
-    """A deterministic stand-in for an agent, for tests and dry runs."""
-    return enabled[0].name
