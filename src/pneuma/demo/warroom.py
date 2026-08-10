@@ -1,31 +1,36 @@
-"""The war room: one incident, run on the library's `Team` skeleton.
+"""The war room: one incident, run on the library's hooks-first `Team`.
 
-`Team` owns the shape this file used to spell out — fan out to the cast, hold a barrier, run a
-lead against a post-condition oracle with a budgeted hiring seam, roll the subtree's tokens up,
-and retire everybody whatever happened. None of that is about incidents, so none of it is here
-any more. What is left is the part that *is* about incidents: four telemetry planes, an
-`IncidentLead` that holds nothing, the roles it may hire, and `incident.verify` as the standard.
+`team.core.Team` owns the mechanics — spawn the specialists, run the lead with them as typed
+tools, retire everybody — and the hooks own the phases: `Briefing` fans the opening out
+behind a barrier and folds what came back into the lead's own prompt. What is left here is
+the part that *is* about incidents: four telemetry planes, an `IncidentLead` that holds
+nothing, the roles it may hire, and `incident.verify` as the standard.
 
-The thread the model cannot see is still the point of the demo. The four specialists hold disjoint
-evidence and can only reach each other through the runtime's `send_message`, which is the one
-place the demo deliberately parts company with the library: `send_message` refuses any target
-whose `input_shape` is not `STR_PROMPT` (`ai_thread/tools.py:172-176`), so a room of chat peers is
-a room of agents compiled down to one `str`. `team.py` therefore mentions `send_message` nowhere
-and joins its members as typed tools; this file keeps the bus, because a room of peers is the
-demo's subject. Subclassing is what makes both true at once.
+Two demo-specific compositions worth naming. The *hiring* rides the lead's own
+`config_hook` — `staffing_tools` over the demo's `Staff` roster — rather than the library's
+`Hiring` hook, because the demo restores each role's `purpose` into the hire tool's
+description and lands each mandate on the hired agent, both of which are `Staff`'s business;
+the core recomposes a lead's own hook into the one hook it installs, so nothing is lost. The
+*standard* rides the lead's own `post_conditions` — the runtime turns a refused verdict into
+re-ask feedback the next attempt reads — so the library's team stays free of any grading
+vocabulary.
+
+The thread the model cannot see is still the point of the demo: the specialists are
+`STR_PROMPT` `Agent`s, so they remain reachable through the runtime's `send_message` as chat
+peers, exactly as before — and they join the lead as typed tools too, which is the library's
+own path.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+import time
 from typing import Any
 
-from ai_functions import AIFunction
-from ai_functions.types import ThreadContext
-from pydantic import AliasChoices, ConfigDict, Field
+from ai_functions.runtime.usage import subtree_usage
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from .._team_legacy import Recruit, Team, TeamRun
+from ..team import Team, Workspace
+from ..team.hooks import Briefing
 from . import incident
 from .cast import IncidentLead, Specialist, Verdict
 from .staffing import Staff, staffing_tools
@@ -38,27 +43,20 @@ OPENING = (
 )
 
 
-class Investigation(TeamRun):
-    """Everything one war-room run produced: a `TeamRun` under the demo's own names.
+class Investigation(BaseModel):
+    """Everything one war-room run produced, under the demo's own names.
 
-    Two things this class buys, and both are named in `team.py`. It narrows `verdict` to
-    `Verdict`, which is what makes `deserialize_result(serialize_result(run)) == run` true — the
-    base's `verdict: Any` validates a serialised `BaseModel` back as a plain `dict`, so the
-    protocol's `Ensures` holds for a subclass and not for `TeamRun` itself (`team.py:204-224`).
-
-    And it keeps the field set the demo already published. `TeamRun` calls them `briefings` and
-    `hiring_log`; an `investigation.json` on disk and `docs/build_pdf.py:68-69` call them
-    `findings` and `staffing_log`. Renaming a field of a shipped artifact to match a base class
-    would be the library dictating the application's vocabulary, so the fields keep the library's
-    names inside the model and the demo's names everywhere a reader meets them: serialisation
-    writes the aliases, validation accepts either, and the properties keep `result.findings`
-    working for `cli.py:102-106`. Measured against `artifacts/run3/investigation.json`: same nine
-    keys, same order.
+    The field set the demo already published: an `investigation.json` on disk and
+    `docs/build_pdf.py:68-69` read `findings` and `staffing_log`, so serialisation writes
+    those aliases, validation accepts either, and the properties keep `result.findings`
+    working for `cli.py`. `verdict` is typed, so the artifact round-trips equal.
     """
 
     model_config = ConfigDict(serialize_by_alias=True)
 
     verdict: Verdict
+    correct: bool
+    oracle_failures: list[str]
     briefings: dict[str, str] = Field(
         serialization_alias="findings",
         validation_alias=AliasChoices("briefings", "findings"),
@@ -67,6 +65,10 @@ class Investigation(TeamRun):
         serialization_alias="staffing_log",
         validation_alias=AliasChoices("hiring_log", "staffing_log"),
     )
+    input_tokens: int
+    output_tokens: int
+    turns: int
+    wall_seconds: float
 
     @property
     def findings(self) -> dict[str, str]:
@@ -79,58 +81,55 @@ class Investigation(TeamRun):
         return self.hiring_log
 
 
-@dataclass
-class WarRoom(Team):
-    """The incident, supplied to the skeleton: a cast, a briefing, a lead, and a standard.
+class _LeadWatch:
+    """A hook that captures the lead's live thread id, for the usage rollup.
 
-    Six methods and no phases. `question` is keyword-only because `Team`'s fields are all
-    defaulted and a required positional cannot follow them — the constructor `cli.py:46` already
-    writes is unchanged, and a `WarRoom()` with nothing to investigate is still refused.
+    The lead's thread is the root of the whole run — members spawn as its children, and
+    hires as its children too (`parent_id=ctx.thread_id` in the hiring tools) — so
+    `subtree_usage` walking from it reaches every model call the run made. The thread is
+    fresh per run (never seeded), so its log is counted whole with no baseline.
     """
 
-    question: str = field(kw_only=True)
-    planes: tuple[str, ...] = PLANES
-    name: str = "war-room"
-    roster: Staff = field(default_factory=Staff)
-    """Narrowed from `Roster`: a `Staff` is what lands each hire's mandate on the hire itself."""
+    def __init__(self) -> None:
+        self.thread_id: Any = None
 
-    # ── What the skeleton asks for ──
+    def on_assemble(self, work: Workspace) -> None:
+        self.thread_id = work.lead.id
 
-    def members(self) -> Sequence[Recruit]:
-        """One specialist per plane, built per run so a test can bind a model after construction."""
-        return [Specialist(plane) for plane in self.planes]
 
-    def briefing(self, member: Recruit) -> str:
-        """One opening for everybody: each specialist's own evidence is already in its prompt."""
-        del member
-        return OPENING
+class WarRoom:
+    """The incident, composed onto the library's team: a cast, a briefing, a lead, a standard.
 
-    def lead_function(self) -> AIFunction[..., Any]:
-        """The lead, carrying the demo's own hiring hook. `Team` attaches only the oracle.
+    Args:
+        question: What the room investigates — the room's own, not the caller's, which is
+            why `investigate` takes no request.
+        max_hires: The lead's headcount budget for `staffing_tools`.
+        planes: One specialist per entry, each holding that plane's private evidence.
+    """
 
-        This is one of the two exits `_gated_lead` names for a lead that arrives with a hook: keep
-        the hook and return an empty `catalog()`, or compose the team's hiring into it
-        (`team.py:763-769`). The runtime calls exactly one `config_hook` per cycle, so a lead with
-        a hook and a team with a catalog is a real conflict the library refuses rather than
-        resolves.
+    name = "war-room"
 
-        The choice between them is measured, not stylistic. `hiring_tools` renders its catalog as
-        role *names*, because a `Mapping[str, Callable]` has nothing else, while the demo's `hire`
-        description has always carried each role's `purpose` — and a lead choosing between three
-        roles it is told nothing about is choosing on a word. `staffing_tools` restores it, so
-        routing the war room through that one binding also means the hook the offline tests
-        exercise is the hook a live run uses. The oracle composes the ordinary way regardless:
-        `_gated_lead` prepends it, and a lead with a hook and no catalog keeps its hook untouched.
-        """
-        lead = IncidentLead(specialists=list(self.planes)).build()
-        return lead.replace(config_hook=staffing_tools(self.roster, max_hires=self.max_hires))
+    def __init__(
+        self,
+        *,
+        question: str,
+        max_hires: int = 3,
+        planes: tuple[str, ...] = PLANES,
+    ) -> None:
+        self.question = question
+        self.max_hires = max_hires
+        self.planes = planes
+        self.staff = Staff()
+        """The roster the run used, replaced per `investigate` — read it after a run."""
+
+    # ── The demo's own judgment ──
 
     def oracle(self, response: Verdict) -> None:
-        """Post-condition: the lead's verdict must satisfy the planted ground truth.
+        """Post-condition on the lead's verdict: refuse until it satisfies the ground truth.
 
-        Failures come back as assertion text, which the library feeds to the model as a new user
-        turn so it can revise rather than restart. The message names the shortfall without leaking
-        the answer.
+        Failures come back as assertion text, which the runtime feeds to the model as a new
+        user turn so it can revise rather than restart. The message names the shortfall
+        without leaking the answer.
         """
         if response.mechanism not in incident.MECHANISMS:
             raise AssertionError(
@@ -157,48 +156,59 @@ class WarRoom(Team):
                 + ". Re-interrogate the specialists whose planes you leaned on least."
             )
 
-    def grade(self, verdict: Any) -> tuple[bool, list[str]]:
-        """`incident.verify` a second time, for the reader rather than for the model.
-
-        The oracle has already gated by the time this runs, so this is not a second chance to
-        refuse — it is the same standard reported as a result, which is what `correct` and
-        `oracle_failures` are for.
-        """
+    def grade(self, verdict: Verdict) -> tuple[bool, list[str]]:
+        """`incident.verify` a second time, for the reader rather than for the model."""
         failures = incident.verify(
             verdict.culprit_service, verdict.culprit_change_id, verdict.mechanism
         )
         return not failures, failures
 
-    def run_type(self) -> type[TeamRun]:
-        return Investigation
+    # ── The run ──
 
-    # ── The two places the demo's own behaviour differs from the default ──
+    async def investigate(self, coordinator: Any) -> Investigation:
+        """One full investigation: brief the planes, run the gated lead, grade, report.
 
-    async def execute(self, ctx: ThreadContext, request: str) -> TeamRun:
-        """Run the skeleton with the standing question leading whatever the run was driven with.
-
-        `cli.py:53` drives the room with `handle.run("")`, because the question is the room's and
-        not the caller's; the skeleton hands its `request` to the lead verbatim, so without this
-        the lead would be asked nothing at all.
+        The staff roster is per run, replaced here — every promise attached to it (the
+        headcount cap, the name reservation, the log the report publishes) is a promise
+        about one run.
         """
-        return await super().execute(ctx, f"{self.question}\n\n{request}".strip())
+        started = time.monotonic()
+        self.staff = type(self.staff)()
 
-    async def brief(
-        self, ctx: ThreadContext, cast: Sequence[Recruit], request: str
-    ) -> dict[str, str]:
-        """Barrier, error rendering and event from the base; keys and audience from the demo.
+        specialists = [Specialist(plane) for plane in self.planes]
+        lead = IncidentLead(specialists=list(self.planes)).build()
+        lead = lead.replace(
+            config_hook=staffing_tools(self.staff, max_hires=self.max_hires),
+            post_conditions=[self.oracle, *lead.config.post_conditions],
+        )
 
-        Keyed by plane rather than by member name, because `findings` is a published field and a
-        reader of `investigation.json` knows `deploys`, not `deploys-analyst`. `strict=True` checks
-        the assumption that makes the re-key sound — one specialist per plane, in `self.planes`
-        order.
+        watch = _LeadWatch()
+        briefing = Briefing(lambda member: OPENING, forward_request=False)
+        team = Team(lead, specialists, hooks=[watch, briefing])
 
-        The request is deliberately not forwarded. A specialist answers for its own plane and is
-        not told what the lead was asked; one that read the question would be reasoning about the
-        verdict, which is the lead's job and the asymmetry the demo exists to test.
-        """
-        del request
-        answers = await super().brief(ctx, cast, "")
-        return {
-            plane: answers[member.name] for plane, member in zip(self.planes, cast, strict=True)
+        run = await team.run(self.question, coordinator)
+
+        verdict: Verdict = run.answer
+        correct, failures = self.grade(verdict)
+        usage, turns = await subtree_usage(coordinator, watch.thread_id)
+
+        # Keyed by plane, because `findings` is a published field and a reader of
+        # `investigation.json` knows `deploys`, not `deploys-analyst`. One specialist per
+        # plane, in `self.planes` order — `strict` checks the assumption that makes the
+        # re-key sound.
+        raw = run.hooks_data.get("briefing", {})
+        briefings = {
+            plane: raw[member.name] for plane, member in zip(self.planes, specialists, strict=True)
         }
+
+        return Investigation(
+            verdict=verdict,
+            correct=correct,
+            oracle_failures=failures,
+            briefings=briefings,
+            hiring_log=self.staff.log,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            turns=turns,
+            wall_seconds=round(time.monotonic() - started, 1),
+        )

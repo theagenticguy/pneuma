@@ -1,6 +1,6 @@
 """The member shapes a team accepts: the `Recruit` protocol and its two library adapters.
 
-Moved verbatim from the flat `team.py` (now `_team_legacy.py`) — the protocol, the `Member`
+Moved verbatim from the old flat `team.py` — the protocol, the `Member`
 adapter and `DynamicAgent` are the parts of the old module that were never about phases or
 oracles, so they survive the hooks rebuild unchanged. They live beside `core.py` rather than
 inside it because they answer a different question: `core.py` says what a team *does* with a

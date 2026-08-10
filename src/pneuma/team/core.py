@@ -1,6 +1,6 @@
 """`Team` — a lead over live members, with hooks for everything that is not that.
 
-The old flat `team.py` (now `_team_legacy.py`) grew five phases, an oracle, a hiring seam, a
+The old flat `team.py` (deleted in this rebuild) grew five phases, an oracle, a hiring seam, a
 negotiation loop and a worklog into one class, and every new capability meant another field on
 it. This rebuild inverts the shape: the core owns exactly what every team needs — spawn the
 members, run the lead with the members as typed tools, retire everybody — and everything else
@@ -86,8 +86,11 @@ class Workspace:
     hook. `data` is the cross-hook scratch space that `TeamRun.hooks_data` publishes;
     `transcript` is the audit trail the core itself writes member calls and revise rounds
     into, and hooks may append their own entries. `members` are live once `on_assemble` runs
-    — spawning precedes every hook call. `lead` is the lead's live thread handle, set before
-    the first `on_answer` and `None` during `on_assemble`/`on_request`.
+    — spawning precedes every hook call. `lead` is the lead's live thread handle, set as soon
+    as the lead's thread exists — before any hook runs — because a hook that opens a delivery
+    channel to the lead (the worklog's fan-out) must open it before the lead's first cycle,
+    or everything posted during assembly would reach every member and never the lead. The
+    lead's thread is registered but *not running* until after the `on_request` fold.
     """
 
     team: Team
@@ -238,6 +241,7 @@ class Team:
             lead_handle = await coordinator.spawn(
                 lead_fn, thread_name=f"{self.lead.name}-lead", parent_id=parent_id
             )
+            work.lead = lead_handle
 
             self._equip_members(work)
             for member in self.members:
@@ -253,7 +257,6 @@ class Team:
                 if on_request is not None:
                     request = str(await _maybe_await(on_request(work, request)))
 
-            work.lead = lead_handle
             answer = await lead_handle.run(request)
             answer = await self._answer_loop(work, lead_handle, answer)
             return TeamRun(answer=answer, transcript=work.transcript, hooks_data=work.data)
@@ -415,7 +418,7 @@ class Team:
         Each member becomes a lead tool named `member.name`, and two tools sharing a name
         shadow silently — the lead would reach one member believing it reached either. The
         legacy module measured the dict-keyed variant of this loss
-        (`_team_legacy.py`, `_check_no_duplicate_members`); the tool-named variant is the
+        (the old flat `team.py`'s `_check_no_duplicate_members`); the tool-named variant is the
         same defect one layer down, refused at the same place: before anything spawns.
         """
         seen: dict[str, str] = {}

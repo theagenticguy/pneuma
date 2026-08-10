@@ -240,59 +240,52 @@ async def test_live_a_process_agent_walks_a_small_process_legally() -> None:
 
 @live
 async def test_live_a_small_team_runs_end_to_end() -> None:
-    """Team: one member, one lead, a real oracle gate, full cleanup.
+    """Team: one member, one lead, a real gate on the lead, full cleanup.
 
-    The member is a Tutor answering one briefing question. The lead reads the briefing and
-    answers the request. The oracle requires a non-empty answer that names the topic. The
-    graded TeamRun must come back correct with the briefing recorded.
+    The member is a Tutor answering one briefing question. The lead reads the briefing
+    (delivered by the `Briefing` hook into its own prompt) and answers the request. The
+    lead's own post_condition requires a non-empty answer.
     """
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma._team_legacy import Member, Team
+    from pneuma.team import Member, Team
+    from pneuma.team.hooks import Briefing
 
-    class QuizTeam(Team):
-        name = "live-quiz-team"
+    def not_empty(response: Any) -> None:
+        assert isinstance(response, Answer)
+        assert response.text.strip(), "empty answer"
 
-        def members(self):  # noqa: ANN201
-            return [Member(Tutor("factual"), "answer", model=small_model())]
+    async def prompt(request: str) -> str:
+        return (
+            "You lead a quiz team. Using what your team reported in this conversation, "
+            f"answer the request in one sentence. Request: {request}"
+        )
 
-        def briefing(self, member) -> str:  # noqa: ANN001
-            return "What temperature does water boil at, at sea level? One sentence."
-
-        def lead_function(self) -> AIFunction[..., Any]:
-            async def prompt(request: str) -> str:
-                return (
-                    "You lead a quiz team. Using your team's briefing in this conversation, "
-                    f"answer the request in one sentence. Request: {request}"
-                )
-
-            return AIFunction(
-                prompt,
-                Answer,
-                ThreadConfig(
-                    name="quiz-lead",
-                    description="Answers the request from the team's briefings",
-                    model=small_model(),
-                ),
-            )
-
-        def oracle(self, response: Any) -> None:
-            assert isinstance(response, Answer)
-            assert response.text.strip(), "empty answer"
-
-        def grade(self, verdict: Any):  # noqa: ANN201
-            mentions = "100" in verdict.text or "212" in verdict.text
-            return mentions, [] if mentions else ["answer did not state the boiling point"]
+    lead = AIFunction(
+        prompt,
+        Answer,
+        ThreadConfig(
+            name="quiz-lead",
+            description="Answers the request from the team's briefings",
+            model=small_model(),
+            post_conditions=(not_empty,),
+        ),
+    )
+    member = Member(Tutor("factual"), "answer", model=small_model())
+    briefing = Briefing(
+        lambda m: "What temperature does water boil at, at sea level? One sentence."
+    )
 
     async with RuntimeHarness() as h:
-        team = QuizTeam()
-        handle = await h.coordinator.spawn(team, thread_name=team.name)
-        run = await handle.run("At what temperature does water boil at sea level?")
+        team = Team(lead, [member], hooks=[briefing])
+        run = await team.run("At what temperature does water boil at sea level?", h.coordinator)
 
-    assert run.correct, f"grade failed: {run.oracle_failures}"
-    assert run.briefings, "no briefing was recorded"
-    assert run.turns >= 2, "expected at least a member turn and a lead turn"
+    assert "100" in run.answer.text or "212" in run.answer.text, (
+        f"the answer did not state the boiling point: {run.answer.text}"
+    )
+    assert run.hooks_data["briefing"], "no briefing was recorded"
+    assert not run.hooks_data["briefing"]["tutor.answer"].startswith("error: ")
 
 
 @live
@@ -309,58 +302,48 @@ async def test_live_a_posted_discovery_lands_on_the_worklog_and_fans_out() -> No
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma._team_legacy import Member, Team
+    from pneuma.team import Member, Team
+    from pneuma.team.hooks import Briefing, Worklog
 
-    class FieldTeam(Team):
-        name = "live-worklog-team"
+    scout, archivist = Tutor("scout"), Tutor("archivist")
+    scout.name, archivist.name = "scout", "archivist"  # Tutor.name is a class attr
 
-        def members(self):  # noqa: ANN201
-            scout, archivist = Tutor("scout"), Tutor("archivist")
-            scout.name, archivist.name = "scout", "archivist"  # Tutor.name is a class attr
-            return [
-                Member(scout, "answer", model=small_model()),
-                Member(archivist, "answer", model=small_model()),
-            ]
-
-        def briefing(self, member) -> str:  # noqa: ANN001
-            if "scout" in member.name:
-                return (
-                    "First, call the post_discovery tool exactly once with kind='obstacle' "
-                    "and a body that contains the word VOLCANO. Then answer: what is the "
-                    "tallest mountain on Earth? One sentence."
-                )
-            return "What is the tallest mountain on Earth? One sentence."
-
-        def lead_function(self) -> AIFunction[..., Any]:
-            async def prompt(request: str) -> str:
-                return (
-                    "You lead a field team. Using your team's briefing in this conversation, "
-                    f"answer the request in one sentence. Request: {request}"
-                )
-
-            return AIFunction(
-                prompt,
-                Answer,
-                ThreadConfig(
-                    name="field-lead",
-                    description="Answers the request from the team's briefings",
-                    model=small_model(),
-                ),
+    def question_for(member: Any) -> str:
+        if "scout" in member.name:
+            return (
+                "First, call the post_discovery tool exactly once with kind='obstacle' "
+                "and a body that contains the word VOLCANO. Then answer: what is the "
+                "tallest mountain on Earth? One sentence."
             )
+        return "What is the tallest mountain on Earth? One sentence."
 
-        def oracle(self, response: Any) -> None:
-            assert isinstance(response, Answer)
-            assert response.text.strip(), "empty answer"
+    async def prompt(request: str) -> str:
+        return (
+            "You lead a field team. Using what your team reported in this conversation, "
+            f"answer the request in one sentence. Request: {request}"
+        )
+
+    lead = AIFunction(
+        prompt,
+        Answer,
+        ThreadConfig(
+            name="field-lead",
+            description="Answers the request from the team's briefings",
+            model=small_model(),
+        ),
+    )
+    members = [
+        Member(scout, "answer", model=small_model()),
+        Member(archivist, "answer", model=small_model()),
+    ]
 
     async with RuntimeHarness() as h:
-        # Passed at construction: Team is a dataclass, so a class-attribute override is
-        # shadowed by the generated __init__'s instance default.
-        team = FieldTeam(worklog_enabled=True)
-        handle = await h.coordinator.spawn(team, thread_name=team.name)
-        run = await handle.run("What is the tallest mountain on Earth?")
+        team = Team(lead, members, hooks=[Briefing(question_for), Worklog()])
+        run = await team.run("What is the tallest mountain on Earth?", h.coordinator)
 
-    assert run.worklog, "the model never posted; the injected tool did not reach it"
-    entry = run.worklog[0]
+    worklog = run.hooks_data.get("worklog", [])
+    assert worklog, "the model never posted; the injected tool did not reach it"
+    entry = worklog[0]
     assert entry["kind"] == "obstacle" and "VOLCANO" in entry["body"]
     assert entry["source"] == "scout.answer", "source is wired, not model-reported"
     assert "archivist.answer" in entry["delivered"], "the other member was reached"
@@ -384,71 +367,64 @@ async def test_live_a_lead_synthesizes_a_dynamic_agent_and_delegates_to_it() -> 
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma._team_legacy import DynamicAgent, Member, Recruit, Team
+    from pneuma.team import DynamicAgent, Member, Recruit, Team
+    from pneuma.team.hooks import Hiring
 
-    class SynthTeam(Team):
-        name = "live-synth-team"
+    class LiveHiring(Hiring):
+        """The library default with the live model pinned to the cheap configuration —
+        a synthesized agent must not fall back to the runtime's default model choice."""
 
-        def members(self):  # noqa: ANN201
-            return []
-
-        def briefing(self, member) -> str:  # noqa: ANN001
-            return "unused: this team has no fixed cast"
+        def __init__(self) -> None:
+            super().__init__(dynamic=True)
+            self.built: list[Member] = []
 
         def dynamic_recruit(self, name: str, instructions: str) -> Recruit:
-            # The library default, with the live model pinned to the cheap configuration —
-            # a synthesized agent must not fall back to the runtime's default model choice.
-            return Member(DynamicAgent(name, instructions), "answer", model=small_model())
+            member = Member(DynamicAgent(name, instructions), "answer", model=small_model())
+            self.built.append(member)
+            return member
 
-        def lead_function(self) -> AIFunction[..., Any]:
-            async def prompt(request: str) -> str:
-                return (
-                    "You lead a team with no members. First, call the hire_dynamic tool "
-                    "exactly once: name='haiku-writer', instructions that BEGIN with the "
-                    "word SYNTHMARK and tell the agent it writes one-sentence answers about "
-                    "geography, and a one-sentence mandate. Then call delegate with "
-                    "name='haiku-writer' and this request. Then answer in one sentence "
-                    f"using what it said. Request: {request}"
-                )
+    async def prompt(request: str) -> str:
+        return (
+            "You lead a team with no members. First, call the hire_dynamic tool "
+            "exactly once: name='haiku-writer', instructions that BEGIN with the "
+            "word SYNTHMARK and tell the agent it writes one-sentence answers about "
+            "geography, and a one-sentence mandate. Then call delegate with "
+            "name='haiku-writer' and this request. Then answer in one sentence "
+            f"using what it said. Request: {request}"
+        )
 
-            return AIFunction(
-                prompt,
-                Answer,
-                ThreadConfig(
-                    name="synth-lead",
-                    description="Synthesizes a helper and answers through it",
-                    model=small_model(),
-                ),
-            )
-
-        def oracle(self, response: Any) -> None:
-            assert isinstance(response, Answer)
-            assert response.text.strip(), "empty answer"
+    lead = AIFunction(
+        prompt,
+        Answer,
+        ThreadConfig(
+            name="synth-lead",
+            description="Synthesizes a helper and answers through it",
+            model=small_model(),
+        ),
+    )
 
     async with RuntimeHarness() as h:
-        # Passed at construction: Team is a dataclass, so a class-attribute override is
-        # shadowed by the generated __init__'s instance default (the worklog test's lesson).
-        team = SynthTeam(dynamic_subagents=True)
-        handle = await h.coordinator.spawn(team, thread_name=team.name)
-        run = await handle.run("What is the longest river in the world? One sentence.")
+        hiring = LiveHiring()
+        team = Team(lead, [], hooks=[hiring])
+        run = await team.run("What is the longest river in the world? One sentence.", h.coordinator)
 
-    synths = [e for e in run.hiring_log if e["action"] == "hire_dynamic"]
+    log = run.hooks_data["hiring"]
+    synths = [e for e in log if e["action"] == "hire_dynamic"]
     assert synths, "the model never called hire_dynamic; the injected tool did not reach it"
     entry = synths[0]
     assert entry["name"] == "haiku-writer"
     assert "SYNTHMARK" in entry["instructions"], (
         "the instructions are recorded verbatim — the audit trail is the safety story"
     )
-    delegated = [e for e in run.hiring_log if e["action"] == "delegate"]
+    delegated = [e for e in log if e["action"] == "delegate"]
     assert delegated and delegated[0]["name"] == "haiku-writer", (
         "the lead delegated to its synthesized agent through the ordinary delegate tool"
     )
     assert delegated[0]["answer"].strip(), "and a real answer came back"
-    assert run.verdict.text.strip()
-    # The finally retired the synthesized hire: its thread is gone from the roster's own
-    # registry surface — retire is unconditional, so the roster's recruits are all dead.
-    for recruit in team.roster.hires.values():
-        thread = getattr(recruit, "_thread", None)
+    assert run.answer.text.strip()
+    # The hook's teardown retired the synthesized hire: its live thread ended.
+    for member in hiring.built:
+        thread = member._thread
         assert thread is None or not thread.live, "a synthesized thread survived the unwind"
 
 
