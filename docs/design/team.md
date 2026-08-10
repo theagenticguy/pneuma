@@ -204,6 +204,188 @@ seam alone.
 `brief` and the check here have to agree — the check's whole job is to notice that every string is
 one of those. A subclass rendering failures differently moves both at once.
 
+## The negotiation phase: optional, bounded, off by default
+
+`negotiation_rounds: int = 0` on `Team` adds a phase between the briefing and the verdict: the
+lead's first gated ruling is treated as a draft plan, `render_plan` renders it, and each round
+fans that text to every member (`plan_request`, through the member's own `ask` — one cycle, same
+barrier, same `return_exceptions=True` and `BRIEFING_ERROR` rendering as `brief`). A member
+answers with objections or with the `APPROVAL` token; unanimity ends the negotiation early,
+anything less goes back to the lead as one `run(render_objections(...))` — a full gated cycle, so
+every revision faces the oracle exactly as the draft did. The transcript (plan, objections,
+approvals, outcome, revision per round) lands on `TeamRun.negotiation`.
+
+### The evidence for wanting it
+
+AgentRadio (arXiv 2607.28430) measured a negotiation round as its single biggest layer: +67 net
+rubrics, against +24 for passive awareness. Their MinIO case is the failure shape this phase
+exists for, and it is *this* skeleton's failure shape too: the members hold disjoint evidence by
+design — that is why there is a team — so a plan drafted from one-shot briefings can carry a flaw
+any single member would catch on sight, and `brief` was a one-shot barrier: members answered
+once, only the lead saw the answers, and the plan was never reviewed by the people holding the
+evidence it was built from. Caveats carried honestly: their n=124, single run per task, LLM
+judge, and the +29.8 headline bundles three layers — which is why the phase is off by default and
+bounded rather than the new normal.
+
+### Why zero is the default and what zero means
+
+With the budget at zero, `negotiate` returns before touching anything and `execute` is the
+pre-negotiation skeleton byte-for-byte: one member cycle each, one lead cycle, the same event
+sequence. The compatibility claim extends to the artifact — `TeamRun`'s serializer drops the
+`negotiation` key when the list is empty, so the demo's published `investigation.json` keeps its
+nine keys without `demo/` changing at all (measured: same keys, same order, aliases intact,
+round-trip equal). The test pins the *call counts* and the event sequence rather than the empty
+list, because an empty list is also what a broken phase that ran and recorded nothing returns.
+
+### Why the plan travels through `ask` and not `notify`
+
+`Recruit` guarantees three verbs — spawn, ask, retire — and `notify` is not one of them; the
+`Member` adapter deliberately does not wrap it. And an *answer* is wanted here: `notify` appends
+to a thread's log without starting a cycle, so a notify-based fan-out would deliver the plan and
+collect nothing until some later cycle that may never come. One `ask` per member per round is one
+channel every member shape already supports, one model cycle, and a captured request a test can
+read — which is the requirement the next paragraph makes load-bearing.
+
+### The delivery lesson, applied twice
+
+The briefings once never reached the lead (`render_brief`'s history above): the phase recorded
+its data faithfully and the wire was missing, and only reading the model's actual context could
+have said so. Negotiation has two such wires — plan → member, objections → lead — and both are
+pinned from scripted-model contexts, not from the transcript: the plan text is asserted inside
+each member's own model context, the objection text and the objector's name inside the lead's
+revision context, and the round-2 fan-out is asserted to carry the *revision* and not the draft.
+Measured with the wire deliberately severed (revision prompt replaced by a generic "your team
+objected"): the transcript still recorded every objection and only the context assertions failed
+— the render_brief bug's exact shape, reproduced on purpose to prove the tests can catch it. The
+negative half needed scoping: a thread's history is cumulative, so "the draft did not fan out
+again" is a claim about round 2's *own request*, not about a context that legitimately carries
+round 1 above it.
+
+### Approval is containment, and the tradeoff is `BRIEFING_ERROR`'s
+
+`approves` checks that the answer contains `APPROVAL` and does not start with `BRIEFING_ERROR`.
+Containment rather than equality because a typed member answers with a pydantic model whose
+`str()` embeds the token inside a field's repr — an equality check would silently veto every
+typed member and every negotiation would run to its cap, with nothing raised. The cost is the
+same one the `BRIEFING_ERROR` prefix carries: an objection that *quotes* the token is miscounted.
+Both the instruction (`plan_request`) and the check read the one class attribute, so a subclass
+with a stricter vocabulary moves them together — a drifted pair would make unanimity unreachable
+and every negotiation silently cap out.
+
+### The edges, refused rather than smoothed
+
+A member that raises mid-review is a briefing failure's twin: rendered under `BRIEFING_ERROR`,
+never fatal, never counted as approving — it blocks unanimity (the lead revises knowing one
+reviewer died) and the cap bounds what that blocking can cost. A cap reached without unanimity
+marks its last round `cap_reached` rather than `revised`, and the run proceeds with the last
+gated revision — the transcript says the team never agreed rather than implying it did. An empty
+cast never negotiates: `all([])` is true, so without the guard a `Toy(cast=[])` at rounds>0 would
+record a unanimous round no member ever gave. And a negative budget is refused at construction —
+`range(1, 0)` is empty, so "negotiate backwards" would silently mean "never negotiate", which is
+the fail-soft this kernel keeps refusing.
+
+What this phase deliberately is not: a member↔member channel. Objections flow member → lead and
+the revision flows lead → members; no member sees another's objection except as the lead's
+revision reflects it. A lateral channel is a different design with its own determinism argument
+to make — and the worklog below is that design, with that argument made.
+
+## The worklog: typed lateral awareness, off by default
+
+`worklog_enabled: bool = False` on `Team` gives each `Member` a `post_discovery` tool
+(`discovery_tools`, the `hiring_tools` precedent: a `config_hook` injecting cycle-bound tools
+nothing upstream ships). A posted discovery — `{kind, body}` with `kind` from the closed
+`DISCOVERY_KINDS` vocabulary and `source` bound by the wiring rather than reported by the model —
+is appended to a team-owned `Worklog` and fanned to every *other* member, to every live hire, and
+to the lead, through each thread's own `notify`. The entries land on `TeamRun.worklog`, and the
+compat serializer drops the key when the list is empty, exactly as `negotiation`'s does — a team
+that never enabled the log keeps the demo's nine-key artifact byte-identical.
+
+### Relaxing the "no cross-team messaging" non-goal, and by exactly how much
+
+The non-goals below say no cross-team messaging, and the determinism argument behind it is the
+module's spine: a message bus makes who-read-what a sample from the scheduler. The worklog
+relaxes the *lateral* half of that — members become aware of each other's discoveries — and the
+evidence for paying anything at all is AgentRadio's (arXiv 2607.28430): passive awareness alone
+measured +10.5 points net, with the gains concentrated on cross-cutting tasks. That is this
+skeleton's own shape — the members hold disjoint evidence *by design*, so one member's dead end
+is precisely the thing another member is about to spend a briefing re-exploring. Caveats carried
+as before: their n=124, single run per task, LLM judge, free-text broadcasts where this design
+insists on a typed payload.
+
+What is deliberately *not* relaxed bounds the relaxation. No member can address another (there
+is still no member→member `ask`, no `send_message`, no reply channel); a discovery is a
+broadcast, not a conversation. The vocabulary is closed — four kinds, refused as text when the
+model invents a fifth — so the channel cannot degenerate into chat. And teams still do not know
+other teams exist: this is cross-*member* awareness inside one team, not cross-team messaging.
+
+### Why `notify` this time, when negotiation chose `ask`
+
+The negotiation section above argues the plan travels through `ask` because an *answer* is
+wanted. Here the argument runs exactly the other way: no answer is wanted, and forcing one is
+the failure mode. A fan-out through `ask` would cost one full model cycle per discovery per
+member — a member mid-briefing would be interrupted to acknowledge a note it cannot yet use —
+which is the interruption cost passive awareness exists to avoid. `notify` appends to a thread's
+log without starting a cycle (`method.py:261-268`; the runtime buffers it and drains at the next
+model-call boundary, `ai_thread.py:465-476`), so a teammate reads the discovery at its own next
+step, as context. Step-boundary delivery is not an implementation choice here; it is the
+feature.
+
+The negotiation section also says the `Member` adapter "deliberately does not wrap" `notify` —
+and that stays true. The adapter's `thread` property exposes the live `MethodThread` for exactly
+"the runtime operations this adapter does not wrap", and the team holds its cast, so
+`_open_channel` reads `notify` off the spawn handle it already has. `Recruit` is untouched: a
+recruit shape without `notify` on its handle simply gets no channel (it can still be a poster if
+it exposes `equip`, and neither is required), because a mixed cast — scripted spies beside typed
+members — is half the test suite's shape and must keep working.
+
+### The lead sees it too, and `register`'s replay is why that is ordering-safe
+
+The lead's channel is `lead_handle.notify`, registered immediately after the lead spawns — which
+is *after* the briefing phase, exactly when members post their first discoveries. Notify-to-lead
+was chosen over a next-prompt prepend because it is one mechanism for every party rather than
+two, and because a prepend covers only the first prompt while notify covers every later gated
+re-ask the same way. The ordering hole — a discovery posted before the lead's thread existed —
+is closed by `Worklog.register` replaying every prior entry into a newly opened channel, and the
+replay is measured on the wire: the pending notify drains into the lead's *first* model context,
+ahead of the request `execute` runs it with. Hires get the same treatment when `hiring_tools`
+registers them (a helper hired *because* of an obstacle should not be the one teammate who never
+heard of it), and `dismiss` closes the channel with the thread.
+
+### `post` reserves before it awaits, and one dead channel never stops the rest
+
+Both are the hiring seam's lessons restated. The tool executor is concurrent
+(`strands/agent/agent.py:462`), so two `post_discovery` calls in one assistant turn interleave;
+the entry is appended to `Worklog.entries` in the same synchronous stretch that builds it, and
+only then is any `notify` awaited. A list rather than a dict-keyed aggregation, deliberately:
+appends cannot collide, keys can — measured while proving the guard test could fail, an
+entries-keyed-by-source version dropped one of two concurrent posts with nothing raised, and the
+test caught it. Each delivery is awaited under its own handler: a retired thread raises out of
+`notify`, the failure is recorded on the entry (`failed[name] = repr(error)`), and the loop
+continues — `brief`'s `return_exceptions=True` argument at worklog scale, pinned by a fixture
+whose dead channel sits *first* in the cast so the healthy deliveries prove the loop went on.
+
+### The fork interaction, documented rather than discovered
+
+A pending `notify` is worker-side inject state, not log state, and `fork` copies the log —
+`gated.py` measured it: a forked branch does not see the pending inject. A discovery delivered
+but not yet drained when a member is forked is therefore *gone from the branch*. `Team.fork`
+already refuses (teams are not forkable), so inside a team this cannot bite; it is recorded here
+because a caller holding a `Member.thread` can fork the member directly, and the durable record
+is the contract: `TeamRun.worklog` (and `Worklog.entries` mid-run) is what survives when
+in-flight deliveries do not. A branch that must know what the team knows re-delivers from the
+log — `register`'s replay is exactly that operation.
+
+### Delivery is asserted from the wire, the third time
+
+The `render_brief` precedent, applied once more: every delivery claim in
+`tests/library/test_team_worklog.py` is pinned from a scripted model's own captured context —
+the discovery text inside the *other* members' and the lead's contexts, the poster's exclusion
+as absence from the poster's whole thread, and "no tool when disabled" from the `tool_specs`
+each model call was offered rather than from any config object. Measured with the wire
+deliberately severed (`_deliver` recording success without sending): the worklog still recorded
+every entry as delivered and only the context assertions failed — the transcript-without-a-wire
+shape, reproduced on purpose to prove the tests can catch it.
+
 ## Why a duplicate member name is refused at wiring time
 
 `brief` keys its mapping by `member.name`, because a name is the only identity `Recruit`
@@ -529,7 +711,10 @@ count.
   state between two teams that never agreed to share anything.
 - **No cross-team messaging.** No team knows another exists. The runtime already has a peer
   channel for threads that want one, and a second one at team scope would be a message bus the
-  determinism argument above exists to avoid.
+  determinism argument above exists to avoid. Relaxed by exactly one bounded step *inside* a
+  team: `worklog_enabled` gives members typed, step-boundary awareness of each other's
+  discoveries — the worklog section above carries the evidence (AgentRadio 2607.28430, passive
+  +10.5) and the limits (no member→member addressing, closed vocabulary, off by default).
 - **No forkable teams.** See `fork()`.
 - **No `send_message` anywhere.** The typed join is the library's path; the bus is the demo's
   deliberate exception, and the gate that forces the choice is cited above.

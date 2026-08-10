@@ -164,11 +164,12 @@ def decision_query(
     enabled: list[Transition],
     variables: dict[str, int | str],
     visited: list[str] | None = None,
+    dead_ends: list[interpreter.Revisit] | None = None,
 ) -> str:
     """Phrase the decision in front of the agent as a retrieval query.
 
     What the query says is what the round can learn about, so this is a design
-    decision rather than string assembly. Three things go in, and each one is a
+    decision rather than string assembly. Four things go in, and each one is a
     situation a piece of advice could be *about*:
 
     - The state and the names of the legal moves, so advice mentioning this part of
@@ -177,6 +178,11 @@ def decision_query(
       failure the live experiment measured, and naming it in the query is what makes
       the anti-looping entries retrievable at the moment they matter instead of at
       every step equally.
+    - The dead ends this run has already voiced — the states it re-entered, from the
+      interpreter's typed `Revisit` record rather than re-derived from the path. A
+      case that has circled twice is in a different situation from one facing its
+      first backward edge, and advice about breaking out of a loop can only be
+      retrieved when the query says a loop is in progress.
     - The process variables, which is what advice about a condition keys on.
 
     Deliberately written the way an operator would describe the situation, not as
@@ -186,6 +192,7 @@ def decision_query(
     `memory.turso_backend` was taken against.
     """
     path = interpreter.history() if visited is None else visited
+    voiced = interpreter.revisits() if dead_ends is None else dead_ends
     seen = set(path)
     revisits = [t.name for t in enabled if t.target in seen]
     moves = ", ".join(t.name for t in enabled) or "none"
@@ -198,6 +205,12 @@ def decision_query(
         )
     else:
         parts.append("None of them revisit a state this case has already been through.")
+    if voiced:
+        circled = ", ".join(entry.state for entry in voiced)
+        parts.append(
+            f"This case has already dead-ended {len(voiced)} time(s), re-entering: "
+            f"{circled}. It is at risk of looping until the step budget runs out."
+        )
     if variables:
         parts.append(f"Case variables: {variables}.")
     parts.append("Which move should be chosen, and what should be avoided here?")
@@ -211,6 +224,16 @@ class TrainingRound:
     index: int
     completed: int = 0
     looped: int = 0
+    halted_early: int = 0
+    """How many of `looped` were `interpreter.NoProgress` halts rather than budget burns.
+
+    A subset of `looped`, not a third outcome: for training feedback both are the same
+    failure — the agent dithered — and folding them keeps `completion_rate` measuring
+    what it always measured. But the two are different *costs*: an early halt names its
+    limit and spends a handful of steps, a budget burn spends all of `max_steps`
+    silently. A round where this equals `looped` is failing cheaply; a round where it
+    is zero with `looped` high is paying full price for the same lesson.
+    """
     steps: list[int] = field(default_factory=list)
     playbook_chars: int = 0
     entries: int = 0
@@ -334,6 +357,12 @@ async def run_batch(
         try:
             await interpreter.run(process, decide, max_steps=max_steps)
             round_result.completed += 1
+        except interpreter.NoProgress:
+            # Still a loop for the feedback's purposes — the agent dithered — but the
+            # interpreter caught it at its revisit limit instead of letting it burn
+            # the whole budget, and the round records that the failure was cheap.
+            round_result.looped += 1
+            round_result.halted_early += 1
         except interpreter.ProcessError:
             round_result.looped += 1
 
@@ -448,15 +477,19 @@ def summarise(history: list[TrainingRound]) -> str:
 
     `entries` and `read` are in the table on purpose. Completion rate alone cannot
     distinguish a loop that improved its advice from one that accumulated entries
-    nobody retrieved, and those two look identical in a completion column.
+    nobody retrieved, and those two look identical in a completion column. `halted`
+    is the same argument about failure cost: a looped case the interpreter stopped at
+    its revisit limit and one that burned the whole step budget look identical in the
+    `looped` column, and only one of them was cheap.
     """
     lines = [
-        f"{'round':>5} {'completed':>10} {'looped':>7} {'completion':>11} "
+        f"{'round':>5} {'completed':>10} {'looped':>7} {'halted':>7} {'completion':>11} "
         f"{'mean steps':>11} {'entries':>8} {'read':>5} {'chars':>7}"
     ]
     for record in history:
         lines.append(
             f"{record.index:>5} {record.completed:>10} {record.looped:>7} "
+            f"{record.halted_early:>7} "
             f"{100 * record.completion_rate:>10.0f}% {record.mean_steps:>11.1f} "
             f"{record.entries:>8} {len(record.retrieved_ids):>5} {record.playbook_chars:>7}"
         )

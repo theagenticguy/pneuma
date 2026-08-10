@@ -299,6 +299,13 @@ to `1` to run them.
 | `PNEUMA_LIVE_HARNESS` | Has the agent propose a harness parameter, with the detectors deciding whether to accept it. |
 | `PNEUMA_LIVE_MINE` | Checks that gradient feedback reaches both learnable parameters, and compares the learned toolkit with its starting seed. |
 | `PNEUMA_LIVE_EMBED` | Measures retrieval quality with real Cohere Embed v4 embeddings. |
+| `PNEUMA_LIVE_CACHE` | Measures prompt-cache reuse across fork beams: a k=2 `propose_k` from one seeded root, asserting the second branch reports cache-read tokens. Three low-effort calls, under ten seconds. |
+
+The model built by `opus5()` asks Bedrock to cache the prompt prefix on every request, so
+the byte-identical branches `propose_k` forks reuse each other's context instead of paying
+for it again. Measured on a live k=2 beam with a ~22k-token seed: every call after the first
+read the full prefix from the cache (22,161 of ~22,300 input tokens served at cache-read
+rates, about 99%). Pass `cache=False` to `opus5()` to turn it off.
 
 The kernel run needs only AWS credentials with Bedrock access, for example an EC2 instance
 profile:

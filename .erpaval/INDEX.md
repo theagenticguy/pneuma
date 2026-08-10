@@ -13,14 +13,17 @@ lessons before starting work.
 - [Recall injection: ambient-scope trap and marker limits](solutions/ai-functions-runtime/recall-injection-and-marker-traps.md) — retrieval under a live thread_scope silently kills the gradient edge (wrap in no_thread_scope); no upstream drop/auto-fill for Annotated params; refuse duplicate markers and positional-only marked slots; BM25 needs N>=4 to rank
 - [Hooks, budgets, and introspection-safe gates](solutions/ai-functions-runtime/hooks-budgets-and-introspection-safe-gates.md) — a new hook makes a loop's cosmetic off-by-ones material (re-audit boundary conditions); wiring gates raise AttributeError so hasattr/getmembers answer; a guard's test can be satisfied by a coincidental fallback; ai_methods walks the MRO
 - [Orchestrator state lifetimes and tool races](solutions/ai-functions-runtime/orchestrator-state-lifetimes-and-tool-races.md) — per-run state resets per run (type(self.x)() preserves subclasses); the default tool executor is concurrent so reserve-before-await; release-then-unregister for teardown tools; delivery claims need a verified wire; dict-keyed aggregation drops name collisions; cross-file line cites go stale mid-session; probes must script models by construction
+- [Suffix replay and cache economics](solutions/ai-functions-runtime/suffix-replay-and-cache-economics.md) — replay is vacuous when the edit is consumed at decision 0; trace() tears threads down so nothing survives to fork; Bedrock caches nothing without an explicit cachePoint (CacheConfig seam); fork beams stay cache-friendly only because branches run serially
 
 ### verification
 
 - [TLC liveness: WF kills only stuttering, cycles are real findings](solutions/verification/tlc-liveness-fairness-semantics.md) — why liveness is opt-in; SF not WF for loop-toggled exits; safety masks liveness
 - [TLC can exit 0 after printing an Error](solutions/verification/tlc-exit-zero-error-trap.md) — success line is the gate; probe the binary before pinning parsers to documented exit codes
+- [Truncation must dominate positive evidence](solutions/verification/truncation-must-dominate-positive-evidence.md) — a truncated sweep withholds, never settles "works"; a witnessed violation settles even under truncation; write the could-not-tell test first
 
 ## Recent additions
 
+- 2026-08-09 · session-b84f7e · suffix-replay/cache-economics + truncation-asymmetry lessons from the paper-takeaways build (6/6 tasks, 817 tests green)
 - 2026-08-07 · session-9df6ea · orchestrator state-lifetime/race lesson from the Team build (kernel complete, 5/5)
 - 2026-08-07 · session-1b17c3 · hooks/budgets/gates lesson from the ProcessAgent build
 - 2026-08-07 · session-c8116b · recall-injection lesson (ambient scope, marker limits, BM25 fixture floor)

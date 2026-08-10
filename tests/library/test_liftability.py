@@ -75,7 +75,7 @@ def test_there_is_something_to_check() -> None:
     """Guard the guard: if `liftable_modules` silently returned nothing, every AST test
     below would pass by iterating an empty list."""
     names = {path.name for path in liftable_modules()}
-    assert names == {"discrimination.py", "objective.py", "vacuity.py"}, names
+    assert names == {"discrimination.py", "gaming.py", "objective.py", "vacuity.py"}, names
     assert all((DETECT / seam).is_file() for seam in SEAMS)
 
 
