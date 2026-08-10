@@ -539,6 +539,67 @@ reaches the tool as an argument, is recorded on the roster's log, and is handed 
 which is a closure or a `partial` over whatever the recruit's constructor actually takes. Wave 2
 keeps the demo's behaviour inside its own factories, where the attribute is real.
 
+## The catalog-vs-synthesis boundary: `dynamic_subagents`, off by default
+
+`hire` chooses from a catalog someone reviewed; `hire_dynamic` lets the lead write a new
+subagent's instructions itself, mid-run. The second exists behind `dynamic_subagents: bool =
+False`, and this section is the argument for admitting it at all, for the shape it was admitted
+in, and for the default staying off.
+
+### The evidence, and what was actually admitted
+
+Shepherd (arXiv 2605.10913) measured runtime agent synthesis — an orchestrator standing up new
+agents whose prompts it writes on the spot — as a layer worth having: some work has no
+pre-declared role because the decomposition is only discoverable mid-run. The catalog cannot
+answer that case by construction; a factory for "whatever the lead just realised it needs" is
+not a factory anyone can review in advance.
+
+What this skeleton admits is deliberately less than a prompt-driven orchestrator. Only the
+**instructions** are dynamic. The signature (`answer(request, context="")`), the output type
+(`str`), the adapter (`Member`), the lifecycle, the budget and the tool surface are all fixed in
+`DynamicAgent` at review time. A synthesized agent is an ordinary `MethodAgent` whose
+per-instance state happens to have been written by a model — the same `self`-renders-into-the-
+prompt split every static agent already makes (`method.py:103-124`) — so the skeleton learns
+nothing new about it: it satisfies `Recruit`, joins the roster under the shared `max_hires`,
+gets the worklog equip, and is reached and released through the same `delegate` and `dismiss`
+as a catalog hire. No parallel path anywhere, and the tests pin that from the wire.
+
+Two contract details are one careless simplification away from breaking the module's own
+boundary, so they are pinned by tests rather than prose. `ai_methods()` walks the MRO
+(`method.py:341-352`), so `DynamicAgent`'s published tool set is a fact about its whole
+hierarchy — the test asserts it is exactly `["answer"]`. And `answer(request: str)` alone would
+compile to `STR_PROMPT` (one positional `str` — measured), making the synthesized thread the one
+member shape addressable by every peer's free-text `send_message`; the `context` parameter keeps
+it `STRUCTURED`, behind exactly the boundary every other member sits behind.
+
+### The audit trail is the safety story
+
+A catalog role was reviewed once, by a person, before any run. A synthesized agent's
+instructions were reviewed by nobody — that is the feature's cost, and it cannot be checked away
+without deleting the feature. The mitigation is attribution: the roster records
+`kind="hire_dynamic"` with the instructions **verbatim**, so `TeamRun.hiring_log` answers
+"which of these agents did a human review, and what exactly was the unreviewed one told to be" —
+for every run, after the fact, without trusting the model's own account. A truncated or
+paraphrased record would be an audit of a different agent, which is why the verbatim claim has
+its own break-tested assertion. The transcript distinguishes the two kinds everywhere they
+diverge: a separate tool name, a separate log action, a separate `team.hired_dynamic` progress
+marker, and a confirmation string ("hired X from your instructions") the lead reads back.
+
+### Why a separate tool, and why the default is off
+
+`hire_dynamic` is a fourth tool rather than a sentinel role inside `catalog`, so the catalog
+`hire`'s contract stays byte-identical whether or not synthesis is enabled — a team that never
+opts in keeps the exact three-tool wire it always had, asserted from the model's own
+`tool_specs`. Both hires share one reservation discipline through one helper (`commission`),
+because two copies of reserve-before-await is how the two drift apart.
+
+The default is off, and the tool's own description tells the lead to prefer catalog roles even
+when it is on, for the same reason the catalog defaults to empty: every capability granted to a
+lead is something a confused lead can do wrong, and a reviewed role that fits is strictly better
+than a synthesized one — it carries knowledge the lead did not have to write and a review the
+lead cannot give. Synthesis is for the case where no role fits; a team whose roles always fit
+should never see this flag.
+
 ## Why every hiring failure is text and never an exception
 
 Five things can go wrong in the hiring seam, and a model can fix all five: an unknown role, a
@@ -690,8 +751,8 @@ a dict — so the seam is a decision rather than an omission.
 
 ## The progress markers
 
-`CustomEvent`s named `team.assembled`, `team.briefings_in`, `team.lead_running`, `team.hired` and
-`team.graded`, mirroring `warroom`'s. They are the only observation of a phase available to a
+`CustomEvent`s named `team.assembled`, `team.briefings_in`, `team.lead_running`, `team.hired`,
+`team.hired_dynamic` and `team.graded`, mirroring `warroom`'s. They are the only observation of a phase available to a
 reader outside the process, and they are what a live tape subscribes to (`demo/live.py:55-63`,
 which reads `event.kind` and `event.payload` and stamps the thread itself, since `CustomEvent`
 carries no `thread_name`). Kinds stay namespaced under `team.*` so a subscriber can filter one

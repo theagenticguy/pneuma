@@ -369,5 +369,88 @@ async def test_live_a_posted_discovery_lands_on_the_worklog_and_fans_out() -> No
     assert "scout.answer" not in entry["delivered"], "the poster is excluded"
 
 
+@live
+async def test_live_a_lead_synthesizes_a_dynamic_agent_and_delegates_to_it() -> None:
+    """dynamic_subagents: a real lead writes a subagent's instructions and uses it.
+
+    Plumbing, not model quality, like every test in this file: the lead is *instructed* to
+    call hire_dynamic with instructions containing a marker word and then delegate. The
+    assertions check that the synthesis landed on the hiring log with the instructions
+    verbatim (the audit trail the feature's safety story rests on), that the delegate
+    round-tripped a real answer, and that the run completed under the oracle. Offline tests
+    already pin the wire from captured contexts; this answers whether a real model calls the
+    injected tool and the synthesized thread holds against the real runtime.
+    """
+    from ai_functions import AIFunction
+    from ai_functions.ai_thread.config import ThreadConfig
+
+    from pneuma.team import DynamicAgent, Member, Recruit, Team
+
+    class SynthTeam(Team):
+        name = "live-synth-team"
+
+        def members(self):  # noqa: ANN201
+            return []
+
+        def briefing(self, member) -> str:  # noqa: ANN001
+            return "unused: this team has no fixed cast"
+
+        def dynamic_recruit(self, name: str, instructions: str) -> Recruit:
+            # The library default, with the live model pinned to the cheap configuration —
+            # a synthesized agent must not fall back to the runtime's default model choice.
+            return Member(DynamicAgent(name, instructions), "answer", model=small_model())
+
+        def lead_function(self) -> AIFunction[..., Any]:
+            async def prompt(request: str) -> str:
+                return (
+                    "You lead a team with no members. First, call the hire_dynamic tool "
+                    "exactly once: name='haiku-writer', instructions that BEGIN with the "
+                    "word SYNTHMARK and tell the agent it writes one-sentence answers about "
+                    "geography, and a one-sentence mandate. Then call delegate with "
+                    "name='haiku-writer' and this request. Then answer in one sentence "
+                    f"using what it said. Request: {request}"
+                )
+
+            return AIFunction(
+                prompt,
+                Answer,
+                ThreadConfig(
+                    name="synth-lead",
+                    description="Synthesizes a helper and answers through it",
+                    model=small_model(),
+                ),
+            )
+
+        def oracle(self, response: Any) -> None:
+            assert isinstance(response, Answer)
+            assert response.text.strip(), "empty answer"
+
+    async with RuntimeHarness() as h:
+        # Passed at construction: Team is a dataclass, so a class-attribute override is
+        # shadowed by the generated __init__'s instance default (the worklog test's lesson).
+        team = SynthTeam(dynamic_subagents=True)
+        handle = await h.coordinator.spawn(team, thread_name=team.name)
+        run = await handle.run("What is the longest river in the world? One sentence.")
+
+    synths = [e for e in run.hiring_log if e["action"] == "hire_dynamic"]
+    assert synths, "the model never called hire_dynamic; the injected tool did not reach it"
+    entry = synths[0]
+    assert entry["name"] == "haiku-writer"
+    assert "SYNTHMARK" in entry["instructions"], (
+        "the instructions are recorded verbatim — the audit trail is the safety story"
+    )
+    delegated = [e for e in run.hiring_log if e["action"] == "delegate"]
+    assert delegated and delegated[0]["name"] == "haiku-writer", (
+        "the lead delegated to its synthesized agent through the ordinary delegate tool"
+    )
+    assert delegated[0]["answer"].strip(), "and a real answer came back"
+    assert run.verdict.text.strip()
+    # The finally retired the synthesized hire: its thread is gone from the roster's own
+    # registry surface — retire is unconditional, so the roster's recruits are all dead.
+    for recruit in team.roster.hires.values():
+        thread = getattr(recruit, "_thread", None)
+        assert thread is None or not thread.live, "a synthesized thread survived the unwind"
+
+
 # The coordinator import is used by type checkers reading spawn signatures in this module.
 _ = Coordinator
