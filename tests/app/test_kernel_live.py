@@ -249,7 +249,7 @@ async def test_live_a_small_team_runs_end_to_end() -> None:
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma.team import Member, Team
+    from pneuma._team_legacy import Member, Team
 
     class QuizTeam(Team):
         name = "live-quiz-team"
@@ -309,7 +309,7 @@ async def test_live_a_posted_discovery_lands_on_the_worklog_and_fans_out() -> No
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma.team import Member, Team
+    from pneuma._team_legacy import Member, Team
 
     class FieldTeam(Team):
         name = "live-worklog-team"
@@ -384,7 +384,7 @@ async def test_live_a_lead_synthesizes_a_dynamic_agent_and_delegates_to_it() -> 
     from ai_functions import AIFunction
     from ai_functions.ai_thread.config import ThreadConfig
 
-    from pneuma.team import DynamicAgent, Member, Recruit, Team
+    from pneuma._team_legacy import DynamicAgent, Member, Recruit, Team
 
     class SynthTeam(Team):
         name = "live-synth-team"

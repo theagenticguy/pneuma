@@ -43,8 +43,8 @@ from ai_functions.types import EventKind, InputShape
 from pydantic import BaseModel, Field
 from strands.models import Model
 
+from pneuma._team_legacy import Member, Recruit, Roster, Team, TeamRun, hiring_tools
 from pneuma.method import MethodAgent, ai_method
-from pneuma.team import Member, Recruit, Roster, Team, TeamRun, hiring_tools
 
 # ── The output types the cast returns, all module level ──
 

@@ -30,8 +30,8 @@ from pydantic import BaseModel, Field
 from strands.models import Model
 from strands.tools.decorator import tool as strands_tool
 
+from pneuma._team_legacy import DISCOVERY_KINDS, Member, Recruit, Roster, Team, TeamRun, Worklog
 from pneuma.method import MethodAgent, ai_method
-from pneuma.team import DISCOVERY_KINDS, Member, Recruit, Roster, Team, TeamRun, Worklog
 
 # ── Output types, module level ──
 

@@ -24,7 +24,7 @@ from typing import Any
 from ai_functions.ai_thread.config import ThreadKwargs
 from ai_functions.types import ThreadContext
 
-from ..team import Recruit, Roster, hiring_tools
+from .._team_legacy import Recruit, Roster, hiring_tools
 from .agent import ROSTER, Agent
 
 

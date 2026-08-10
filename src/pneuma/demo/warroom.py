@@ -25,7 +25,7 @@ from ai_functions import AIFunction
 from ai_functions.types import ThreadContext
 from pydantic import AliasChoices, ConfigDict, Field
 
-from ..team import Recruit, Team, TeamRun
+from .._team_legacy import Recruit, Team, TeamRun
 from . import incident
 from .cast import IncidentLead, Specialist, Verdict
 from .staffing import Staff, staffing_tools

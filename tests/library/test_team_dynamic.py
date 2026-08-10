@@ -34,8 +34,8 @@ from ai_functions.types import InputShape
 from pydantic import BaseModel, Field
 from strands.models import Model
 
+from pneuma._team_legacy import DynamicAgent, Member, Recruit, Roster, Team, hiring_tools
 from pneuma.method import MethodAgent, ai_method
-from pneuma.team import DynamicAgent, Member, Recruit, Roster, Team, hiring_tools
 
 # ── Output types, module level ──
 

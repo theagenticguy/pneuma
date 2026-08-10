@@ -31,8 +31,8 @@ from ai_functions.testing import RuntimeHarness, ScriptedModel, Turn
 from pydantic import BaseModel, Field
 from strands.models import Model
 
+from pneuma._team_legacy import Member, Recruit, Roster, Team, TeamRun
 from pneuma.method import MethodAgent, ai_method
-from pneuma.team import Member, Recruit, Roster, Team, TeamRun
 
 # ── Output types, module level ──
 
