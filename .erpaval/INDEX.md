@@ -15,6 +15,10 @@ lessons before starting work.
 - [Orchestrator state lifetimes and tool races](solutions/ai-functions-runtime/orchestrator-state-lifetimes-and-tool-races.md) — per-run state resets per run (type(self.x)() preserves subclasses); the default tool executor is concurrent so reserve-before-await; release-then-unregister for teardown tools; delivery claims need a verified wire; dict-keyed aggregation drops name collisions; cross-file line cites go stale mid-session; probes must script models by construction
 - [Suffix replay and cache economics](solutions/ai-functions-runtime/suffix-replay-and-cache-economics.md) — replay is vacuous when the edit is consumed at decision 0; trace() tears threads down so nothing survives to fork; Bedrock caches nothing without an explicit cachePoint (CacheConfig seam); fork beams stay cache-friendly only because branches run serially
 
+### architecture-patterns
+
+- [Hooks over phases for orchestrators](solutions/architecture-patterns/hooks-over-phases-for-orchestrators.md) — a ~460-line core owning the composed config_hook, the Accept/Revise loop, and teardown; features as list entries; grading opt-in via review members; strands silently drops bad tool names (wire tests only); team learning via deferred emission against the surviving event log; packet-before-code is what makes agents resumable
+
 ### verification
 
 - [TLC liveness: WF kills only stuttering, cycles are real findings](solutions/verification/tlc-liveness-fairness-semantics.md) — why liveness is opt-in; SF not WF for loop-toggled exits; safety masks liveness
@@ -23,6 +27,7 @@ lessons before starting work.
 
 ## Recent additions
 
+- 2026-08-10 · session-94adc2 · hooks-over-phases lesson from the team rebuild (4/4 tasks, 881 tests green, live TextGrad step verified)
 - 2026-08-09 · session-b84f7e · suffix-replay/cache-economics + truncation-asymmetry lessons from the paper-takeaways build (6/6 tasks, 817 tests green)
 - 2026-08-07 · session-9df6ea · orchestrator state-lifetime/race lesson from the Team build (kernel complete, 5/5)
 - 2026-08-07 · session-1b17c3 · hooks/budgets/gates lesson from the ProcessAgent build
