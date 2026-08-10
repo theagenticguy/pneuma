@@ -4,46 +4,46 @@
 
 ## CLI war-room investigation
 
-Entry point: `src/pneuma/demo/cli.py:117`
+Entry point: `src/pneuma/demo/cli.py:115`
 
-1. `main` parses `--max-hires`, `--out`, `--quiet`, `--truth` (`src/pneuma/demo/cli.py:118-123`).
-2. With `--truth`, print `incident.GROUND_TRUTH` plus `single_plane_ambiguity()` as JSON and exit 0 without spending a model call (`src/pneuma/demo/cli.py:125-142`).
-3. Otherwise `asyncio.run(investigate(...))` (`src/pneuma/demo/cli.py:144`); the exit code is 0 only when the oracle graded the verdict correct (`src/pneuma/demo/cli.py:145`).
-4. `investigate` builds a recording `Console` and a `Tape`, then creates the output directory (`src/pneuma/demo/cli.py:27-41`).
-5. Stand up an `InMemoryCoordinator`, register a `LocalWorker`, and subscribe the tape to the coordinator's event stream (`src/pneuma/demo/cli.py:42-44`).
-6. Construct `WarRoom(question=QUESTION, max_hires=max_hires)` and spawn it on the coordinator (`src/pneuma/demo/cli.py:46-47`).
-7. Start the periodic tape flusher so an interrupted run still leaves a transcript (`src/pneuma/demo/cli.py:51`, `src/pneuma/demo/cli.py:75-78`).
-8. `await handle.run("")` and persist `investigation.json` before teardown; the `finally` cancels the flusher, unsubscribes, writes the tape, terminates the thread, and closes the worker (`src/pneuma/demo/cli.py:53-63`), then `_report` renders verdict, causal chain, dismissed decoys, hires, and usage (`src/pneuma/demo/cli.py:65`, `src/pneuma/demo/cli.py:81-114`).
+1. `main` parses `--max-hires`, `--out`, `--quiet`, `--truth` (`src/pneuma/demo/cli.py:116-121`).
+2. With `--truth`, print `incident.GROUND_TRUTH` plus `single_plane_ambiguity()` as JSON and exit 0 without spending a model call (`src/pneuma/demo/cli.py:123-140`).
+3. Otherwise `asyncio.run(investigate(...))` (`src/pneuma/demo/cli.py:142`); the exit code is 0 only when the demo's own check graded the verdict correct (`src/pneuma/demo/cli.py:143`).
+4. `investigate` builds a recording `Console` and a `Tape`, then creates the output directory (`src/pneuma/demo/cli.py:26-40`).
+5. Stand up an `InMemoryCoordinator`, register a `LocalWorker`, and subscribe the tape to the coordinator's event stream (`src/pneuma/demo/cli.py:41-43`).
+6. Construct `WarRoom(question=QUESTION, max_hires=max_hires)` (`src/pneuma/demo/cli.py:45`).
+7. Start the periodic tape flusher so an interrupted run still leaves a transcript (`src/pneuma/demo/cli.py:49`, `src/pneuma/demo/cli.py:73-76`).
+8. `await room.investigate(coordinator)` — a `Team` run with a `Briefing` hook, the demo's staffing tools on the lead's own `config_hook`, and its standard on the lead's own `post_conditions` — and persist `investigation.json` before teardown; the `finally` cancels the flusher, unsubscribes, writes the tape, and closes the worker (`src/pneuma/demo/cli.py:50-60`), then `_report` renders verdict, causal chain, dismissed decoys, hires, and usage (`src/pneuma/demo/cli.py:63`, `src/pneuma/demo/cli.py:79-112`).
 
 ### Related
 
-- `src/pneuma/demo/warroom.py:83`
+- `src/pneuma/demo/warroom.py:100`
 - `src/pneuma/demo/live.py:44`
 - `src/pneuma/demo/incident.py:1120`
 - `src/pneuma/demo/cast.py:204`
 - `src/pneuma/demo/staffing.py:66`
 
-## Team run skeleton
+## Team run pipeline
 
-Entry point: `src/pneuma/team.py:1122`
+Entry point: `src/pneuma/team/core.py:202`
 
-1. Capture the wall-clock start and the coordinator's `last_event_id` as the usage baseline, so a team seeded from another thread does not bill itself for the inherited log (`src/pneuma/team.py:1153-1154`).
-2. Replace `roster` and `worklog` with fresh instances of their own classes — per run, not per construction, so a second call on one handle cannot inherit the first run's hires (`src/pneuma/team.py:1155-1156`).
-3. List the cast via `members()`, refuse duplicate names, equip the worklog tool on each equippable member, and compose the gated lead — all before anything is spawned (`src/pneuma/team.py:1165-1169`).
-4. Phase 1 `assemble`: spawn each member sequentially as a child of `ctx.thread_id`, writing the `THREAD_SPAWNED` edge the usage rollup walks (`src/pneuma/team.py:1219-1238`).
-5. Phase 2 `brief`: `asyncio.gather` every member's own briefing behind a barrier with `return_exceptions=True`, rendering a failure as a `BRIEFING_ERROR` string rather than aborting the run (`src/pneuma/team.py:1265-1278`), then refuse a run in which no briefing survived (`src/pneuma/team.py:1175`).
-6. Phase 3: spawn the lead thread, register it as a worklog channel so briefing-phase discoveries replay into its first context, and run it on `render_brief(request, briefings)` (`src/pneuma/team.py:1177-1187`).
-7. Phase 2½ `negotiate`, off by default: fan the plan to every member, collect objections behind the same barrier, return early on unanimity, else send the objections back through a full gated cycle up to `negotiation_rounds` (`src/pneuma/team.py:1280-1369`).
-8. Unconditional `finally` retires every member, every hire, and the lead with `return_exceptions=True`; then `grade` the verdict, roll up `subtree_usage` since the baseline, and return a `run_type()` instance (`src/pneuma/team.py:1189-1217`).
+1. With no coordinator supplied, stand up a private `InMemoryCoordinator` + `LocalWorker` pair for the run and close it in a `finally` — the convenience path for scripts (`src/pneuma/team/core.py:222-231`).
+2. Compose the lead's one `config_hook` — its own hook and `tools=` recomposed first, then the members-as-tools, then every hook's `tools_for_lead` — and spawn the lead's thread, registered but not running, so the whole run is one subtree (`src/pneuma/team/core.py:236-244`, `326-355`).
+3. Fold every hook's `tools_for_member` into one equipped hook per member, then spawn each member as a child of the lead's thread (`src/pneuma/team/core.py:246-248`, `388-411`).
+4. Call every hook's `on_assemble` in order — members are live, the lead has not cycled; briefing-style hooks hold their barrier here (`src/pneuma/team/core.py:250-253`, `src/pneuma/team/hooks/briefing.py:72-96`).
+5. Fold the request left through every hook's `on_request` — the seam that delivers briefings and learned guidance into the lead's own prompt (`src/pneuma/team/core.py:255-258`).
+6. Run the lead once, then drive the answer loop: each hook with `on_answer` reviews in order, `Revise(feedback)` re-runs the lead bounded by the verdict's cap, and cap exhaustion passes the last answer on with a `revise_cap` transcript entry (`src/pneuma/team/core.py:260-261`, `287-322`).
+7. Return `TeamRun(answer, transcript, hooks_data)` — the answer exactly as the lead produced it, the wire-recorded member calls and revise rounds, and whatever hooks left behind (`src/pneuma/team/core.py:262`, `149-170`).
+8. Unconditional `finally`: run every hook's `on_teardown` (each guarded, first error resurfacing only when nothing else propagates), then retire every member and the lead with `return_exceptions=True` (`src/pneuma/team/core.py:263-283`).
 
 ### Related
 
-- `src/pneuma/team.py:1402`
-- `src/pneuma/team.py:108`
-- `src/pneuma/team.py:641`
-- `src/pneuma/team.py:1469`
+- `src/pneuma/team/members.py:62`
+- `src/pneuma/team/hooks/briefing.py:45`
+- `src/pneuma/team/hooks/hiring.py:282`
+- `src/pneuma/team/hooks/learning.py:244`
 - `src/pneuma/method.py:367`
-- `src/pneuma/demo/warroom.py:177`
+- `src/pneuma/demo/warroom.py:168`
 
 ## Verified-process walk
 
@@ -106,7 +106,7 @@ Entry point: `src/pneuma/gated.py:271`
 - `src/pneuma/gated.py:83`
 - `src/pneuma/method.py:163`
 - `src/pneuma/casestudy/harnesslearn.py:572`
-- `src/pneuma/team.py:1402`
+- `src/pneuma/team/core.py:326`
 
 ## Case-study pipeline
 
@@ -179,7 +179,7 @@ Entry point: `src/pneuma/detect/vacuity.py:605`
 - Harness proposal training — entry at `src/pneuma/casestudy/harnesslearn.py:940`. Recalls the coverage weight per round, has `HarnessProposer` propose one behind the `admit` gate (`src/pneuma/casestudy/harnesslearn.py:470`), and substitutes the measured quality for the model's own score before consolidating (`src/pneuma/casestudy/harnesslearn.py:908`).
 - Miner toolkit training — entry at `src/pneuma/casestudy/minelearn.py:1069`. Refuses to start against a pathological objective, then recalls both `toolkit` and `advice` per round as call arguments so both are gradient targets.
 - Agent-written miner grading — entry was `discover_and_grade`, deleted 2026-08-10; `Miner` (`src/pneuma/casestudy/aimine.py:186`) and `grade` (`src/pneuma/casestudy/aimine.py:399`) remain, but nothing composes them. Had the `Miner` agent discover a model from a CSV sample, then grades it against the fixed miner at both a default and a log-derived threshold (`src/pneuma/casestudy/aimine.py:399`).
-- Team hiring tools — entry at `src/pneuma/team.py:362`. Rebuilds `hire`/`delegate`/`dismiss` per cycle against that cycle's context; `commission` (`src/pneuma/team.py:453`) reserves the name and headcount before the spawn await so two concurrent hires in one turn cannot both pass the cap.
+- Team hiring tools — entry at `src/pneuma/team/hooks/hiring.py:66` (`hiring_tools`), wrapped as the `Hiring` hook at `:282`. Rebuilds `hire`/`delegate`/`dismiss` per cycle against that cycle's context; `commission` (`src/pneuma/team/hooks/hiring.py:133`) reserves the name and headcount before the spawn await so two concurrent hires in one turn cannot both pass the cap.
 - Adversarial objective search — entry at `src/pneuma/detect/adversary.py:384`. Bridges into `_run` (`src/pneuma/detect/adversary.py:431`), which fans out one adversary per angle in parallel, then judges each candidate with an independent panel that never sees another ballot.
 - Vector memory retrieval — entry at `src/pneuma/memory/turso_backend.py:657`. Embeds pending entries, then ranks by `vector_distance_cos` inside the database and drops hits beyond `distance_ceiling`, so an empty result is honest rather than the best of a bad set.
 - Retrieval discrimination probe — entry at `src/pneuma/memory/turso_backend.py:718`. Measures relevant probes, self-retrieval, and control queries with the ceiling suspended, since the ceiling is derived from this measurement (`src/pneuma/memory/turso_backend.py:784`).

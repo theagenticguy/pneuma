@@ -3,7 +3,7 @@
 A **contract** in `pneuma` is a type, protocol, callable alias, or implicit frame shape declared in one module and depended on by at least one other module. Three kinds appear, and the middle one carries most of the risk:
 
 1. **Validated data.** A `pydantic.BaseModel` whose `model_validator` establishes properties every downstream consumer assumes. `process/ir.py`'s seven models are the whole of this kind.
-2. **Structural protocols.** A `typing.Protocol` that existing classes satisfy without being edited or importing it. `gated.Verdict`, `gated.Gate`, `team.Recruit`, and `vacuity.System` are all this shape, and two of them have zero import sites in `src/` — they are satisfied by classes in other modules that never mention them.
+2. **Structural protocols.** A `typing.Protocol` that existing classes satisfy without being edited or importing it. `gated.Verdict`, `gated.Gate`, `team.Recruit`, `team.TeamHook`, and `vacuity.System` are all this shape, and two of them have zero import sites in `src/` — they are satisfied by classes in other modules that never mention them.
 3. **Undeclared frames.** A `polars.DataFrame` column set reproduced by hand in a second module. The nine-column event-log frame is the only one, and no type anywhere states it.
 
 Consumer counts below are distinct import sites, measured with an AST pass over `src/**`, `tests/**`, and `tools/**` that resolves relative imports to absolute `pneuma.*` paths — not grep, which counts every textual mention. Where the `src/`-versus-tests split changes the picture, it is stated.
@@ -91,7 +91,7 @@ Decide = Callable[[str, list[Transition], dict[str, int | str]], Awaitable[str]]
 **Consumer(s):**
 
 - `src/pneuma/gated.py:51` — `GatedProposer` subclasses `MethodAgent`.
-- `src/pneuma/team.py:55` — `Member` adapts a `MethodAgent`; `DynamicAgent` is one.
+- `src/pneuma/team/members.py:20` — `Member` adapts a `MethodAgent`; `DynamicAgent` is one.
 - `src/pneuma/process/agent.py:57` — `ProcessAgent` subclasses it and declares `choose`.
 - `src/pneuma/recall.py:60` — `Recall` binds one to a `MemoryBackend`.
 - `src/pneuma/casestudy/aimine.py:42` — `Miner.discover`.
@@ -113,15 +113,15 @@ def ai_method(output_type: type, /, **config: Any) -> Callable[[Callable[..., An
 
 **Assumptions consumers make:**
 
-- **An empty body means "render the docstring".** `prompt_fn` awaits the method, and a non-`None` result short-circuits templating (`src/pneuma/method.py:119-123`); a `None` result with no docstring raises (`src/pneuma/method.py:124-125`). Every consumer's decorated methods are bodyless (`src/pneuma/casestudy/aimine.py:204`, `src/pneuma/team.py:266-272`, `src/pneuma/process/agent.py:122`).
+- **An empty body means "render the docstring".** `prompt_fn` awaits the method, and a non-`None` result short-circuits templating (`src/pneuma/method.py:119-123`); a `None` result with no docstring raises (`src/pneuma/method.py:124-125`). Every consumer's decorated methods are bodyless (`src/pneuma/casestudy/aimine.py:204`, `src/pneuma/team/members.py:220-226`, `src/pneuma/process/agent.py:122`).
 - **`{self.x}` in the docstring resolves.** `compile_ai_method` builds the render context as `{"self": instance, **bound.arguments}` (`src/pneuma/method.py:128`), which is why rendering happens here rather than through the library's own docstring path (`src/pneuma/method.py:107-110`). `ProcessAgent.choose` depends on this for `{self.process.name}` (`src/pneuma/process/agent.py:123`).
 - **A learnable value must be a call argument, and a validator's fixed input must be on `self`.** Stated in the module header (`src/pneuma/method.py:17-19`) and re-stated by both consumers that split state this way: `GatedProposer` (`src/pneuma/gated.py:106-114`) and `ProcessAgent` (`src/pneuma/process/agent.py:91-97`).
 - **The compiled tool name is `{owner}.{method}`, and an `@ai_method(name=...)` rename wins.** `_owner_name` is single-sourced for exactly this (`src/pneuma/method.py:61-68`), the config name is built at `src/pneuma/method.py:155-158`, and `spawn` re-reads the published name so an error names a thread the caller can find in the tool schema (`src/pneuma/method.py:419-421`).
 - **`get_type_hints(..., include_extras=True)` is load-bearing, not tidy.** Resolving without extras flattens `Annotated[str, ProceduralMarker()]` to plain `str` and the code silently becomes an ordinary prompt argument (`src/pneuma/method.py:141-146`). `recall.recalled_params` depends on the surviving metadata (`src/pneuma/recall.py:148`).
 - **Compiling through `self.compiled` rather than the module function is how tests bind scripted models.** `spawn` routes through it deliberately (`src/pneuma/method.py:409-411`), and `ProcessAgent.decider` cites that precedent for doing the same (`src/pneuma/process/agent.py:144-148`).
-- **A `MethodAgent` compiles to `STRUCTURED` and is therefore unreachable by `send_message`.** Asserted in `MethodThread`'s docstring (`src/pneuma/method.py:192-199`) and depended on by `team.py`, which mentions `send_message` nowhere for that reason (`src/pneuma/team.py:19-26`) and by `DynamicAgent`, whose second `context` parameter exists solely to keep the shape `STRUCTURED` (`src/pneuma/team.py:243-250`).
+- **A `MethodAgent` compiles to `STRUCTURED` and is therefore unreachable by `send_message`.** Asserted in `MethodThread`'s docstring (`src/pneuma/method.py:192-199`) and depended on by the team layer, which mentions `send_message` nowhere for that reason, and by `DynamicAgent`, whose second `context` parameter exists solely to keep the shape `STRUCTURED` (`src/pneuma/team/members.py:196-203`).
 
-**Drift risk:** `MethodAgent.ai_methods()` walks the whole MRO (`src/pneuma/method.py:345-352`), so an `@ai_method` added to `MethodAgent` itself would silently join every subclass's published tool set — including `DynamicAgent`, whose docstring pins the set as exactly `["answer"]` (`src/pneuma/team.py:240-243`). Mitigation: the base declares none, and the pinning test on `DynamicAgent` is what would fail.
+**Drift risk:** `MethodAgent.ai_methods()` walks the whole MRO (`src/pneuma/method.py:345-352`), so an `@ai_method` added to `MethodAgent` itself would silently join every subclass's published tool set — including `DynamicAgent`, whose docstring pins the set as exactly `["answer"]` (`src/pneuma/team/members.py:194-199`). Mitigation: the base declares none, and the pinning test on `DynamicAgent` is what would fail.
 
 ## `gated.Verdict` — a structural protocol with no import sites in `src/`
 
@@ -294,16 +294,16 @@ class Domain:
 
 ## `team.Recruit` — three verbs, satisfied by two unrelated classes
 
-**Producer:** `src/pneuma/team.py:71-105`
+**Producer:** `src/pneuma/team/members.py:25-59`
 
 **Consumer(s):**
 
-- `src/pneuma/team.py:1219-1238` — `Team.assemble` calls `spawn`, reading only `.id` off the result.
-- `src/pneuma/team.py:1265-1267` — `Team.brief` calls `ask` behind an `asyncio.gather` barrier.
-- `src/pneuma/team.py:1194-1198` — `execute`'s `finally` calls `retire` on every member and hire.
-- `src/pneuma/team.py:108-227` — `Member`, the library's own adapter for a `MethodAgent`.
+- `src/pneuma/team/core.py:246-248` — `Team.run` calls `spawn`, reading only `.id` off the result.
+- `src/pneuma/team/hooks/briefing.py:85-88` — the `Briefing` hook calls `ask` behind an `asyncio.gather` barrier.
+- `src/pneuma/team/core.py:277-281` — the `finally` calls `retire` on every member; `Hiring.on_teardown` retires the hires (`src/pneuma/team/hooks/hiring.py:351-358`).
+- `src/pneuma/team/members.py:62-181` — `Member`, the library's own adapter for a `MethodAgent`.
 - `src/pneuma/demo/agent.py:138-161` — `demo.agent.Agent` satisfies it as written, with no adapter.
-- `src/pneuma/demo/warroom.py:28` and `src/pneuma/demo/staffing.py:27` — annotate against it.
+- `src/pneuma/demo/staffing.py` and the hook library annotate against it.
 
 `Recruit` has 7 import sites, 2 of them in `src/`.
 
@@ -331,15 +331,15 @@ class Recruit(Protocol):
 
 **Assumptions consumers make:**
 
-- **`retire` must be idempotent, and the unwind depends on it.** Declared in the protocol (`src/pneuma/team.py:103-104`), honoured by `MethodThread.retire` which suppresses `ThreadNotFoundError` and returns early when already dead (`src/pneuma/method.py:303-307`). `Team.teardown` and `execute`'s `finally` can therefore both run (`src/pneuma/team.py:1469-1480`, `src/pneuma/team.py:1194-1199`), and `dismiss` retires *before* unregistering so a failed retire leaves the recruit reachable for a retry (`src/pneuma/team.py:601-610`).
-- **`name` is the only identity guaranteed, which makes duplicate names a silent data loss.** `brief` keys its mapping by `member.name` (`src/pneuma/team.py:1269-1276`), so `_check_no_duplicate_members` refuses a colliding cast before anything is spawned and cites the measurement (`src/pneuma/team.py:1490-1520`).
-- **`spawn`'s return is `Any` and only `.id` is read.** Stated at `src/pneuma/team.py:88-90`; demanding a `ThreadHandle` would exclude `MethodThread`. `assemble` reads it at `src/pneuma/team.py:1233` and `commission` at `src/pneuma/team.py:475`.
-- **`notify` and `equip` are *not* in the protocol, so both are probed with `getattr`.** `_equip_worklog` skips a recruit without `equip` (`src/pneuma/team.py:1381-1384`), `_open_channel` skips a handle without `notify` (`src/pneuma/team.py:1398-1400`), and `commission` does both for a hire (`src/pneuma/team.py:466-482`). A mixed cast is legitimate, not a fault (`src/pneuma/team.py:1374-1379`).
-- **Negotiation objections travel through `ask`, not `notify`, because an answer is wanted.** Stated at `src/pneuma/team.py:1302-1307` — `notify` by construction produces no answer, and the `Member` adapter deliberately does not wrap it (`src/pneuma/team.py:128-131`).
-- **A member's failure is a rendered string, not an exception — except when every member fails.** `brief` uses `return_exceptions=True` and renders failures with the `BRIEFING_ERROR` prefix (`src/pneuma/team.py:1265-1276`), while `_check_some_briefing_survived` raises when all of them did, and explains the asymmetry with a measurement (`src/pneuma/team.py:1522-1559`).
-- **A mandate reaches a hire through the factory, never by attribute injection.** The protocol says nothing about a mandate, and injecting one would fail on a `__slots__` recruit or silently create a dead field (`src/pneuma/team.py:418-425`).
+- **`retire` must be idempotent, and the unwind depends on it.** Declared in the protocol (`src/pneuma/team/members.py:57-58`), honoured by `MethodThread.retire` which suppresses `ThreadNotFoundError` and returns early when already dead (`src/pneuma/method.py:303-307`). The core's `finally` and `Hiring.on_teardown` can therefore overlap harmlessly (`src/pneuma/team/core.py:263-283`, `src/pneuma/team/hooks/hiring.py:351-358`), and `dismiss` retires *before* unregistering so a failed retire leaves the recruit reachable for a retry (`src/pneuma/team/hooks/hiring.py:257-273`).
+- **`name` is the only identity guaranteed, which makes duplicate names a silent loss.** Each member becomes a tool named after it on the lead's wire, and two tools sharing a name shadow silently, so `_check_no_duplicate_member_names` refuses a colliding cast at construction — including the dot-mapped collision (`a.b` vs `a_b`) the wire mapping creates (`src/pneuma/team/core.py:415-437`).
+- **`spawn`'s return is `Any` and only `.id` is read.** Stated at `src/pneuma/team/members.py:42-45`; demanding a `ThreadHandle` would exclude `MethodThread`. `Hiring`'s `commission` reads it at `src/pneuma/team/hooks/hiring.py:150`.
+- **`notify` and `equip` are *not* in the protocol, so both are probed with `getattr`.** The core's tool fold skips a recruit without `equip` (`src/pneuma/team/core.py:388-411`), the `Worklog` hook opens no channel for a handle without `notify` (`src/pneuma/team/hooks/worklog.py:227-243`), and `Hiring` does both for a hire (`src/pneuma/team/hooks/hiring.py:362-390`). A mixed cast is legitimate, not a fault.
+- **Negotiation objections travel through `ask`, not `notify`, because an answer is wanted.** `notify` by construction produces no answer, and the `Member` adapter deliberately does not wrap it (`src/pneuma/team/hooks/negotiation.py:62-65`, `src/pneuma/team/members.py:84-85`).
+- **A member's failure is a rendered string, not an exception — except when every member fails.** The `Briefing` hook uses `return_exceptions=True` and renders failures with the `BRIEFING_ERROR` prefix (`src/pneuma/team/hooks/briefing.py:85-96`), while `_check_some_briefing_survived` raises when all of them did, and explains the asymmetry (`src/pneuma/team/hooks/briefing.py:113-133`).
+- **A mandate reaches a hire through the factory, never by attribute injection.** The protocol says nothing about a mandate, and injecting one would fail on a `__slots__` recruit or silently create a dead field (`src/pneuma/team/hooks/hiring.py:84-90`).
 
-**Drift risk:** Adding a fourth verb would break `demo.agent.Agent`, which satisfies the protocol by coincidence of shape rather than by declaration (`src/pneuma/demo/agent.py:138-161`) and is cited as the reason the protocol has exactly three (`src/pneuma/team.py:80-86`). Mitigation: optional capabilities go through the `getattr` probe pattern `_equip_worklog` and `_open_channel` already use, not through the protocol.
+**Drift risk:** Adding a fourth verb would break `demo.agent.Agent`, which satisfies the protocol by coincidence of shape rather than by declaration (`src/pneuma/demo/agent.py:138-161`) and is cited as the reason the protocol has exactly three (`src/pneuma/team/members.py:29-33`). Mitigation: optional capabilities go through the `getattr` probe pattern the core's tool fold and the worklog's channel opener already use, not through the protocol.
 
 ## `detect.vacuity.RuleVerdict` — a record with a declared compatibility surface
 
@@ -497,7 +497,7 @@ with the two composition points:
 **Assumptions consumers make:**
 
 - **A post-condition's first parameter must not share a name with a propose parameter, and this is enforced at wiring time.** The runtime passes the result positionally *and* injects bound arguments by keyword, so a collision raises `TypeError: got multiple values for argument` which is then reported to the model as a validation failure — the gate appears to refuse everything for a reason no model can act on (`src/pneuma/gated.py:285-321`). Which is why `admits` names its parameter `response` rather than `proposal` (`src/pneuma/gated.py:171-177`).
-- **`gated()` prepends rather than replaces, so a subclass cannot lose the gate.** `src/pneuma/gated.py:271-283`; the same argument at team scale is `_gated_lead`'s, which reads the lead's own conditions off its config because `AIFunction.replace` overwrites (`src/pneuma/team.py:1402-1427`).
+- **`gated()` prepends rather than replaces, so a subclass cannot lose the gate.** `src/pneuma/gated.py:271-283`; the same argument at team scale is the core's `_lead_hook`, which recomposes the lead's own hook and `tools=` into the one hook it installs so a lead loses nothing (`src/pneuma/team/core.py:326-355`).
 - **`rejected` holds refusals and nothing else.** A gate *fault* is re-raised as an internal-failure message and deliberately not recorded (`src/pneuma/gated.py:20-23`, `src/pneuma/gated.py:134-140`), so a loop that silently re-asked and then succeeded is distinguishable from one whose gate never fired.
 - **`candidate_of` must stay synchronous and side-effect-free.** It runs inside a validator on every attempt, so an override that fetched or computed anything would put the gate's own work behind a hook named for an accessor (`src/pneuma/gated.py:144-157`). `HarnessProposer` overrides it to a single attribute read (`src/pneuma/casestudy/harnesslearn.py:684`).
 - **The gate is a *value* on `self`, not an abstract method, and that is what keeps the library boundary honest.** The gates worth having need polars, a process miner, and a reachability sweep — none of which the library half may import (`src/pneuma/gated.py:85-96`), enforced by `tests/library/test_boundary.py:50`. `HarnessProposer` binds a closure over its event log from the inside (`src/pneuma/casestudy/harnesslearn.py:642`, `src/pneuma/casestudy/harnesslearn.py:644-675`).
@@ -509,12 +509,12 @@ with the two composition points:
 
 ## Other contracts
 
-- **`team.TeamRun`** (`src/pneuma/team.py:297-356`) — the published run artifact. `verdict: Any` means `deserialize_result(serialize_result(run)) != run` for the base, which `run_type()` exists to fix by letting a subclass narrow the field (`src/pneuma/team.py:1104-1113`). Its `model_serializer` drops `negotiation` and `worklog` when empty so the demo's nine-key `investigation.json` shape survives (`src/pneuma/team.py:340-356`). One `src/` consumer: `src/pneuma/demo/warroom.py:28`.
+- **`team.TeamRun`** (`src/pneuma/team/core.py:149-170`) — the published run artifact: `answer`, the core's own `transcript` (member calls, revise rounds), and `hooks_data` verbatim. `answer: Any` because the lead's output type is the caller's choice. Its `model_serializer` drops `transcript` and `hooks_data` when empty, so a bare run's artifact stays one key (`src/pneuma/team/core.py:163-170`). The demo re-shapes it into its own `Investigation` (`src/pneuma/demo/warroom.py:46-79`).
 - **`interpreter.Run` / `Step` / `Revisit`** (`src/pneuma/process/interpreter.py:156`, `src/pneuma/process/interpreter.py:144`, `src/pneuma/process/interpreter.py:29`) — the trace `run` returns. `Run.path` and `Run.rejections` are derived (`src/pneuma/process/interpreter.py:166-172`) and read by `pipeline.execute_case` (`src/pneuma/casestudy/pipeline.py:226-227`). `ProcessAgent` deliberately does not extend it, because that would mean editing the fixed interpreter's data structure to carry a subclass payload (`src/pneuma/process/agent.py:299-302`).
 - **`interpreter.OnEnter`** (`src/pneuma/process/interpreter.py:56`) — takes the state *name* and nothing else, deliberately: whoever installs the hook already holds the `Process` (`src/pneuma/process/interpreter.py:52-55`, restated at `src/pneuma/process/interpreter.py:218-221`). One `src/` consumer, `ProcessAgent.work` (`src/pneuma/process/agent.py:319-329`).
 - **`State.agent_method`** (`src/pneuma/process/ir.py:185`) — a string naming an `@ai_method`, with two resolution policies. `ProcessAgent.handler_for` treats it as a method name and returns `None` for anything unrecognised (`src/pneuma/process/agent.py:182-185`); `casestudy.handlers.handler_for` treats it as an opt-in gate and resolves through a table keyed by the log's activity label (`src/pneuma/casestudy/handlers.py:300-304`).
-- **`team.Roster` / `Worklog`** (`src/pneuma/team.py:275-294`, `src/pneuma/team.py:640-722`) — both replaced per run at the top of `execute` as `type(self.x)()` so a narrowing subclass keeps its class (`src/pneuma/team.py:1155-1156`); `demo.staffing.Staff` is the narrowing (`src/pneuma/demo/staffing.py:27`, `src/pneuma/demo/warroom.py:95`). `Roster.log` and `Worklog.entries` are plain dicts on purpose — an audit surface a reader walks, not a contract a caller binds to (`src/pneuma/team.py:318-322`).
-- **`team.DISCOVERY_KINDS`** (`src/pneuma/team.py:629`) — a closed four-value vocabulary; a kind the model invents is refused as text so the model posts again (`src/pneuma/team.py:756-757`).
+- **`team.hooks.Roster`** (`src/pneuma/team/hooks/hiring.py:47-64`) — per-run by workspace identity, replaced as `type(self._roster)()` so a narrowing subclass keeps its class (`src/pneuma/team/hooks/hiring.py:324-332`); `demo.staffing.Staff` is the narrowing (`src/pneuma/demo/staffing.py:27`). `Roster.log` and the worklog's entries are plain dicts on purpose — an audit surface a reader walks, not a contract a caller binds to.
+- **`team.hooks.DISCOVERY_KINDS`** (`src/pneuma/team/hooks/worklog.py:44`) — a closed four-value vocabulary; a kind the model invents is refused as text so the model posts again (`src/pneuma/team/hooks/worklog.py:206-208`).
 - **`process.tla.CheckResult`** (`src/pneuma/process/tla.py:53-116`) — `with_witnesses` is the seam `detect.adapter.witness_counts` feeds (`src/pneuma/process/tla.py:90-101`, `src/pneuma/detect/adapter.py:208-214`), and `ok` is derived from a conjunction of gates rather than any single string (`src/pneuma/process/tla.py:56-61`).
 - **`process.agent.HandlerFailed`** (`src/pneuma/process/agent.py:71-80`) — deliberately not a `ProcessError`, so a code fault cannot arrive in a report as evidence about a guardrail.
 - **`casestudy.rules.Governed`** (`src/pneuma/casestudy/rules.py:269-300`) — iterable as `(process, applied)` so existing two-tuple callers keep working while `skipped` and the liveness split are available (`src/pneuma/casestudy/rules.py:264-266`, `src/pneuma/casestudy/rules.py:274-275`).

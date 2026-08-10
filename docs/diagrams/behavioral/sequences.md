@@ -7,40 +7,37 @@ Three processes, diagrams only. Each participant is a module or class read from 
 ```mermaid
 sequenceDiagram
     participant CLI
-    participant Coord as Coordinator
     participant Room as WarRoom
+    participant Team
+    participant Brief as Briefing hook
     participant Spec as Specialists
     participant Lead
-    participant Oracle
 
-    CLI->>Coord: spawn WarRoom
-    CLI->>Room: handle.run
-    Room->>Coord: spawn members
-    Room->>Spec: brief, barrier
-    Spec-->>Room: findings
-    Room->>Coord: spawn lead
-    Room->>Lead: run(briefings)
-    loop until oracle accepts
-        Lead->>Oracle: verdict
-        Oracle-->>Lead: reject + reason
-    end
-    Lead-->>Room: accepted
-    Room->>Spec: retire all
-    Room->>Coord: subtree usage
+    CLI->>Room: investigate(coordinator)
+    Room->>Team: run(question)
+    Team->>Spec: spawn as children of the lead
+    Team->>Brief: on_assemble
+    Brief->>Spec: ask the opening, barrier
+    Spec-->>Brief: briefings or error strings
+    Brief->>Team: on_request folds the brief in
+    Team->>Lead: run(request + brief)
+    Note over Lead: WarRoom.oracle rides the lead's own post_conditions - refuse and re-ask
+    Lead-->>Team: verdict
+    Team->>Spec: retire all (finally)
+    Team-->>Room: TeamRun
     Room-->>CLI: Investigation
 ```
 
-- Entry point `main` at `src/pneuma/demo/cli.py:117`; the async body `investigate` at `src/pneuma/demo/cli.py:26`.
-- `CLI` — `src/pneuma/demo/cli.py:1`. `Coordinator` — `InMemoryCoordinator` constructed at `src/pneuma/demo/cli.py:42`, `LocalWorker` registered at `src/pneuma/demo/cli.py:43`.
-- `WarRoom` — `src/pneuma/demo/warroom.py:83`. `Specialists` — one `Specialist` per plane, `src/pneuma/demo/warroom.py:99-101`, class at `src/pneuma/demo/cast.py:69`. `Lead` — `IncidentLead` at `src/pneuma/demo/cast.py:204`, composed at `src/pneuma/demo/warroom.py:125-126`. `Oracle` — `WarRoom.oracle` at `src/pneuma/demo/warroom.py:128`.
-- `spawn WarRoom` — `src/pneuma/demo/cli.py:46-47`. `handle.run` — `src/pneuma/demo/cli.py:53`, forwarded through `WarRoom.execute` at `src/pneuma/demo/warroom.py:184`.
-- `spawn members` — `Team.assemble` spawns serially at `src/pneuma/team.py:1232-1233`, called at `src/pneuma/team.py:1173`.
-- `brief, barrier` and `findings` — `asyncio.gather` over each member's `ask` with `return_exceptions=True` at `src/pneuma/team.py:1265-1268`; re-keyed by plane at `src/pneuma/demo/warroom.py:201-204`.
-- `spawn lead` and `run(briefings)` — `src/pneuma/team.py:1177-1187`.
-- `verdict` / `reject + reason` — the oracle is prepended as a post-condition at `src/pneuma/team.py:1424`; failures return to the model as assertion text, `src/pneuma/demo/warroom.py:135-158`.
-- `retire all` — unconditional `finally` covering members, hires and the lead, `src/pneuma/team.py:1194-1199`.
-- `subtree usage` — `subtree_usage(..., since_id=baseline)` at `src/pneuma/team.py:1202`, baseline captured at `src/pneuma/team.py:1154`.
-- `Investigation` — `run_type()` at `src/pneuma/demo/warroom.py:172-173`, built at `src/pneuma/team.py:1205-1217`, persisted at `src/pneuma/demo/cli.py:56`.
+- Entry point `main` at `src/pneuma/demo/cli.py:115`; the async body `investigate` at `src/pneuma/demo/cli.py:25`.
+- `CLI` — `src/pneuma/demo/cli.py:1`. The coordinator is an `InMemoryCoordinator` constructed at `src/pneuma/demo/cli.py:41`, `LocalWorker` registered at `src/pneuma/demo/cli.py:42`.
+- `WarRoom` — `src/pneuma/demo/warroom.py:100`. `Specialists` — one `Specialist` per plane, `src/pneuma/demo/warroom.py:178`, class at `src/pneuma/demo/cast.py:69`. `Lead` — `IncidentLead` at `src/pneuma/demo/cast.py:204`, composed at `src/pneuma/demo/warroom.py:179-183`.
+- `investigate(coordinator)` — `src/pneuma/demo/cli.py:52`, body at `src/pneuma/demo/warroom.py:168`.
+- `run(question)` — `Team(lead, specialists, hooks=[watch, briefing])` at `src/pneuma/demo/warroom.py:185-189`; the core pipeline at `src/pneuma/team/core.py:202-262`.
+- `ask the opening, barrier` and `briefings or error strings` — `asyncio.gather` over each member's `ask` with `return_exceptions=True` at `src/pneuma/team/hooks/briefing.py:85-96`; re-keyed by plane at `src/pneuma/demo/warroom.py:199-203`.
+- `on_request folds the brief in` — `src/pneuma/team/hooks/briefing.py:98-111`.
+- The refuse-and-re-ask note — `WarRoom.oracle` prepended to the lead's own `post_conditions` at `src/pneuma/demo/warroom.py:182`; failures return to the model as assertion text, `src/pneuma/demo/warroom.py:127-158`. The team layer itself grades nothing.
+- `retire all (finally)` — unconditional teardown covering members and the lead, `src/pneuma/team/core.py:263-283`; hires are the `Hiring` seam's own to release (`src/pneuma/demo/staffing.py`).
+- `Investigation` — graded by `WarRoom.grade` and built at `src/pneuma/demo/warroom.py:189-219`, persisted at `src/pneuma/demo/cli.py:55`.
 
 ## Verified-process walk
 

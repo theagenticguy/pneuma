@@ -32,11 +32,17 @@ classDiagram
         +work(start)
     }
     class Team {
-        +execute(ctx, request)
-        +assemble(ctx, cast)
-        +brief(members)
-        +grade(verdict)
-        +teardown()
+        +run(request, coordinator)
+        +lead
+        +members
+        +hooks
+    }
+    class TeamHook {
+        +on_assemble(work)
+        +on_request(work, request)
+        +tools_for_lead(work, ctx)
+        +on_answer(work, answer)
+        +on_teardown(work)
     }
     class Process {
         +outgoing(state)
@@ -57,7 +63,7 @@ classDiagram
     MethodAgent --> MethodThread : spawns
     Recall --> MethodAgent : binds
     Recall --> TursoMemoryBackend : reads
-    Team --> MethodThread : spawns
-    Team --> GatedProposer : gates
+    Team --> MethodThread : spawns members onto
+    TeamHook --> Team : extends via hooks=
     ProcessAgent --> Process : walks
 ```

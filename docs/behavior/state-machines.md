@@ -114,72 +114,72 @@ stateDiagram-v2
 
 Defined at: `src/pneuma/detect/vacuity.py:63`
 
-## Team.execute
+## Team.run
 
-The fixed run skeleton: four phases in ordinary `asyncio` with no model anywhere in the control
-flow, which is what makes a run reproducible (`src/pneuma/team.py:1122-1128`). Each phase
-boundary emits a `CustomEvent` whose `kind` is the edge label below, so the phase order is
-observable on the event log rather than inferred. The cast is listed and the lead composed
-*before* anything is spawned, so a wiring guard cannot fire after the barrier has already spent
-what it protects (`src/pneuma/team.py:1158-1169`).
+The core pipeline in ordinary `asyncio` with no model anywhere in the control flow, which is
+what makes a run reproducible (`src/pneuma/team/core.py:202-262`). The lead's thread is
+registered first (not running), every member spawns as its child, hooks run `on_assemble` then
+fold the request through `on_request`, the lead runs once, and the answer loop reviews the
+result. The duplicate-name guard fires at construction, before anything is spawned
+(`src/pneuma/team/core.py:415-437`).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> assemble
-    assemble --> brief : team.assembled
-    brief --> lead_running : team.briefings_in
-    lead_running --> negotiate : team.lead_running
-    negotiate --> retire : team.negotiated
-    retire --> grade : finally
-    grade --> [*] : team.graded
+    [*] --> spawn_lead
+    spawn_lead --> spawn_members : children of the lead
+    spawn_members --> on_assemble : every hook, in order
+    on_assemble --> on_request : fold left across hooks
+    on_request --> lead_runs
+    lead_runs --> answer_loop : Accept / Revise per hook
+    answer_loop --> teardown : finally
+    teardown --> [*]
 ```
 
-- `assemble` spawns members serially so the event log's order is the declared cast order
-  (`src/pneuma/team.py:1219-1238`).
-- `brief` gathers concurrently behind a barrier with `return_exceptions=True`, so a member that
-  died becomes a `BRIEFING_ERROR` string rather than an exception that takes the run down
-  (`src/pneuma/team.py:1265-1277`).
-- `retire` is unconditional and covers the lead, in a `finally`, so a mid-run fault cannot leave
-  live threads on the coordinator (`src/pneuma/team.py:1189-1199`).
-- `grade` runs after the unwind and is defaulted to `(True, [])`, because the oracle has already
-  gated by the time it is reached (`src/pneuma/team.py:1000-1016`,
-  `src/pneuma/team.py:1201-1203`).
+- `on_assemble` sees live members and a lead thread that has not cycled yet — the ordering
+  briefing-style hooks build on (`src/pneuma/team/core.py:250-253`).
+- The answer loop is per hook, in hook order; `Revise` re-runs the lead with feedback, bounded
+  by the cap read off the latest verdict, and cap exhaustion passes the last answer on with a
+  `revise_cap` transcript entry (`src/pneuma/team/core.py:287-322`).
+- `teardown` is unconditional: teardown hooks run even on a mid-run fault, the retire runs even
+  when a teardown hook raises, and the first hook error resurfaces only when nothing else is
+  already propagating (`src/pneuma/team/core.py:263-283`).
+- There is no grading state: the answer returns exactly as the lead produced it unless a review
+  hook (`Critic`, `Council`) revises it (`src/pneuma/team/hooks/review.py`).
 
-Defined at: `src/pneuma/team.py:1122`
+Defined at: `src/pneuma/team/core.py:202`
 
-## Team.negotiate
+## Negotiation.on_answer
 
-The optional per-round machine between the lead's draft and the graded verdict, bounded by
-`negotiation_rounds` and off by default — at zero it returns before touching anything and
-`execute` is byte-for-byte the pre-negotiation skeleton (`src/pneuma/team.py:1285-1287`). Each
-round fans the rendered plan to every member, collects objections behind the same barrier
-`brief` uses, and lands on one of three outcomes recorded verbatim on the transcript entry
-(`src/pneuma/team.py:1345`, `src/pneuma/team.py:1357-1359`) and documented on
-`TeamRun.negotiation` at `src/pneuma/team.py:319`.
+One round per call, driven by the core's answer loop: fan the rendered plan to every member,
+count approvals, and return `Accept` on unanimity or `Revise` carrying the objections
+(`src/pneuma/team/hooks/negotiation.py:100-149`). The per-round record lands in
+`hooks_data["negotiation"]`, and the `rounds` budget becomes the cap on every `Revise` the hook
+returns, so the core enforces it.
 
 ```mermaid
 stateDiagram-v2
     [*] --> round
     round --> unanimous : approved
-    round --> cap_reached : negotiation_rounds
+    round --> cap_reached : rounds spent
     round --> revised : render_objections
-    revised --> round : round_number
+    revised --> round
     unanimous --> [*]
     cap_reached --> [*]
-    revised --> [*]
 ```
 
-- `unanimous` returns early with the current verdict and the transcript
-  (`src/pneuma/team.py:1344-1353`).
-- `revised` sends the objections back through `lead_handle.run`, so the revision faces the oracle
-  exactly as the draft did (`src/pneuma/team.py:1355-1356`).
-- `cap_reached` is the same revision, marked so the transcript says the team never reached
-  unanimity rather than implying it did (`src/pneuma/team.py:1357-1359`).
-- An empty cast returns `(verdict, [])` before any round, because a round over nobody is
+- `unanimous` is `Accept`: the negotiation is over and the loop moves to the next hook
+  (`src/pneuma/team/hooks/negotiation.py:134-137`).
+- `revised` is `Revise(feedback, cap=rounds)`: the lead re-runs against the attributed
+  objections, with the approvers named so a revision does not undo what they approved
+  (`src/pneuma/team/hooks/negotiation.py:80-96`, `146-149`).
+- `cap_reached` marks the round whose revision the core's cap refused, so the transcript says
+  the team never agreed rather than implying it did
+  (`src/pneuma/team/hooks/negotiation.py:139-145`).
+- An empty cast accepts immediately without recording a round, because a round over nobody is
   vacuously unanimous and would record a consensus no member gave
-  (`src/pneuma/team.py:1314-1319`).
+  (`src/pneuma/team/hooks/negotiation.py:107-109`).
 
-Defined at: `src/pneuma/team.py:1280`
+Defined at: `src/pneuma/team/hooks/negotiation.py:100`
 
 ## See also
 

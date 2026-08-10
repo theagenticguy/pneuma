@@ -51,11 +51,11 @@ flowchart LR
 
 ## Internal modules
 
-All ten live under the single distributed package `src/pneuma`, declared as the wheel's only package at `pyproject.toml:37-38`. Five are subpackages — `casestudy`, `demo`, `detect`, `memory`, `process` — and five are single-file modules: `gated.py`, `method.py`, `model.py`, `recall.py`, `team.py`.
+All ten live under the single distributed package `src/pneuma`, declared as the wheel's only package at `pyproject.toml:37-38`. Six are subpackages — `casestudy`, `demo`, `detect`, `memory`, `process`, and `team` (a subpackage of `core.py`, `members.py`, and `hooks/` since the 2026-08-10 hooks rebuild) — and four are single-file modules: `gated.py`, `method.py`, `model.py`, `recall.py`.
 
 The ten split into two declared layers, hand-maintained as a tested boundary rather than inferred: `LIBRARY = {"detect", "gated", "memory", "method", "model", "process", "recall", "team"}` and `APPLICATION = {"casestudy", "demo"}` (`tests/library/test_boundary.py:46-47`). That matches the graph — the two application modules are exactly the two roots nothing imports. The same file declares three packages as application-only, `{"polars", "libsql", "pm4py"}`, so that a library module importing one is a boundary violation (`tests/library/test_boundary.py:49-50`); both `polars` and `libsql` are sourced at `casestudy` in the diagram, consistent with that rule.
 
-`method` is the most-depended-on module, with six inbound internal edges: from `casestudy` (`src/pneuma/casestudy/aimine.py:42`), `demo` (`src/pneuma/demo/typed_cast.py:30`), `gated` (`src/pneuma/gated.py:51`), `process` (`src/pneuma/process/agent.py:57`), `recall` (`src/pneuma/recall.py:60`), and `team` (`src/pneuma/team.py:55`). Every one of those imports `MethodAgent`.
+`method` is the most-depended-on module, with six inbound internal edges: from `casestudy` (`src/pneuma/casestudy/aimine.py:42`), `demo` (`src/pneuma/demo/typed_cast.py:30`), `gated` (`src/pneuma/gated.py:51`), `process` (`src/pneuma/process/agent.py:57`), `recall` (`src/pneuma/recall.py:60`), and `team` (`src/pneuma/team/members.py:20`). Every one of those imports `MethodAgent`.
 
 `casestudy` and `demo` are the graph's two roots — no internal module imports either. `casestudy` reaches six other internal modules: `process` (`src/pneuma/casestudy/aimine.py:43`), `method`, `detect` (`src/pneuma/casestudy/harnesslearn.py:56`), `memory` (`src/pneuma/casestudy/harnesslearn.py:68`), `gated` (`src/pneuma/casestudy/harnesslearn.py:67`), and `recall` (`src/pneuma/casestudy/learning.py:61`). `demo` reaches three: `model` (`src/pneuma/demo/agent.py:33`), `team` (`src/pneuma/demo/staffing.py:27`), and `method`.
 

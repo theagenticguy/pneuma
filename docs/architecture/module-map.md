@@ -4,9 +4,16 @@ The repo is one distribution, `pneuma`, built from `src/pneuma` (`pyproject.toml
 
 ## pneuma
 
-The flat root of the package is the kernel: five classes that every other module subclasses or calls. `method.py` defines the foundation — `ai_method` turns a decorated method into a typed AI function (`src/pneuma/method.py:79`), `MethodThread` keeps one ability running as a live conversation (`src/pneuma/method.py:163`), and `MethodAgent` publishes a subclass's decorated methods as tools another agent can call (`src/pneuma/method.py:326`). The other three add one capability each: `GatedProposer` checks an answer before it counts (`src/pneuma/gated.py:101`), the `Recalled` marker and `Recall` binder fill a parameter from memory on every call (`src/pneuma/recall.py:66`, `src/pneuma/recall.py:158`), and `Team` assembles members, enforces a hiring budget through `hiring_tools`, and grades the lead against an oracle (`src/pneuma/team.py:780`, `src/pneuma/team.py:362`). `model.py` is the smallest file in the module and holds only the Bedrock configuration for `global.anthropic.claude-opus-5` (`src/pneuma/model.py:9`).
+The flat root of the package is the kernel: five classes that every other module subclasses or calls. `method.py` defines the foundation — `ai_method` turns a decorated method into a typed AI function (`src/pneuma/method.py:79`), `MethodThread` keeps one ability running as a live conversation (`src/pneuma/method.py:163`), and `MethodAgent` publishes a subclass's decorated methods as tools another agent can call (`src/pneuma/method.py:326`). The other three add one capability each: `GatedProposer` checks an answer before it counts (`src/pneuma/gated.py:101`), the `Recalled` marker and `Recall` binder fill a parameter from memory on every call (`src/pneuma/recall.py:66`, `src/pneuma/recall.py:158`), and `Team` runs a lead over live members with every member as a typed tool, extended only by hooks (`src/pneuma/team/core.py:176`). The team layer is a package: `core.py` owns the pipeline and the Accept/Revise answer loop, `members.py` holds the `Recruit` protocol, the `Member` adapter and `DynamicAgent`, and `hooks/` is the capability library — `Briefing`, `Negotiation`, `Worklog`, `Hiring` (+ `hiring_tools`), `Critic`/`Council`, and `Learning` + `train` (`src/pneuma/team/hooks/__init__.py:1`). `model.py` is the smallest file in the module and holds only the Bedrock configuration for `global.anthropic.claude-opus-5` (`src/pneuma/model.py:9`).
 
-- `src/pneuma/team.py` (1655 LOC)
+- `src/pneuma/team/core.py` (463 LOC)
+- `src/pneuma/team/members.py` (226 LOC)
+- `src/pneuma/team/hooks/hiring.py` (396 LOC)
+- `src/pneuma/team/hooks/learning.py` (311 LOC)
+- `src/pneuma/team/hooks/review.py` (295 LOC)
+- `src/pneuma/team/hooks/worklog.py` (243 LOC)
+- `src/pneuma/team/hooks/negotiation.py` (149 LOC)
+- `src/pneuma/team/hooks/briefing.py` (133 LOC)
 - `src/pneuma/method.py` (428 LOC)
 - `src/pneuma/gated.py` (423 LOC)
 - `src/pneuma/recall.py` (409 LOC)
@@ -60,7 +67,7 @@ The flat root of the package is the kernel: five classes that every other module
 
 ## pneuma.demo
 
-`demo` is the incident war-room and ships the project's only console script, `pneuma = "pneuma.demo.cli:main"` (`pyproject.toml:22`). `cli.main` runs one investigation, writes `artifacts/`, and exits non-zero when the oracle rejects the verdict (`src/pneuma/demo/cli.py:117`). `WarRoom` is the room itself, a `Team` subclass returning an `Investigation` verdict (`src/pneuma/demo/warroom.py:83`, `src/pneuma/demo/warroom.py:41`), staffed by `Staff` and `staffing_tools`, the demo's binding of the library's hiring tools (`src/pneuma/demo/staffing.py:32`, `src/pneuma/demo/staffing.py:66`). The module carries the same cast twice on purpose — `cast.py` builds it on the string-prompt `Agent` class with a message bus (`src/pneuma/demo/cast.py:69`, `src/pneuma/demo/agent.py:38`) and `typed_cast.py` rebuilds it on `MethodAgent` with typed methods and no bus (`src/pneuma/demo/typed_cast.py:54`) — while `incident.py`, the largest file, generates a synthetic incident and machine-checks that no single clue gives the `GroundTruth` away (`src/pneuma/demo/incident.py:1120`, `src/pneuma/demo/incident.py:1174`).
+`demo` is the incident war-room and ships the project's only console script, `pneuma = "pneuma.demo.cli:main"` (`pyproject.toml:22`). `cli.main` runs one investigation, writes `artifacts/`, and exits non-zero when the demo's own answer check rejects the verdict (`src/pneuma/demo/cli.py:115`). `WarRoom` is the room itself, composing the library's hooks-first `Team` with a `Briefing` hook and the demo's own standard on the lead's `post_conditions`, returning an `Investigation` (`src/pneuma/demo/warroom.py:100`, `src/pneuma/demo/warroom.py:46`), staffed by `Staff` and `staffing_tools`, the demo's binding of the library's hiring tools (`src/pneuma/demo/staffing.py:32`, `src/pneuma/demo/staffing.py:66`). The module carries the same cast twice on purpose — `cast.py` builds it on the string-prompt `Agent` class with a message bus (`src/pneuma/demo/cast.py:69`, `src/pneuma/demo/agent.py:38`) and `typed_cast.py` rebuilds it on `MethodAgent` with typed methods and no bus (`src/pneuma/demo/typed_cast.py:54`) — while `incident.py`, the largest file, generates a synthetic incident and machine-checks that no single clue gives the `GroundTruth` away (`src/pneuma/demo/incident.py:1120`, `src/pneuma/demo/incident.py:1174`).
 
 - `src/pneuma/demo/incident.py` (1398 LOC)
 - `src/pneuma/demo/cast.py` (249 LOC)
@@ -73,14 +80,14 @@ The flat root of the package is the kernel: five classes that every other module
 
 ## tests/library
 
-`tests/library` is the larger half of the suite at 19 files and 12795 LOC, and its separation from `tests/app` is itself enforced architecture rather than filing convention. `test_boundary.py` is the enforcing file: it declares the two sides of the layer split, rejects any library import of an application package including imports hidden inside function bodies, and blocks `polars`, `libsql`, and `pm4py` from the library side (`tests/library/test_boundary.py:46`, `tests/library/test_boundary.py:50`, `tests/library/test_boundary.py:134`, `tests/library/test_boundary.py:141`). It goes further than static reading — `blocking_import` re-imports each library module in a fresh Python process with the data engines blocked, and a self-check asserts the blocker really blocks (`tests/library/test_boundary.py:161`, `tests/library/test_boundary.py:208`). The largest files track the largest kernel surfaces — `test_team.py` at 1839 LOC against `team.py`, `test_turso_memory.py` at 1349 LOC against the memory backend — and every test here runs offline against scripted models (`README.md:12-13`).
+`tests/library` is the larger half of the suite at 22 files and roughly 12,700 LOC, and its separation from `tests/app` is itself enforced architecture rather than filing convention. `test_boundary.py` is the enforcing file: it declares the two sides of the layer split, rejects any library import of an application package including imports hidden inside function bodies, and blocks `polars`, `libsql`, and `pm4py` from the library side (`tests/library/test_boundary.py:46`, `tests/library/test_boundary.py:50`, `tests/library/test_boundary.py:134`, `tests/library/test_boundary.py:141`). It goes further than static reading — `blocking_import` re-imports each library module in a fresh Python process with the data engines blocked, and a self-check asserts the blocker really blocks (`tests/library/test_boundary.py:161`, `tests/library/test_boundary.py:208`). The team layer's tests split by hook — `test_team_core.py` for the bare core, then one file per capability (`test_team.py` covers `Briefing` + `Hiring`, plus `_dynamic`, `_negotiation`, `_worklog`, `_review`, `_learning`) — and every test here runs offline against scripted models (`README.md:12-13`).
 
-- `tests/library/test_team.py` (1839 LOC)
+- `tests/library/test_team.py` (723 LOC)
 - `tests/library/test_turso_memory.py` (1349 LOC)
 - `tests/library/test_process_agent.py` (1090 LOC)
 - `tests/library/test_recall.py` (1003 LOC)
 - `tests/library/test_process.py` (953 LOC)
-- `tests/library/test_team_dynamic.py` (788 LOC)
+- `tests/library/test_team_dynamic.py` (591 LOC)
 - `tests/library/test_objective.py` (739 LOC)
 - `tests/library/test_gated.py` (693 LOC)
 
@@ -110,10 +117,10 @@ The flat root of the package is the kernel: five classes that every other module
 - `src/pneuma/casestudy/__init__.py` (0 LOC)
 - `src/pneuma/demo/__init__.py` (7 LOC)
 - `tests/library/test_vacuity.py` (617 LOC)
-- `tests/library/test_team_worklog.py` (603 LOC)
+- `tests/library/test_team_worklog.py` (469 LOC)
 - `tests/library/test_discrimination.py` (479 LOC)
 - `tests/library/test_method.py` (471 LOC)
-- `tests/library/test_team_negotiation.py` (465 LOC)
+- `tests/library/test_team_negotiation.py` (320 LOC)
 - `tests/library/test_adversary.py` (357 LOC)
 - `tests/library/test_boundary.py` (313 LOC)
 - `tests/library/test_gaming.py` (311 LOC)

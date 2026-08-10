@@ -150,13 +150,18 @@ Memory over Turso: addressable entries keyed by never-reused ids, vector retriev
 ### Team
 
 ```py
-@dataclass
 class Team:
+    def __init__(
+        self,
+        lead: AIFunction[..., Any],
+        members: Sequence[Recruit],
+        hooks: Sequence[TeamHook] = (),
+    ) -> None:
 ```
 
-Stands up a cast, runs a lead against an oracle and grades itself; the base owns the skeleton while `members`, `briefing`, `lead_function` and `oracle` are required subclass overrides.
+A lead `AIFunction` over live members, extended by hooks and nothing else; `run(request)` spawns the cast, runs the lead with each member as a typed tool, drives the Accept/Revise answer loop, and retires everybody in a `finally`.
 
-`src/pneuma/team.py:779-780`
+`src/pneuma/team/core.py:176-196`
 
 ### Discrimination
 
@@ -193,9 +198,9 @@ The shape of the answer space as a `size` callable, from which degenerate inputs
     ) -> None:
 ```
 
-Adapts one `MethodAgent` capability into a `Recruit` by naming which typed `parameter` the briefing arrives as.
+Adapts one `MethodAgent` capability into a `Recruit` by naming which typed `parameter` the request arrives as.
 
-`src/pneuma/team.py:135-142`
+`src/pneuma/team/members.py:89-96`
 
 ### Recruit
 
@@ -206,7 +211,7 @@ class Recruit(Protocol):
 
 The protocol a team member satisfies: a `name`, and three verbs — `spawn`, `ask`, `retire`.
 
-`src/pneuma/team.py:71-72`
+`src/pneuma/team/members.py:25-26`
 
 ### threshold_objective
 
@@ -307,7 +312,7 @@ class Roster:
 
 Who a team hired, keyed by the name the model chose, plus the ordered `log` of every hire, delegation, dismissal and failure.
 
-`src/pneuma/team.py:275-276`
+`src/pneuma/team/hooks/hiring.py:47-48`
 
 ### audit_process
 

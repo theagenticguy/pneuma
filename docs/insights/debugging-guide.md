@@ -34,14 +34,14 @@ read `None` as a pass.
 | TLC reports a violation of `"TemporalProperty"`, not the property you named | Only one `PROPERTY` is ever configured because TLC's report does not say which one failed | Confirm `liveness=True` was passed; `Termination` is the only temporal property this renderer emits | `src/pneuma/process/tla.py:250-262`, `350-351` |
 | `liveness=True` returned `violated`/`vacuous`/`failed` and someone reports "termination verified" | Safety masks liveness: an invariant failure stops TLC at exit 12 before the temporal property is evaluated | Only `outcome == "verified"` carries the termination claim. Any other outcome means termination was not checked at all | `src/pneuma/process/tla.py:290-296` |
 | Process step raises `RuntimeError: TLC needs java and ...` | `tools/tla2tools.jar` is gitignored and absent, or `java` is not on PATH | Call `tla.tlc_available()` — it is exactly `TLA_JAR.is_file() and shutil.which("java")` | `src/pneuma/process/tla.py:265-266`, `302-303` |
-| Team run reports `correct=True` but the verdict is thin or wrong | Failed member briefings are rendered as strings, not raised. The lead reasoned from a partial or empty evidence set | Compare `len(TeamRun.briefings)` against `len(members())`, then grep the briefing values for the `"error: "` prefix | `src/pneuma/team.py:1265-1276`, `904`, `1497-1499` |
-| Team run raises "every one of the N member(s) failed its briefing" | The one unrecoverable member failure — a coordinator, network, or wiring fault below the lead | The message names each member and its error. Nothing was spawned past this point, so the fault is upstream of the lead | `src/pneuma/team.py:1549-1559` |
-| Lead's oracle appears to refuse every verdict for an unactionable reason | A post-condition's first parameter shares a name with a lead parameter; the runtime fills the slot twice and the `TypeError` is reported to the model as a validation failure | This is refused at wiring time now — if you see it, the check was bypassed. Compare the oracle's first parameter against `inspect.signature(lead.prompt_fn).parameters` | `src/pneuma/team.py:1561-1597` |
+| A briefed team's answer is thin or wrong | Failed member briefings are rendered as strings, not raised. The lead reasoned from a partial evidence set | Compare `len(run.hooks_data["briefing"])` against the cast, then grep the briefing values for the `"error: "` prefix | `src/pneuma/team/hooks/briefing.py:85-96` |
+| Team run raises "every one of the N member(s) failed its briefing" | The one unrecoverable member failure — a coordinator, network, or wiring fault below the lead | The message names each member and its error. The lead never ran, so the fault is upstream of it | `src/pneuma/team/hooks/briefing.py:125-133` |
+| An answer loop runs to its cap on every run | A review or negotiation hook and its approval token drifted apart, or the reviewers are erroring — an errored reviewer never approves, by the integrity rule | Read `run.hooks_data["review"]` / `["negotiation"]`: entries carry the raw reviewer text, so a drifted token or an `error: `-prefixed review is visible verbatim | `src/pneuma/team/hooks/review.py:129-159`, `src/pneuma/team/hooks/negotiation.py:100-149` |
 | Gated proposer burns every retry and never accepts anything | The gate itself raised. An exception from a gate is indistinguishable from a rejection unless it is re-dressed | Grep the model-visible text for "a fault in the gate rather than a verdict about your proposal". Faults are never appended to `self.rejected`, so an empty `rejected` with exhausted retries is the tell | `src/pneuma/gated.py:166-169`, `258-264`, `134-140` |
 | Gated proposer admits everything without judging anything | An async gate reached the sync `admits` path — a coroutine is truthy, so `not verdict.ok` is always False | Refused loudly now with "the gate returned an awaitable". If it slipped past, use `judge()` (the async path) instead of `admits` | `src/pneuma/gated.py:193-204`, `207-213` |
-| Hiring cap exceeded, or two subagents share one name | Two `hire` calls in one assistant turn both passed the cap check before either registered. The runtime's tool executor is concurrent | Read `Roster.log` in order: the reservation is written before the spawn `await`, so a duplicate means the reservation discipline was bypassed | `src/pneuma/team.py:378-387`, `453-483` |
-| Second run on the same team handle inherits the first run's hires and log | The roster was carried across calls rather than replaced per run | `execute` replaces `self.roster` and `self.worklog` at the top of every run. Check `TeamRun.hiring_log` starts empty | `src/pneuma/team.py:1129-1138`, `1155-1156` |
-| A `Team` step raised but live member threads are left on the coordinator | Two teardown paths exist for two different terminations; missing one leaks threads | `execute`'s `finally` covers the normal and faulting paths; `teardown()` covers external `terminate_now`. Both gather with `return_exceptions=True` | `src/pneuma/team.py:1189-1199`, `1469-1480` |
+| Hiring cap exceeded, or two subagents share one name | Two `hire` calls in one assistant turn both passed the cap check before either registered. The runtime's tool executor is concurrent | Read `Roster.log` in order: the reservation is written before the spawn `await`, so a duplicate means the reservation discipline was bypassed | `src/pneuma/team/hooks/hiring.py:133-153` |
+| Second run on the same `Team` inherits the first run's hires or worklog channels | Per-run hook state keyed by the wrong thing | Both hooks key their state by workspace identity and reset on a new one. Check `run.hooks_data["hiring"]` starts empty | `src/pneuma/team/hooks/hiring.py:324-332`, `src/pneuma/team/hooks/worklog.py:74-83` |
+| A team run raised but live threads are left on the coordinator | The unconditional unwind was bypassed | `Team.run`'s `finally` retires the cast and the lead even when a teardown hook raises, and `Hiring.on_teardown` retires undismissed hires; both gather with `return_exceptions=True` | `src/pneuma/team/core.py:263-283`, `src/pneuma/team/hooks/hiring.py:351-358` |
 | Process completes and reports a finished case, but the per-state work never happened | A handler or the `on_result` hook raised and something swallowed it | `dispatch` re-raises everything as `HandlerFailed` naming state, method, and which part broke. An `async def on_result` that is never awaited is the silent variant this guards | `src/pneuma/process/agent.py:229-263`, `205-219` |
 | A state spends a model call whose answer nobody reads | A state names the agent's decider (`choose`) as its `agent_method`, so the decision-maker is dispatched as work | Refused at `work()` entry. Scan `process.states` for `agent_method == "choose"` | `src/pneuma/process/agent.py:334-368` |
 | Memory recall silently returns nothing, or irrelevant guidance, and the run succeeds | A search-mode `Recalled` parameter with no query, or a positional argument landing on a recalled slot | Both are wiring-time refusals now. If retrieval is running, read `Retrieved.distance` per hit — the best of a bad set looks identical to a good hit without it | `src/pneuma/recall.py:349-397`, `src/pneuma/memory/turso_backend.py:216-223` |
@@ -75,8 +75,8 @@ read `None` as a pass.
 | Suppressed warnings — a real blind spot | `harnesslearn` installs `simplefilter("ignore", rules.RuleNotEnforced)`, so declines are invisible on that path | `catch_warnings` and `simplefilter` in both files; `rules.apply_derived_rules` re-emits captured declines deliberately | `src/pneuma/casestudy/harnesslearn.py:350-355`, `src/pneuma/casestudy/rules.py:330-344` |
 | Rich console — the demo's human-facing channel | stdout via `rich.Console(record=True)`, and captured to `artifacts/console.txt` at the end of a run | `console.print` in `demo/cli.py`; verdict, causal chain, decoys, hires, token/turn stats | `src/pneuma/demo/cli.py:26-39`, `67`, `81-114` |
 | Live event tape | stdout as it happens, plus `artifacts/transcript.txt`, flushed every 20 seconds so an interrupted run still leaves a usable transcript. Line format is `thread\tkind\ttext` | `failed:` for `FailedEvent`, `calls <tool>(` for tool calls, `spawned child` for new threads | `src/pneuma/demo/live.py:54-88`, `src/pneuma/demo/cli.py:71-78` |
-| Coordinator `CustomEvent` log — the structured event stream | The coordinator's own event log, subscribed through `coordinator.on(...)` | Nine kinds: `team.hired`, `team.hired_dynamic`, `team.discovery`, `team.lead_running`, `team.graded`, `team.assembled`, `team.briefings_in`, `team.negotiated` | `src/pneuma/team.py:515`, `561`, `761`, `1186`, `1203`, `1237`, `1277`, `1349`, `1365` |
-| `artifacts/investigation.json` | Written by `cli.py` before teardown, so a long reasoning run is not lost to a shutdown-path failure | `verdict`, `correct`, `oracle_failures`, `hiring_log`, `input_tokens`, `output_tokens`, `turns`, `wall_seconds` | `src/pneuma/demo/cli.py:52-56`, `src/pneuma/team.py:1205-1217` |
+| Coordinator `CustomEvent` log — the structured event stream | The coordinator's own event log, subscribed through `coordinator.on(...)` | Three kinds, emitted by the hooks that own the moments: `team.hired`, `team.hired_dynamic`, `team.discovery` | `src/pneuma/team/hooks/hiring.py:176-181`, `220-225`, `src/pneuma/team/hooks/worklog.py:210-220` |
+| `artifacts/investigation.json` | Written by `cli.py` before teardown, so a long reasoning run is not lost to a shutdown-path failure | `verdict`, `correct`, `oracle_failures`, `findings`, `staffing_log`, `input_tokens`, `output_tokens`, `turns`, `wall_seconds` | `src/pneuma/demo/cli.py:53-55`, `src/pneuma/demo/warroom.py:46-79` |
 | libSQL audit database — `runs` table | The database file passed as `db_path`; one row per executed case | `outcome` holds `completed` or the exception class name (`Deadlock`, `NoProgress`, `ProcessError`, `InvariantViolated`); `detail` holds the message truncated to 200 chars | `src/pneuma/casestudy/pipeline.py:211-232`, `src/pneuma/casestudy/eventlog.py:181-190` |
 | libSQL audit database — `verifications` table | Same file; one row per `(model, checker)` pair | `checker` is `tlc-structure`, `tlc-policy`, or `hypothesis`; `verified` is 0/1 and `detail` carries the summary | `src/pneuma/casestudy/pipeline.py:162-172`, `src/pneuma/casestudy/eventlog.py:172-179` |
 | libSQL decision log — `llm_decisions` table | Same file; one row per model decision in the live framing experiment | `accepted` (0 means an illegal proposal) and `compliant` (0 means a control was on the menu and skipped), plus the model's own `reason` text | `src/pneuma/casestudy/live.py:50-63`, `182-200` |
@@ -113,10 +113,10 @@ Do not look for a dashboard; there is none.
    transcript corpus (`transcriptlog.available()`), and the data files in `data/` guarded by
    `tests/paths.py` markers. All three skip rather than fail.
    `src/pneuma/process/tla.py:265-266`
-6. **For a team run, count the briefings against the cast and grep them for `"error: "`.** A
-   failed briefing is a string, not an exception, so a run with half its evidence missing
-   still reports `correct=True`. `len(briefings)` against `len(members())` is the only other
-   signal. `src/pneuma/team.py:1265-1276`
+6. **For a briefed team run, count `hooks_data["briefing"]` against the cast and grep it for
+   `"error: "`.** A failed briefing is a string, not an exception, so a run with half its
+   evidence missing still returns an ordinary-looking answer.
+   `src/pneuma/team/hooks/briefing.py:85-96`
 7. **For a gated proposer that never accepts, read `self.rejected`.** An empty ledger with
    exhausted retries means the gate was faulting, not refusing — grep the model-visible text
    for "a fault in the gate". A populated ledger means the gate is working and the model is
@@ -149,40 +149,40 @@ files. The list below is those postmortems, plus the two self-inflicted detector
   Signal: headcount above `max_hires`, or two subagents sharing a name with the first's thread
   unreachable by `dismiss`, by `execute`'s `finally`, and by `teardown`. Mitigation: the name
   and the slot are reserved in the same synchronous stretch as the three refusals, before the
-  spawn `await`, with a rollback if the spawn raises. `src/pneuma/team.py:378-387`, `453-483`
-- **Roster carried across runs:** the same `Team` handle run twice had run 2 open with run 1's
-  hiring log, find run 1's names taken, start `max_hires` short by run 1's headcount, and
-  `delegate` to a hire run 1 had already retired. Signal: a non-empty `hiring_log` at the start
-  of a run. Mitigation: `execute` replaces the roster and worklog — of the same class, so a
-  subclass's narrowed type survives — as its first action. `src/pneuma/team.py:1129-1138`,
-  `1155-1156`
-- **Silently deleted post-conditions:** `AIFunction.replace` overwrites rather than appends, so
-  a naive `replace(post_conditions=[self.oracle])` deleted every post-condition the subclass's
-  lead already carried. Signal: none — "the checks are gone, nothing raises, and the run
-  reports a gated verdict", the worst available failure mode. Mitigation: the lead's own
-  conditions are read off its config and kept, with the oracle prepended.
-  `src/pneuma/team.py:1402-1412`, `1424`
-- **Duplicate member names dropping a briefing:** briefings are keyed by name, so a cast with
-  two members called `plane` produced one entry, the earlier briefing gone with nothing raised.
-  Measured on a two-member cast answering `FIRST` and `SECOND`: the report carried
-  `{'plane': 'SECOND'}` and graded correct. Signal: `len(briefings)` below `len(members())` —
-  the only person who could notice. Mitigation: pre-spawn refusal in
-  `_check_no_duplicate_members`. `src/pneuma/team.py:1490-1520`
+  spawn `await`, with a rollback if the spawn raises. `src/pneuma/team/hooks/hiring.py:133-153`
+- **Per-run hook state carried across runs:** a roster or worklog channel map surviving into a
+  second run would make the headcount cap, the name reservation, and the published log quietly
+  false there — and fan run 2's posts into run 1's retired threads. Signal: a non-empty
+  `hooks_data["hiring"]` at the start of a run. Mitigation: both hooks key their per-run state
+  by workspace identity and reset on a new one, as `type(...)()` so a subclass's narrowed
+  roster survives. `src/pneuma/team/hooks/hiring.py:324-332`,
+  `src/pneuma/team/hooks/worklog.py:74-83`
+- **Silently deleted tools:** the runtime honours exactly one `config_hook` per cycle and its
+  `tools` patch *replaces* the compiled tools, so naive composition loses either the lead's own
+  tools or the team's. Signal: none — a tool absent from the wire raises nothing. Mitigation:
+  the core folds everything into one hook (the lead's own hook and `tools=` first, then member
+  tools, then hook contributions), and `Member.equip` recomposes a member's own `tools=` ahead
+  of what hooks add. `src/pneuma/team/core.py:326-355`, `src/pneuma/team/members.py:156-171`
+- **Duplicate member names shadowing on the wire:** each member becomes a tool named after it,
+  and two tools sharing a name shadow silently — the lead reaches one member believing it
+  reached either, and the dot-to-underscore wire mapping makes `a.b` and `a_b` the same name.
+  Mitigation: refusal at construction, before anything spawns.
+  `src/pneuma/team/core.py:415-437`
 - **A lead ruling on no evidence at all:** with both members raising, the lead ran, its context
-  mentioned no error, and the run reported `correct=True`. The lead holds no evidence of its
+  mentioned no error, and the run graded itself correct. The lead holds no evidence of its
   own, so it reasoned from the request alone and produced a verdict shaped like a real one.
   Signal: every briefing value starting with `"error: "`. Mitigation:
-  `_check_some_briefing_survived` raises before the lead is spawned — raised, not rendered,
-  because there is no model here that could fix it. `src/pneuma/team.py:1522-1559`
-- **Guards firing after the barrier:** with the lead composition left in its original place, a
-  colliding oracle was refused only after both members had been spawned, briefed with a real
-  model call, and retired. Signal: a wiring error arriving from the middle of a run rather than
-  at construction. Mitigation: `members()`, the duplicate check, and `_gated_lead()` all run
-  before `assemble`. `src/pneuma/team.py:1158-1169`
-- **Two teardown paths, both needed:** the worker awaits `teardown` on termination and does
-  *not* await it when `execute` raises. Signal: live member threads left on the coordinator
-  after a run ended. Mitigation: both `execute`'s `finally` and `teardown` retire everything,
-  and `retire` is idempotent so overlapping is harmless. `src/pneuma/team.py:1469-1480`
+  `_check_some_briefing_survived` raises inside `on_assemble`, before the lead's first cycle —
+  raised, not rendered, because there is no model here that could fix it.
+  `src/pneuma/team/hooks/briefing.py:113-133`
+- **A silent accept in the answer loop:** a hook's `on_answer` returning `None` would be
+  truthy-checked into an accept and grade nothing while looking like a review happened.
+  Mitigation: a verdict that is neither `Accept` nor `Revise` raises naming the hook.
+  `src/pneuma/team/core.py:304-311`
+- **A teardown hook eating the unwind:** one hook's raise must not stop another's cleanup or
+  leak a thread. Mitigation: every `on_teardown` is guarded, the retire gathers with
+  `return_exceptions=True`, and the first hook error resurfaces only when nothing else is
+  already propagating. `src/pneuma/team/core.py:263-283`
 - **A gate fault masquerading as a rejection:** an exception from the gate is indistinguishable
   from a refusal and burns every retry on a bug. Signal: retries exhausted with an empty
   `self.rejected` ledger. Mitigation: every gate, extractor, and verdict call is wrapped and
