@@ -62,8 +62,8 @@ readable as refusals and nothing else, which is what makes it usable as evidence
 has teeth. `judge` raises the same wording on the beam path, so a fault reads the same way
 whichever path found it.
 
-There is a third failure in this family that the lifted version did not have to handle. A gate
-may be async, and an async gate on the synchronous path returns a coroutine. Every coroutine is
+There is a third failure in this family, and it is the one a gate taken as a value brings with it.
+A gate may be async, and an async gate on the synchronous path returns a coroutine. Every coroutine is
 truthy, so `not verdict.ok` would raise `AttributeError` at best and, for any verdict-shaped
 proxy, silently admit everything — a gate that appears wired and refuses nothing. `admits`
 closes the coroutine and raises "a fault in the wiring", and `judge` awaits it. Two paths, one
@@ -84,9 +84,9 @@ whose violation is one careless rename away and whose failure is silent is the k
 be a guarantee, so `_check_no_collision` runs at wiring time from both entry points and names
 both sides of the collision.
 
-The narrowness is the part worth recording. The task specification asked for a guard over *any*
-of the validator's parameter names, and that is measurably too strict. Two proposers, identical
-but for their validator signature:
+The narrowness is the part worth recording. The obvious guard covers *any* of the validator's
+parameter names, and that is measurably too strict. Two proposers, identical but for their
+validator signature:
 
     check(self, hint)                 propose(self, hint)  →  TypeError, swallowed as a
                                                               validation failure, then
@@ -130,6 +130,40 @@ is a real turn it could have produced rather than an assertion injected beside t
 Each seed entry is one cycle's keyword arguments, because that is `MethodThread.run`'s contract
 and a thread hosts exactly one signature.
 
+### Why the branches run serially, and what the seed turns out to be worth
+
+The loop over `threads` is sequential, and that is a choice rather than the shape a loop happens
+to take. A beam is the one place in this library where every request is *deliberately* built to
+share a prefix — that is what "byte-identical up to the fork point" means — and a shared prefix
+is exactly what a provider cache bills at a discount. Serial ordering is what makes the discount
+reachable: branch 0's response, which writes the cache, completes before branch 1's request is
+sent. Fanning the branches out with `gather` would have them all miss on a cache none of them had
+written yet, and pay full price to arrive at the same k proposals.
+
+The discount is not free by default, and the reason is worth recording because it is invisible.
+Bedrock's Converse API caches nothing for Anthropic models unless the request carries an explicit
+`cachePoint` block — a byte-identical prefix is re-ingested at full input price with no warning
+that anything was missed. `pneuma.model.opus5` therefore builds with `CacheConfig(strategy="auto")`
+by default, which has the runtime append one cache point to the last user message of every request,
+putting the whole conversation prefix inside the cached span. Measured on a live `k=2` beam with a
+~22k-token seed: 22,161 of roughly 22,300 input tokens on the second branch were served at
+cache-read rates, about 99% of the prefix
+(`test_fork_beam_branch_two_reads_the_cache_branch_one_wrote`, behind `PNEUMA_LIVE_CACHE=1`).
+
+Two properties of the arrangement keep it honest. It is a cost property and never a correctness
+one: a model built with `cache=False`, or any model without a cache point at all, gets beams that
+are correct and uncached, so nothing in `propose_k` branches on whether caching happened. And the
+failure mode is silence rather than an error — a prefix shorter than the
+provider's minimum cacheable length (a few thousand tokens) has its cache point ignored, not
+rejected — which is why the offline tests assert on the *request* the model constructs through
+`format_request` rather than inferring the wiring from a bill.
+
+This is also where the previous subsection's decision pays a second time. A seed run as real
+cycles is a seed that lives in the event log every branch replays, which is precisely the span a
+cache can serve; a seed injected as a pending `notify` would be per-thread live state that the
+forks never see, so there would be nothing shared to cache even if the branches were identical in
+every other respect. The honest shape and the cheap one are the same shape.
+
 ### Why the unwind is a `finally` and why that is safe
 
 Every thread the beam created is retired in a `finally`, so a gate fault on branch 2 does not
@@ -157,3 +191,18 @@ class that computed a scalar would be imposing one shape of that decision on eve
 
 `propose_k` accordingly returns every admitted `(candidate, verdict)` pair in branch order and
 imposes no ordering. Which admitted candidate is best is the caller's to define.
+
+It also does not ask whether the gate is any good — whether passing it means anything, or whether
+everything it admits is one answer wearing several coats. Those are `detect/gaming.py`'s questions,
+and the split is not tidiness: `probe_gate_fitting` takes an `Evaluation`, a scalar, because
+finding a candidate near a gate's *maximum* whose disjoint held-out evaluation sits near the
+minimum needs an ordering over candidates that a `Verdict` deliberately does not carry.
+`probe_duplicate_mechanisms` takes a boolean `Checker` and so does compose with a gate directly —
+`lambda candidate: gate(candidate).ok` is the whole adapter — which is the useful measurement to
+run against a `rejected` ledger that looks healthy: a gate can refuse plenty and still admit only
+near-duplicates.
+
+Neither probe belongs on this class, and the reason is the boundary the first section drew.
+`gaming.py`'s only pneuma import is `.discrimination`, which is what keeps it liftable;
+`gated.py` importing it to offer a `self.audit_gate()` convenience would point the dependency the
+wrong way and hand every subclass a method it has no held-out evaluation to call.

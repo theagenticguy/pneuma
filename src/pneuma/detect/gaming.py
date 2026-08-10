@@ -10,7 +10,8 @@ coats, so its diversity of accepts is decoration. Both report through
 `discrimination.Discrimination`, shared with `vacuity` and `objective`, because both are the
 same question: can this check tell its two cases apart? The only pneuma import is
 `.discrimination`; the rest is stdlib, so `tests/library/test_liftability.py` covers this
-module automatically. Two things break if edited carelessly.
+module automatically. Rationale: `docs/design/gaming.md`. Two things break if edited
+carelessly.
 
 **A found exploit settles the verdict even under a bound.** The primitive returns None
 whenever nothing separated and a reason was withheld, which protects a *negative* finding

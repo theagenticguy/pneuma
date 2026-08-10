@@ -7,7 +7,8 @@ states the shape; this file carries the arguments, the measurements, and the alt
 lost.
 
 This is the first design doc for the `process` package, so it also records what the interpreter
-gained — one keyword argument, in the file whose header says "hand-written, reviewed once".
+gained — two keyword arguments, `on_enter` and `max_revisits`, in the file whose header says
+"hand-written, reviewed once".
 
 ## The promise that was open for four modules
 
@@ -16,11 +17,11 @@ gained — one keyword argument, in the file whose header says "hand-written, re
 > `agent_method` names the `@ai_method` the interpreter dispatches to.
 
 The interpreter never dispatched to it. The field's only reader was
-`casestudy/handlers.handler_for` (`handlers.py:155-159`), which does not use it as a name at all:
+`casestudy/handlers.handler_for` (`handlers.py:300-304`), which does not use it as a name at all:
 it checks the field for `None` as an opt-in gate and then looks the real handler up in a
 `dict[str, tuple[str, dict]]` keyed by `state.name`. And `handlers.dispatch` was never called
-from inside a run — `tests/app/test_casestudy.py:377-418` calls it directly with a hand-built
-`State`, which is the only place in the repo where a per-state handler has ever executed.
+from inside a run — `tests/app/test_casestudy.py:376-418` calls it directly with a hand-built
+`State`, which was the only place in the repo where a per-state handler executed.
 
 So the pipeline had a real asymmetry. The decision *between* states was verified end to end —
 mined to IR, model-checked by TLC, driven by an `@ai_method`, every proposal validated against
@@ -38,7 +39,7 @@ The decider already runs during the walk and already knows the state it is stand
 calling `dispatch(state)` at the top of `decide` needs no upstream change whatsoever.
 
 It would silently skip most of the process. `_elicit` returns immediately when a state has one
-enabled transition, without consulting the decider at all (`interpreter.py:171-172`) — deliberate
+enabled transition, without consulting the decider at all (`interpreter.py:338-339`) — deliberate
 cost control, and pinned by `tests/library/test_process.py:803-814`, which asserts that walking
 the claims process consults the agent exactly once, at `Escalated`. In this file's own `corridor()`
 fixture no state branches, so a decider-hosted dispatcher would do *nothing* on a process whose
@@ -117,6 +118,56 @@ loop; `test_a_run_that_lands_terminal_on_its_last_budgeted_step_has_completed` f
 re-check removed (measured) and the frozen `test_process.py` passes unchanged, since no prior test
 pinned the false raise.
 
+## Why a dithering run halts, and why the halt fires before the hook
+
+`work` forwards a third cap beside `max_steps` and `max_rejections` — `max_revisits`, defaulting to
+`interpreter.DEFAULT_MAX_REVISITS` — and the interaction between it and `on_enter` is a design
+decision rather than plumbing. The live case study measured 6 of 10 cases dithering: the agent
+circling a pair of states, every transition perfectly legal, until `max_steps` ran out. Without the
+cap a budget exhausted by a run making no progress and a budget exhausted by a long legitimate
+process arrive as the same `ProcessError` with the same message about steps, so the failure the
+experiment most wanted to name was the one it could not distinguish.
+
+So `interpreter.run` counts *consecutive* revisits — re-entries into states this run has already
+occupied, with no never-seen state reached in between — and raises `NoProgress` at the limit.
+Consecutive is the load-bearing word. A total count would halt a run that keeps finding new
+ground between the ground it retreads, which is what a legitimate detour looks like;
+`test_a_detour_that_recovers_is_not_halted` walks `A→B→A→B→C→B→T`, three revisits in total, and
+completes under a limit of 3 because reaching `C` resets the count to zero.
+
+**`NoProgress` names the limit it hit, and is still a `ProcessError`.** Both halves matter and
+they pull in opposite directions. Naming the bound is the same three-valued honesty
+`detect.discrimination` enforces: an outcome that stops short must say which cap stopped it, or a
+reader cannot tell the finding from the harness. But `casestudy/live.py:172-175` counts
+`ProcessError` as `blocked`, and that accounting is a published experimental result — so a new
+refusal that escaped the base class would silently change what "blocked" means in a number already
+reported. Subclassing keeps the old accounting intact while a caller that wants the distinction
+gets it from the type alone, and `test_no_progress_is_distinguishable_from_deadlock_and_from_max_steps`
+asserts the whole lattice: `NoProgress` is a `ProcessError`, and neither it nor `Deadlock`
+subclasses the other. That last assertion exists because the relationship is exactly what a later
+"tidy up the exception hierarchy" commit removes — the same reason `HandlerFailed`'s
+non-subclassing is asserted directly below.
+
+**The halt fires after the invariant check and before `on_enter`, and both orderings are chosen.**
+After the invariant check because a safety violation outranks dithering: a run that broke a
+property TLC proved impossible has found a real bug in this file or the IR, and reporting it as
+circling would bury it. Before `on_enter` because the run has just declared that visit
+progress-free, and spending the state's handler on it would contradict the verdict being raised —
+`test_the_halt_spends_no_work_on_the_visit_it_refuses` pins the entered list at `["A", "B", "A"]`
+under a limit of 2, so the re-entry that trips the halt costs nothing. This is the "half a guard"
+rule from the section below arriving in the interpreter: a refusal that raises after spending what
+it protects has protected nothing.
+
+One thing the halt deliberately does not do is decide what a revisit *means*. Every re-entry is
+recorded as a typed `Revisit` on `Run.revisits` and readable mid-run through `interpreter.revisits()`,
+whether or not the limit is anywhere near — halting and voicing are separate, and the detour test
+asserts all three of its revisits were still recorded on a run that completed. `Revisit` carries
+the alternatives that were enabled at the source, which is what the run could have chosen instead
+of circling; an empty tuple means the revisit was forced, since the interpreter steps through a
+lone enabled transition without consulting anybody. That record is what a retrieval query reads to
+say a case is looping while the choice is being made rather than after it is over, and
+`max_revisits=None` disables the halt while leaving the record intact.
+
 ## Why the handler seam is two methods plus a recorder
 
 ```python
@@ -149,7 +200,7 @@ Folding them together would force the first case to restate the resolution it wa
 costs one method with a two-line body.
 
 **`handler_for`'s signature is `casestudy.handlers.handler_for`'s, deliberately.** Same parameter,
-same return type, same `None` meaning (`handlers.py:155`). The mined-activity mapping — a table
+same return type, same `None` meaning (`handlers.py:300`). The mined-activity mapping — a table
 keyed by state name, with `agent_method` as the opt-in gate — is expressible as an override without
 the library knowing that tables exist, which is what keeps `process/agent.py` on the library side
 of `tests/library/test_boundary.py`. `test_handler_for_can_be_overridden_with_a_table_the_library_knows_nothing_about`
@@ -178,8 +229,9 @@ Measured by breaking it. Replacing the raise with `return None`:
     FAILED ...::test_a_handler_fault_is_not_catchable_as_a_process_refusal
     E  Failed: DID NOT RAISE HandlerFailed
 
-**`HandlerFailed` is deliberately not a `ProcessError`.** The interpreter's three failures all mean
-the process refused to continue, and callers branch on that: `casestudy/live.py:172-175` catches
+**`HandlerFailed` is deliberately not a `ProcessError`.** Every one of the interpreter's own
+failures means the process refused to continue, and callers branch on that:
+`casestudy/live.py:172-175` catches
 `ProcessError` and counts the case as `blocked`, which is an experimental result about whether the
 guardrail bit. A bug in a handler is not a result about the process, and inheriting from
 `ProcessError` would launder one into the other — a code fault arriving in a published number as
@@ -196,12 +248,13 @@ no model waiting to be told anything, so the exception's only job is to reach th
 traceback. `recall.py` drew the same line for retrieval and stated the qualifier — *every callable
 the framework re-raises must be fault-wrapped* — and dispatch is not on that path.
 
-**`handler_for` is fault-wrapped too, which is the lesson from the gate lift.** `gated.py` wrapped
-the gate and left the hook added beside it (`candidate_of`) outside the wrap, and a typoed override
-surfaced as a raw `AttributeError` burning `max_attempts` retries. Resolution here runs before the
-model call, so there is nothing to burn — the wrap buys the state's name on the traceback, which is
-the only thing that makes a mapping bug findable in a run of a dozen states. Assume any new hook
-has this edge.
+**`handler_for` is fault-wrapped too, which is the lesson from the gate lift.** The trap there was
+that wrapping the *gate* is the obvious half and wrapping the hook added beside it
+(`candidate_of`) is the half a reader forgets, so a typoed override surfaces as a raw
+`AttributeError` burning `max_attempts` retries — which is why `gated.py` now wraps both, with
+`part="candidate extractor"` naming which one broke. Resolution here runs before the model call, so
+there is nothing to burn — the wrap buys the state's name on the traceback, which is the only thing
+that makes a mapping bug findable in a run of a dozen states. Assume any new hook has this edge.
 
 **And the interpreter does not soften a hook fault either.** `on_enter`'s exception propagates out
 of `run` unchanged, and `test_a_raising_on_enter_stops_the_run_and_propagates_unchanged` asserts
@@ -275,34 +328,38 @@ repeats: a function compiled in `__init__` would have captured the real model be
 binding happened, and the failure mode is the worst available in an offline suite, a test that
 reaches the network instead of failing. There is a test for each entry point.
 
-## What the `Navigator` refactor did and did not change
+## Why `Navigator` is a subclass that declares nothing
 
-`Navigator` is now a `ProcessAgent` that declares no handlers, which is exactly what it always was:
-a decider. The class body is one `__init__` that calls `super().__init__` and restores the
-published name.
+`Navigator` is a `ProcessAgent` that declares no handlers, which is the whole of what a decider is:
+`handler_for` resolves every state to None and a run costs exactly its branch decisions. A mined
+process whose states all carry `agent_method='handle'` is therefore navigated at unchanged cost,
+because the placeholder names no method on this class either. The class body is one `__init__` that
+calls `super().__init__` and sets the published name.
 
-Everything published stayed put. The prompt text is byte-identical, `max_attempts=2` and the
-`Choice` output type are unchanged, `compiled("choose")` is still `STRUCTURED`, the tool is still
-published as `{process}-navigator.choose`, and `Choice` is still importable from
-`pneuma.process.agent_driver`. `tests/library/test_process.py:765-800` (the rejection loop through
-a `ScriptedModel`) and `:949-953` (the STRUCTURED pin) are the oracle and both pass against an
-unmodified file.
+Nothing it publishes belongs to it. The prompt text, `max_attempts=2`, the `Choice` output type,
+the `STRUCTURED` input shape, the `{process}-navigator.choose` tool name, and `Choice`'s
+importability from `pneuma.process.agent_driver` are all the base's or the module's, and
+`tests/library/test_process.py:765-800` (the rejection loop through a `ScriptedModel`) and
+`:949-953` (the `STRUCTURED` pin) are the oracle that keeps them fixed from outside this file.
 
-The name matters more than it looks. `_owner_name` (`method.py:61-68`) makes it the compiled tool's
-prefix and the subject of every lifecycle error message, and `casestudy/live.py` writes a live
-decision log per arm — renaming the agent mid-study would split one arm's rows across two names.
+The name is the one thing the subclass exists to hold, and it matters more than it looks.
+`_owner_name` (`method.py:61-68`) makes it the compiled tool's prefix and the subject of every
+lifecycle error message, and `casestudy/live.py` writes a live decision log per arm — renaming the
+agent mid-study would split one arm's rows across two names.
 
-`decider(facts)` was kept even though a grep found it has **zero callers** anywhere in `src/` or
-`tests/`: `live.py` builds its own `make_decider` (`live.py:127-166`) with a step counter and a
-capture sink. It was kept because `work` needs precisely that adapter, so keeping it costs nothing,
-and because it is the seam `live.py` migrates onto when someone wants the step counter as an
-override rather than a closure. It gained a `**overrides` keyword; the positional call is unchanged.
+`decider(facts, **overrides)` is published even though `work` is the only caller in `src/`:
+`live.py` builds its own `make_decider` (`live.py:127-166`) with a step counter and a capture sink.
+It stays public because `work` needs precisely that adapter, so publishing it costs nothing, and
+because it is the seam `live.py` migrates onto when someone wants the step counter as an override
+rather than a closure. `test_navigators_decider_still_drives_the_rejection_loop_by_itself` holds it
+to that contract outside `work()`, which is the only way a seam nobody has migrated onto yet can be
+kept honest.
 
 ## What this module deliberately does not do
 
 **No memory, no recall, no optimizer.** `casestudy/learning.py` stays on the raw `Decide` contract
 and that is the right place for it. Its decider retrieves a playbook per decision, traces the call,
-and harvests retrieved ids off `Result.inputs` (`learning.py:312-332`) — it needs the `Result` of
+and harvests retrieved ids off `Result.inputs` (`learning.py:333-353`) — it needs the `Result` of
 each decision, and a `Run` does not carry one. Making `work` return traces would mean deciding how
 many to keep, which one is the gradient's, and what happens on a rejection loop where one decision
 produced two cycles; those are the training loop's decisions, and `docs/design/recall.md` draws the

@@ -58,7 +58,6 @@ MECHANISMS: Final[tuple[str, ...]] = (
 PLANE_NAMES: Final[tuple[str, ...]] = ("deploys", "metrics", "logs", "traces")
 
 ONSET_TS: Final[str] = "2026-07-28T14:20:00Z"
-RECOVERY_TS: Final[str] = "2026-07-28T14:48:00Z"
 
 
 @dataclass(frozen=True, slots=True)

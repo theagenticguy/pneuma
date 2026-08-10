@@ -24,7 +24,7 @@ round, on the `Attempt` / `Round` — a declined replay and a missing replay pat
 not read the same.
 
 One compounding note the replay tests exercise implicitly: `opus5` enables prompt
-caching (T4), so where a replay *does* run, the forked branch's shared prefix bills at
+caching, so where a replay *does* run, the forked branch's shared prefix bills at
 cache-read rates — the fork-beam saving carrying over to counterfactual replay free.
 """
 
@@ -498,7 +498,7 @@ _live_replay = pytest.mark.skipif(
 
 @_live_replay
 async def test_live_a_replayed_suffix_reads_the_prefix_from_the_provider_cache() -> None:
-    """The T4 benefit compounding into counterfactual replay, measured.
+    """The prompt-cache benefit compounding into counterfactual replay, measured.
 
     A recorded thread takes one decision over a long briefing; the counterfactual
     fork replays a suffix — the same capability, an edited question — on a copy of

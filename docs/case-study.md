@@ -251,6 +251,26 @@ The looping traces are in the database. Every decision, its reasoning, and wheth
 the runtime accepted it is recorded in `llm_decisions`, so this is auditable rather
 than anecdotal.
 
+### The cheapest countermeasure: stop paying for a dither
+
+A step cap is the right control and the wrong *price*. It notices a loop only by
+having funded it to the end, and the message it fails with says the budget ran out
+rather than that nothing was happening.
+
+So the interpreter now counts consecutive re-entries into states a case has already
+occupied and halts at five with a `NoProgress` failure that names the limit it hit.
+Five is deliberately loose: a real detour re-enters a state once or twice, and
+dithering re-enters until something stops it. The halt is not a repair — the agent
+still dithered — but a case that stops at its revisit limit and names it costs a
+fraction of one that spends the whole twelve-step budget and reports only that the
+budget ran out, and the two are no longer indistinguishable in the record.
+
+Two things about that are worth insisting on for anyone building the same control. It
+is a subclass of the same error a blocked run already raised, so nothing that counted
+blocked cases changes shape when it starts firing. And a re-entry is now recorded as
+data rather than only mentioned in the agent's prompt, which is what makes it possible
+to *train* on the dither instead of just capping it — the loop in section 8 reads it.
+
 ## 8. Fixing the looping with backpropagation
 
 Verification cannot fix looping, because looping is legal — the model-checker
@@ -260,7 +280,11 @@ parameter from natural-language feedback.
 
 The wiring that matters: the navigator takes its guidance as a **call argument**, not
 as instance state. Gradient targets are discovered in call arguments, so a playbook
-hidden on the object is invisible to the optimizer.
+hidden on the object is invisible to the optimizer. That requirement is now declared
+on the signature rather than remembered — `choose` annotates its `playbook` parameter
+as recalled from memory, and a binder fills it per decision — because every way of
+getting it wrong is silent, and a loop that gets it wrong reports rounds while
+learning nothing.
 
 The loop is: run a batch, count how many looped, phrase that in plain English, let
 the optimizer rewrite the guidance, run again. Live Opus 5, 4 cases per round.
@@ -270,6 +294,15 @@ the optimizer rewrite the guidance, run again. Live Opus 5, 4 cases per round.
 | 0 | 0 | 4 | **0%** | 12.0 | 27 chars (seed) |
 | 1 | 4 | 0 | **100%** | 5.5 | 794 chars |
 | 2 | 2 | 2 | 50% | 7.0 | 793 chars |
+
+Read that Playbook column as a record of the run, not as today's shape. The playbook
+was one string then, and the round-1 rewrite is exactly what showed why it cannot
+stay one: a single gradient about one observed failure is routed at *all* the
+accumulated advice at once, so advice that was working gets paraphrased or dropped
+for reasons no round measured. It is now a list of separately addressable entries,
+retrieved by search, so a gradient about one entry leaves the others byte-identical —
+and it seeds with two deliberately weak entries rather than an empty string, because
+an empty corpus retrieves nothing and a round that retrieved nothing teaches nothing.
 
 Round 0 → 1 is the result: **0% to 100% completion, and mean steps halved from 12 to
 5.5.** Nobody edited a prompt. The feedback said "4 of 4 cases failed to finish, the
@@ -303,7 +336,7 @@ evidence, violations were zero and a majority of cases still failed.
 
 ---
 
-*Reproduce: `uv run pytest tests/app/test_casestudy.py` (17 tests over the real log).
+*Reproduce: `uv run pytest tests/app/test_casestudy.py` (30 tests over the real log).
 Requires `java` and `tools/tla2tools.jar` for the model-checking step.*
 
 
@@ -365,6 +398,15 @@ the miner's guidance a text parameter and backpropagates measured feedback into 
 
 The mechanism worked on the first attempt. The objective took three tries, and none of
 the failures raised anything — each looked like a training loop reporting rounds.
+
+That is also why `minelearn.py` now learns *two* parameters rather than the one this
+section describes. Optimising prose has its own ceiling: better advice is remembered
+while better *code* is not, because the agent writes its analysis fresh in a sandbox
+every run, so a helper it got right in round one is retyped in round two and can be
+got wrong. Advice accumulates; capability does not. The second parameter is a toolkit
+of Python helpers the runtime defines in the sandbox and advertises by signature, and
+`docs/design/minelearn.md` carries the argument for why code and prose cannot be folded
+into one parameter in either direction.
 
 ### Attempt one: coverage alone
 
@@ -449,3 +491,18 @@ that needs adversarial review.** Three properties earned their place here: no de
 optimum, feedback that reports the score being optimised rather than one component of
 it, and a compile step that degrades instead of raising when the agent returns something
 structurally impossible.
+
+The review is now mechanical rather than a habit. Each of those three failures was
+found by climbing it for several rounds and reading the transcript afterwards, which is
+the expensive way, and each is a shape a program can look for: an answer that scores
+best by being empty, feedback that talks about a different number than selection uses,
+a formula that crashes inside the domain it claims. `src/pneuma/detect/objective.py`
+looks for them, and `minelearn.train` refuses to start when it finds one — the loop
+cannot discover its objective's pathology by optimising toward it. `docs/design/`
+carries the per-detector arguments.
+
+The same idea one level further up is `harnesslearn.py`: hand a harness parameter to the
+optimizer and put the detectors in front of it as a gate, so exactly one weight is
+learnable and the settings that could widen what the runtime permits are not parameters
+at all. The measurement licensing that split, and the four exclusions it rests on, are
+in `docs/design/harnesslearn.md`.

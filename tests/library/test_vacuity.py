@@ -261,7 +261,7 @@ def test_the_walk_applies_effects_the_way_the_interpreter_does() -> None:
     `interpreter.run` assigns into the live variables dict as it goes, so the second
     effect sees the first. A walk that applied each against the pre-state would compute
     a different successor and could then miss or invent a violating state. It belongs
-    here rather than beside `rules.liveness_of`, because it is a test of the walk.
+    here rather than in `test_rules.py`, because it is a test of the walk.
     """
     invariant = Invariant(
         name="NeverTwo",

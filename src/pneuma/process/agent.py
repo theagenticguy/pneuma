@@ -71,8 +71,8 @@ class Choice(BaseModel):
 class HandlerFailed(RuntimeError):
     """A state's handler raised, so the run stopped where it was.
 
-    Deliberately *not* a `ProcessError`. The interpreter's three failures all mean the
-    process refused to continue, and callers branch on that: `casestudy/live.py:172-175`
+    Deliberately *not* a `ProcessError`. Every failure the interpreter raises itself means
+    the process refused to continue, and callers branch on that: `casestudy/live.py:172-175`
     catches `ProcessError` and counts the case as `blocked`, which is an experimental
     result. A bug in a handler is not a result about the process, and inheriting from
     `ProcessError` would launder one into the other — a code fault arriving in a report as

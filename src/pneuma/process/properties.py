@@ -33,20 +33,6 @@ from . import interpreter
 from .ir import Process, Transition
 
 
-def transition_strategy(process: Process) -> st.SearchStrategy[str]:
-    """Any transition name, legal here or not.
-
-    Deliberately unfiltered: the interpreter's contract is that an illegal proposal
-    is *rejected*, not obeyed, and that only holds if illegal proposals are tried.
-    """
-    return st.sampled_from([t.name for t in process.transitions])
-
-
-def start_strategy(process: Process) -> st.SearchStrategy[dict[str, int | str]]:
-    """Every starting assignment the IR permits, so free variables are explored."""
-    return st.sampled_from(process.initial_assignments())
-
-
 def adversarial_decider(
     proposals: list[str],
 ) -> Callable[[str, list[Transition], dict[str, int | str]], Any]:
