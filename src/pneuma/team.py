@@ -52,8 +52,11 @@ from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_seri
 from strands.tools.decorator import tool as strands_tool
 from strands.types.tools import AgentTool
 
+from .method import MethodAgent, ai_method
+
 __all__ = [
     "DISCOVERY_KINDS",
+    "DynamicAgent",
     "Member",
     "Recruit",
     "Roster",
@@ -224,6 +227,51 @@ class Member:
         return f"<Member {self.name!r}>"
 
 
+class DynamicAgent(MethodAgent):
+    """A `MethodAgent` whose prompt is written by the lead at runtime. The contract is not.
+
+    Shepherd (arXiv 2605.10913) measured runtime agent synthesis — a lead writing a new
+    subagent's instructions mid-run — as a layer worth having, and this class is that idea
+    admitted through the library's typed front door: the *instructions* are dynamic, the
+    signature, the output type, the tool set and the lifecycle are all fixed here, at review
+    time. What varies per hire lives on `self`, where `compile_ai_method` renders it into the
+    prompt (`method.py:103-124`) and the optimizer cannot reach it — the same split every
+    static `MethodAgent` already makes, so a synthesized agent is not a new kind of thing.
+
+    **One published ability, and provably one.** `ai_methods()` walks the MRO
+    (`method.py:341-352`), so a base-class `@ai_method` would leak into this class's published
+    tool set; `MethodAgent` declares none and this class declares exactly `answer`, and a test
+    pins that the set is `["answer"]` rather than trusting the docstring. `answer` carries a
+    second typed parameter deliberately: a single positional `str` compiles to `STR_PROMPT`
+    (`ai_function.py:51-84`, measured), which would make the synthesized thread the one member
+    shape addressable by every peer's free-text `send_message` (`ai_thread/tools.py:172-176`).
+    The `context` parameter keeps the compiled shape `STRUCTURED`, so a dynamic hire sits
+    behind exactly the boundary a catalog hire does.
+
+    Instructions are refused when empty at construction — a wiring-time guard, not a model
+    refusal, because by the time an instance exists the caller has already decided to build
+    one. The `hire_dynamic` tool refuses the same case as text *before* construction, so the
+    model reads the problem; this guard is for every other caller.
+    """
+
+    def __init__(self, name: str, instructions: str) -> None:
+        if not str(instructions).strip():
+            raise ValueError(
+                f"DynamicAgent {name!r}: instructions are empty; a dynamic agent's whole "
+                f"identity is its instructions, so there is nothing to synthesize from"
+            )
+        self.name = name
+        self.instructions = instructions
+
+    @ai_method(str, description="Carry out one request under this agent's own instructions")
+    def answer(self, request: str, context: str = "") -> str:
+        """{self.instructions}
+
+        Additional context, if any: {context}
+
+        Request: {request}"""
+
+
 @dataclass
 class Roster:
     """Who a team hired, keyed by the name the model chose, plus the evidence it was budgeted.
@@ -317,6 +365,7 @@ def hiring_tools(
     *,
     max_hires: int = 4,
     worklog: Worklog | None = None,
+    dynamic: Callable[[str, str], Recruit] | None = None,
 ) -> Callable[[ThreadContext], ThreadKwargs]:
     """Build a `config_hook` granting hire/delegate/dismiss for one cycle.
 
@@ -347,6 +396,17 @@ def hiring_tools(
             Whatever a factory returns must satisfy `Recruit`.
         max_hires: Headcount cap. The runtime enforces no depth or breadth limit of its own, so
             a confused lead can spawn without bound unless something here says no.
+        dynamic: Name + instructions → recruit, or `None` — and `None` is the default and the
+            recommendation. When supplied, a fourth tool `hire_dynamic` joins the three: the
+            lead writes a new subagent's instructions itself, at runtime, instead of choosing
+            from the reviewed catalog (`DynamicAgent` carries the argument). A separate tool
+            rather than a sentinel role in `catalog`, deliberately: the catalog `hire`'s
+            contract stays byte-identical whether or not synthesis is enabled, and the roster's
+            log distinguishes a reviewed-catalog hire (`"hire"`) from a synthesized one
+            (`"hire_dynamic"`, instructions recorded verbatim) — the audit trail is the safety
+            story for prompts nobody reviewed. Every hire discipline is shared: the same
+            `max_hires` budget, the same name reservation, the same worklog equip, and the
+            same `delegate`/`dismiss` reach both kinds, because both live in one roster.
 
     Returns:
         A `config_hook`. Every cycle it rebuilds the three tools against *that* cycle's
@@ -366,7 +426,7 @@ def hiring_tools(
     """
 
     def hook(ctx: ThreadContext) -> ThreadKwargs:
-        return {"tools": list(_hiring(ctx, roster, catalog, max_hires, worklog))}
+        return {"tools": list(_hiring(ctx, roster, catalog, max_hires, worklog, dynamic))}
 
     return hook
 
@@ -377,6 +437,7 @@ def _hiring(
     catalog: Mapping[str, Callable[[str], Recruit]],
     max_hires: int,
     worklog: Worklog | None = None,
+    dynamic: Callable[[str, str], Recruit] | None = None,
 ) -> list[AgentTool]:
     """The three tools, bound to one cycle's context.
 
@@ -388,6 +449,38 @@ def _hiring(
     the model cannot act on, in the middle of a cycle it was going to complete.
     """
     roles = "; ".join(sorted(catalog)) or "(none)"
+
+    async def commission(name: str, recruit: Recruit) -> Any:
+        """Reserve, spawn, roll back on failure, and open the worklog channel — once, for both
+        kinds of hire.
+
+        Shared so the race discipline cannot drift between them: the reservation into
+        `roster.hires` runs *before* the spawn await, and awaiting this coroutine executes its
+        body synchronously up to that first genuine suspension (`await recruit.spawn`) — so the
+        reservation sits in the same event-loop step as the caller's refusals, exactly as if it
+        were inlined. A second tool call in the same assistant turn resumes only at an await,
+        and by then the name is taken and the headcount spent. Rolled back if the spawn raises,
+        so a failed hire holds neither the name nor a slot.
+        """
+        if worklog is not None:
+            equip = getattr(recruit, "equip", None)
+            if callable(equip):
+                equip(discovery_tools(worklog, name))
+        roster.hires[name] = recruit
+        try:
+            handle = await recruit.spawn(ctx.coordinator, parent_id=ctx.thread_id)
+        except BaseException:
+            del roster.hires[name]
+            raise
+        roster.thread_ids[name] = handle.id
+        if worklog is not None:
+            notify = getattr(handle, "notify", None)
+            if callable(notify):
+                # Replay first (`register` delivers every prior entry), so a hire joins knowing
+                # what the team already flagged — a helper hired *because* of an obstacle
+                # should not be the one teammate who never heard of it.
+                await worklog.register(name, notify)
+        return handle
 
     @strands_tool(
         name="hire",
@@ -409,31 +502,13 @@ def _hiring(
         # Built only after all three refusals, so a rejected hire spawns nothing. A cap checked
         # after the spawn would be a cap that still spent the thread it was refusing.
         recruit = catalog[role](name)
-        if worklog is not None:
-            equip = getattr(recruit, "equip", None)
-            if callable(equip):
-                equip(discovery_tools(worklog, name))
 
-        # Registered *before* the await, in the same synchronous stretch as the three checks
-        # above. The tool executor is concurrent, so a second `hire` in this turn resumes on the
-        # first `await` below and must find this name taken and this headcount spent — see the
-        # reservation paragraph in `hiring_tools`. Rolled back if the spawn raises, so a failed
-        # hire holds neither the name nor a slot.
-        roster.hires[name] = recruit
-        try:
-            handle = await recruit.spawn(ctx.coordinator, parent_id=ctx.thread_id)
-        except BaseException:
-            del roster.hires[name]
-            raise
-
-        roster.thread_ids[name] = handle.id
-        if worklog is not None:
-            notify = getattr(handle, "notify", None)
-            if callable(notify):
-                # Replay first (`register` delivers every prior entry), so a hire joins knowing
-                # what the team already flagged — a helper hired *because* of an obstacle
-                # should not be the one teammate who never heard of it.
-                await worklog.register(name, notify)
+        # `commission` registers the name *before* its spawn await, in the same synchronous
+        # stretch as the three checks above (awaiting a coroutine runs its body up to the first
+        # real suspension). The tool executor is concurrent, so a second `hire` in this turn
+        # resumes on that first `await` and must find this name taken and this headcount spent
+        # — see the reservation paragraph in `hiring_tools`.
+        handle = await commission(name, recruit)
         roster.record("hire", role=role, name=name, mandate=mandate, thread_id=str(handle.id))
         ctx.on_event(
             CustomEvent(
@@ -442,6 +517,52 @@ def _hiring(
             )
         )
         return f"hired {name} as {role} (thread {handle.id})"
+
+    @strands_tool(
+        name="hire_dynamic",
+        description=(
+            "Create a new subagent by writing its instructions yourself, when NO catalog role "
+            "fits the work. Prefer hire with a catalog role whenever one fits — catalog roles "
+            "were reviewed and carry their own knowledge; an agent you synthesize knows only "
+            "what your instructions say. Give it a short unique name, instructions that state "
+            "who it is and how it should work, and its mandate in one or two sentences. "
+            "Hiring only creates the subagent; call delegate to give it work."
+        ),
+    )
+    async def hire_dynamic(name: str, instructions: str, mandate: str) -> str:
+        if dynamic is None:  # unreachable when injected via `hook`; honest if called directly
+            return "error: dynamic hiring is not enabled for this team"
+        if not instructions.strip():
+            return (
+                "error: instructions are empty; a synthesized agent knows only what you "
+                "write here, so state who it is and how it should work"
+            )
+        if name in roster.hires:
+            return f"error: you already have a subagent named {name!r}"
+        if roster.headcount >= max_hires:
+            return f"error: hiring cap reached ({max_hires}); dismiss someone first"
+
+        recruit = dynamic(name, instructions)
+        # The same reservation discipline as `hire`, through the same `commission`: the name
+        # is registered before the spawn await, so a concurrent second call in this assistant
+        # turn finds it taken. Instructions are recorded VERBATIM — nobody reviewed this
+        # prompt, so the audit trail is the safety story, and a truncated or paraphrased log
+        # entry would be an audit of a different agent.
+        handle = await commission(name, recruit)
+        roster.record(
+            "hire_dynamic",
+            name=name,
+            instructions=instructions,
+            mandate=mandate,
+            thread_id=str(handle.id),
+        )
+        ctx.on_event(
+            CustomEvent(
+                kind="team.hired_dynamic",
+                payload={"name": name, "child_thread_id": str(handle.id)},
+            )
+        )
+        return f"hired {name} from your instructions (thread {handle.id})"
 
     @strands_tool(
         name="delegate",
@@ -495,6 +616,11 @@ def _hiring(
         roster.record("dismiss", name=name)
         return f"dismissed {name}"
 
+    # `hire_dynamic` exists on the wire only when a synthesis factory was supplied: an absent
+    # tool cannot be called wrongly, and a team that never opted in keeps the exact three-tool
+    # surface it always had.
+    if dynamic is not None:
+        return [hire, hire_dynamic, delegate, dismiss]
     return [hire, delegate, dismiss]
 
 
@@ -678,7 +804,9 @@ class Team:
     **What this class deliberately does not do.** No learning loop, no persistent roster, no
     cross-*team* messaging, no forkable run, no `send_message` anywhere. Cross-*member*
     awareness exists behind `worklog_enabled` — typed, step-boundary, off by default — and
-    `docs/design/team.md` carries the argument for relaxing exactly that much and no more.
+    inline agent synthesis behind `dynamic_subagents` — fixed contract, verbatim-audited
+    instructions, off by default. `docs/design/team.md` carries the argument for relaxing
+    exactly that much and no more.
     """
 
     name: str = "team"
@@ -699,6 +827,27 @@ class Team:
     Evidence for the phase existing at all: AgentRadio (arXiv 2607.28430) measured negotiation as
     its single biggest layer (+67 net rubrics); one-shot plans shared a blind spot their members
     could each see. `docs/design/team.md` carries the argument and the caveats.
+    """
+
+    dynamic_subagents: bool = False
+    """Whether the lead may synthesize a subagent inline, instructions and all, at runtime.
+
+    Off — the default — is the pre-synthesis skeleton exactly: no `hire_dynamic` tool on the
+    lead's wire, and the hiring surface is the catalog and nothing else. On, the lead gains
+    `hire_dynamic(name, instructions, mandate)`: a `DynamicAgent` is built from the lead's own
+    instructions, wrapped in the ordinary `Member` adapter (via `dynamic_recruit`, the
+    overridable factory), and joins the roster under the same `max_hires` budget, the same
+    name reservation, the same worklog equip, and the same `delegate`/`dismiss`/teardown reach
+    as a catalog hire — no parallel path anywhere. The typed contract is fixed at review time;
+    only the prompt is the model's (`DynamicAgent` carries the argument).
+
+    Evidence for the feature existing at all: Shepherd (arXiv 2605.10913) measured runtime
+    agent synthesis as a layer worth having. The cost is real — an agent whose instructions
+    nobody reviewed — and the mitigation is the audit trail: the roster records the
+    instructions verbatim under `kind="hire_dynamic"`, so `TeamRun.hiring_log` shows exactly
+    what each synthesized agent was told to be. The tool's own description tells the lead to
+    prefer catalog roles when one fits. `docs/design/team.md` carries the argument for the
+    boundary and for the default being off.
     """
 
     worklog_enabled: bool = False
@@ -833,6 +982,20 @@ class Team:
         is fixed grants no hiring tools at all, which is one fewer thing a lead can do wrong.
         """
         return {}
+
+    def dynamic_recruit(self, name: str, instructions: str) -> Recruit:
+        """Name + instructions → the recruit `hire_dynamic` spawns. Consulted only when
+        `dynamic_subagents` is on.
+
+        The default is the library's own shape: a `DynamicAgent` behind the ordinary `Member`
+        adapter, so the synthesized agent satisfies `Recruit`, joins the roster, gets the
+        worklog equip and is retired by every unwind path exactly as a catalog hire is — the
+        skeleton learns nothing new about it. Overridable for the catalog-factory's reason:
+        what a hire *runs on* is the team's business, and a test overrides this to bind a
+        scripted model (`Member`'s `model=` override) so no synthesized agent can reach a real
+        model from an offline suite.
+        """
+        return Member(DynamicAgent(name, instructions), "answer")
 
     def grade(self, verdict: Any) -> tuple[bool, list[str]]:
         """The post-run judgment: `(correct, failures)`. Default: `(True, [])`.
@@ -1260,14 +1423,15 @@ class Team:
         catalog = self.catalog()
         conditions = [self.oracle, *lead.config.post_conditions]
         self._check_no_oracle_collision(lead, conditions)
-        if not catalog:
+        if not catalog and not self.dynamic_subagents:
             return lead.replace(post_conditions=conditions)
         if lead.config.config_hook is not None:
             raise RuntimeError(
                 f"{self.name}: lead_function() already carries a config_hook and this team has a "
-                f"catalog, but the runtime calls exactly one hook per cycle — attaching the "
-                f"hiring tools would drop the lead's hook and its tools with it. Compose them "
-                f"into one hook in lead_function(), or return an empty catalog()."
+                f"hiring surface (a catalog, or dynamic_subagents), but the runtime calls exactly "
+                f"one hook per cycle — attaching the hiring tools would drop the lead's hook and "
+                f"its tools with it. Compose them into one hook in lead_function(), or disable "
+                f"hiring for this team."
             )
         return lead.replace(
             post_conditions=conditions,
@@ -1276,6 +1440,7 @@ class Team:
                 catalog,
                 max_hires=self.max_hires,
                 worklog=self.worklog if self.worklog_enabled else None,
+                dynamic=self.dynamic_recruit if self.dynamic_subagents else None,
             ),
         )
 
