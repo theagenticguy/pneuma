@@ -46,7 +46,7 @@ Hand-written rationale, one per module. Each states why the module is shaped the
 - [`method.py`](design/method.md) — why `@ai_method` exists alongside `@ai_function`, and what the object-oriented route costs.
 - [`gated.py`](design/gated.md) — why the gate is a post-condition rather than a check the loop runs.
 - [`recall.py`](design/recall.md) — why a recalled parameter is declared on the signature and filled at the trace boundary.
-- [`team.py`](design/team.md) — why a team's phases are ordinary `asyncio`, and why members join a lead as typed tools.
+- [`team/`](design/team.md) — why the team is a bare core plus a hook library, and why members join a lead as typed tools.
 - [`process/agent.py`](design/process_agent.md) — why work inside a state is dispatched from a hook in the interpreter.
 - [`detect/discrimination.py`](design/discrimination.md) — why both detectors share one primitive and why its verdict is three-valued.
 - [`detect/objective.py`](design/objective.md) — why the objective prober is shaped the way it is.

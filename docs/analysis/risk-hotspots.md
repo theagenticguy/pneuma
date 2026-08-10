@@ -6,11 +6,11 @@ Three limitations bound what this file can tell you. **The trend column cannot r
 
 | File | Trend | Open findings | Top owner | Citation |
 | --- | --- | --- | --- | --- |
-| `tests/library/test_team.py` | → flat | 82 warn, 8 error | Laith Al-Saadoon (100%) | `tests/library/test_team.py:1` (1839 LOC) |
+| `tests/library/test_team.py` | → flat | 82 warn, 8 error | Laith Al-Saadoon (100%) | `tests/library/test_team.py:1` (723 LOC after the hooks rebuild; findings pre-date it) |
 | `tests/library/test_turso_memory.py` | → flat | 62 warn, 1 error | Laith Al-Saadoon (100%) | `tests/library/test_turso_memory.py:1` (1349 LOC) |
 | `src/pneuma/casestudy/harnesslearn.py` | ↑ rising | 31 warn, 6 error | Laith Al-Saadoon (100%) | `src/pneuma/casestudy/harnesslearn.py:1` (1053 LOC) |
 | `src/pneuma/detect/objective.py` | ↑ rising | 16 warn, 9 error | Laith Al-Saadoon (100%) | `src/pneuma/detect/objective.py:1` (1878 LOC) |
-| `src/pneuma/team.py` | ↑ rising | 33 warn, 4 error | Laith Al-Saadoon (100%) | `src/pneuma/team.py:1` (1655 LOC) |
+| `src/pneuma/team/` (was the flat `team.py`) | ↑ rising | 33 warn, 4 error (pre-rebuild) | Laith Al-Saadoon (100%) | `src/pneuma/team/core.py:1` (2242 LOC across the package) |
 | `tests/app/test_casestudy.py` | ↑ rising | 48 warn, 0 error | Laith Al-Saadoon (100%) | `tests/app/test_casestudy.py:1` (570 LOC) |
 | `tests/library/test_objective.py` | ↑ rising | 20 warn, 7 error | Laith Al-Saadoon (100%) | `tests/library/test_objective.py:1` (739 LOC) |
 | `src/pneuma/memory/turso_backend.py` | → flat | 28 warn, 5 error | Laith Al-Saadoon (100%) | `src/pneuma/memory/turso_backend.py:1` (1376 LOC) |
@@ -23,7 +23,7 @@ Three limitations bound what this file can tell you. **The trend column cannot r
 
 ### 1. `tests/library/test_team.py` — score 57.0
 
-This is the offline test suite for the `Team` orchestrator, and its own docstring states the design: four kinds of claim checked four different ways on purpose, asserting phase order from an interleaving record the members and lead write as they run rather than from the returned `TeamRun`, "which a badly ordered run produces just as happily" (`tests/library/test_team.py:1-6`). It carries 55 test functions and eleven purpose-built fakes — `Spy`, `FailingSpy`, `SlowSpawnSpy`, `UnspawnableSpy`, `FlakyRetireSpy` (`tests/library/test_team.py:123-203`), plus a `Counting` model that composes rather than subclasses because `ScriptedModel` is `@final` (`tests/library/test_team.py:214`).
+This entry is a pre-rebuild snapshot: the 2026-08-10 hooks rebuild split this suite by capability (`test_team_core.py` plus one file per hook) and `test_team.py` is now 723 lines covering `Briefing` + `Hiring`; the line citations below refer to the pre-rebuild file. It was the offline test suite for the flat `Team` orchestrator, and its own docstring stated the design: four kinds of claim checked four different ways on purpose, asserting phase order from an interleaving record the members and lead write as they run rather than from the returned `TeamRun`, "which a badly ordered run produces just as happily" (`tests/library/test_team.py:1-6`). It carries 55 test functions and eleven purpose-built fakes — `Spy`, `FailingSpy`, `SlowSpawnSpy`, `UnspawnableSpy`, `FlakyRetireSpy` (`tests/library/test_team.py:123-203`), plus a `Counting` model that composes rather than subclasses because `ScriptedModel` is `@final` (`tests/library/test_team.py:214`).
 
 **Recent activity:** 1 commit in the 30-day window, `→ flat`. It arrived whole in `487ea99` on 2026-08-07, "Team: the deterministic orchestrator, lifted from the war room" — a single 1839-line addition that has not been touched since.
 
@@ -61,15 +61,15 @@ The largest module in the repo at 1878 lines, this probes a scoring function for
 
 **Findings:** 16 warn, 9 error — the highest error count in the top 5. Three `C901` complexity violations: `_find_spike` at 11 (`src/pneuma/detect/objective.py:1019`), `_enumerate_degenerate` at 11 (`:1175`), `_check_emptying` at 12 (`:1318`). Five `PLR0913`, the worst being 13 arguments on `probe` itself (`src/pneuma/detect/objective.py:669`), plus `:531`, `:1497`, `:1732`. One `N818` — `ObjectiveRefused` lacks an `Error` suffix (`src/pneuma/detect/objective.py:75`) — and one `RUF046` at `:867`. This is the file where the score is most defensible as real risk: the three over-threshold functions are all internal check routines whose wrong answer would be a false negative on a broken objective, which is precisely the silent failure the module exists to catch.
 
-### 5. `src/pneuma/team.py` — score 25.5
+### 5. `src/pneuma/team/` — score 25.5
 
-The deterministic orchestrator that runs as a thread itself: fan out to members concurrently behind a barrier, run a lead against a post-condition oracle with a budgeted hiring seam, roll the subtree's tokens up, and retire everybody regardless of outcome (`src/pneuma/team.py:1-8`). Its central claim is that the library satisfies `Spawnable` plus `Thread` in plain Python with no model anywhere in the control flow, so members join the lead as typed tools rather than chat peers — the runtime's `send_message` only targets `STR_PROMPT` threads, so this module mentions it nowhere (`src/pneuma/team.py:11-25`).
+The hooks-first team layer: a small core that spawns members, runs a lead with each member as a typed tool, and retires everybody, plus a hook library carrying every other capability (`src/pneuma/team/core.py:1-25`). Its central claim is unchanged from the flat module it replaced: the control flow is plain `asyncio` with no model anywhere in it, so members join the lead as typed tools rather than chat peers — the runtime's `send_message` only targets `STR_PROMPT` threads, so the layer mentions it nowhere.
 
-**Recent activity:** 4 commits, `↑ rising`, and the only top-5 file touched in the last 24 hours. `487ea99` on 2026-08-07 lifted it out of the war room; then `5ad2b77` on 2026-08-09 ("Add optional bounded negotiation phase"), `1849519` the same day ("Add typed worklog fan-back — passive awareness"), and `2785ebf` on 2026-08-10 ("Add dynamic_subagents: inline agent synthesis for the lead"). Three feature additions in four days onto a module that is three days old.
+**Recent activity:** the heaviest churn in the repo. `487ea99` on 2026-08-07 lifted the flat `team.py` out of the war room; negotiation, the worklog, and dynamic hiring landed as flags on it over 2026-08-09/10; then the hooks rebuild (`af291d8`, `c3e9e99`, `6b951d9` on 2026-08-10) split it into `core.py` + `hooks/`, deleted the flat module, and added review (`Critic`/`Council`) and learning (`Learning` + `train`). A whole architecture replaced within four days of the module existing.
 
-**Owners:** Laith Al-Saadoon, 100% (4 of 4 commits).
+**Owners:** Laith Al-Saadoon, 100%.
 
-**Findings:** 33 warn, 4 error. All four errors land on a single function — `_hiring` at `src/pneuma/team.py:434` trips `C901` (complexity 23 against a threshold of 10, the worst in the repo), `PLR0913` (6 arguments), `PLR0917` (6 positional), and `PLR0915` (54 statements). Warn tier: 15 × `EM102` f-string exception messages, 10 × `TRY003`, 7 × typing-import placement (`TC002`/`TC003`), 1 × `RUF023`. The concentration is the point: complexity 23 in the hiring seam, on the file with the most recent churn in the ranking, makes `_hiring` the single highest-attention region surfaced by this analysis.
+**Findings (pre-rebuild snapshot, kept for the trend):** 33 warn, 4 error, all four errors on the old `_hiring` function (complexity 23 against a threshold of 10, the worst in the repo). The hiring seam moved to `src/pneuma/team/hooks/hiring.py` in the rebuild; re-run the lint sweep to re-score the new layout before citing these numbers.
 
 ## See also
 

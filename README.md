@@ -16,14 +16,14 @@ against scripted models.
 
 ```bash
 uv sync
-uv run pytest        # 853 tests: 834 pass, 19 skip (they need live models or optional files)
+uv run pytest        # 901 tests: 881 pass, 20 skip (they need live models or optional files)
 uv run pneuma        # live Bedrock war-room run, writes artifacts/
 uv run pneuma --truth  # print the demo's planted ground truth and exit
 ```
 
 The `pneuma` command runs one incident investigation: several specialist agents, a lead
-holding no evidence, and a hiring budget. It exits non-zero when the oracle rejects the
-final answer.
+holding no evidence, and a hiring budget. It exits non-zero when the demo's own answer
+check rejects the final verdict.
 
 The test suite needs no credentials. A live run needs AWS credentials with Bedrock access
 to `global.anthropic.claude-opus-5`, plus `cohere.embed-v4` for the embedding path. The TLC
@@ -83,9 +83,9 @@ section below).
 Everything starts with `MethodAgent`. The other classes each add one capability on top,
 and each removes one way an agent can fail without anyone noticing. Without
 `GatedProposer`, a loop can forget to check an answer and a bad answer slips through
-looking fine. Without the roster reset in `Team`, a second run can quietly inherit dead
-helpers from the first. The kernel turns each of these mistakes into something the code
-refuses to do.
+looking fine. Without the per-run roster in the `Hiring` hook, a second team run can
+quietly inherit dead helpers from the first. The kernel turns each of these mistakes into
+something the code refuses to do.
 
 ```mermaid
 graph TD
@@ -94,14 +94,15 @@ graph TD
     GP["GatedProposer<br/><code>gated.py</code><br/>checks each answer before accepting it"]
     RC["Recalled + Recall<br/><code>recall.py</code><br/>fills a parameter from memory on each call"]
     PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process and does the work in each state"]
-    TM["Team<br/><code>team.py</code><br/>runs the group with a hiring budget and a final answer check"]
+    TM["Team<br/><code>team/core.py</code><br/>runs a lead over live members; hooks add everything else"]
+    HK["TeamHook library<br/><code>team/hooks/</code><br/>briefing, negotiation, worklog, hiring, review, learning"]
 
     MA -->|"spawn() puts one ability<br/>on a live thread"| MT
     MA -->|"subclass"| GP
     MA -->|"subclass"| PA
     RC -.->|"fills marked parameters<br/>on any @ai_method"| MA
     TM -->|"members are"| MT
-    TM -->|"lead is checked like"| GP
+    HK -.->|"opt in, one hook<br/>per capability"| TM
 ```
 
 | Piece | Module · lines | What it does |
@@ -111,42 +112,80 @@ graph TD
 | `GatedProposer` | `gated.py` · 423 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. If the checker itself has a bug, the agent reports it as a bug rather than treating it as a rejected answer. `propose_k` forks parallel branches from one seeded root, and a loop that stops making progress is halted and voiced as a dead end instead of spinning to the retry cap. |
 | `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, that a parameter comes from memory. The library fetches the value on every call and passes it in as a normal argument. Because the value arrives as an argument, the training loop can see it and improve the stored content. |
 | `ProcessAgent` | `process/agent.py` · 401 | An agent tied to a verified flowchart. The agent proposes the next step. If the proposal is not allowed, the interpreter refuses it and asks again. The same agent then does the work inside each step it enters. |
-| `Team` | `team.py` · 1655 | Runs a group. It spins up the members, briefs them all, and runs a lead that can hire helpers up to a budget. Members share discoveries through a passive worklog that lands at each teammate's next step, never mid-thought. An optional bounded negotiation phase fans the lead's plan to the members for objections before it faces the oracle. The final answer is checked against that oracle, and cleanup runs even when a step fails. |
+| `Team` | `team/core.py` · 463 | Runs a group. The core does exactly three things: spawn the members, run the lead with each member as a typed tool, and retire everybody in a `finally`. Everything else (briefings, negotiation, the worklog, hiring, review, learning) is an opt-in hook from `team/hooks/`. The answer comes back ungraded unless a review hook was added. |
 
-### How a Team run flows
+### Teams: a bare core, then hooks
 
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant T as Team
-    participant M as Members
-    participant L as Lead
-    participant O as Oracle
+The whole team API for the common case is one lead and its members. The lead is any
+compiled `MethodAgent` ability; each member joins the lead as a typed tool named after
+it; the answer comes back exactly as the lead produced it, ungraded:
 
-    C->>T: handle.run(request)
-    T->>M: assemble — spawn each member as a child thread
-    T->>M: brief all members at the same time, then wait for all briefings
-    M-->>T: briefings (a failed briefing is returned as an error message)
-    T->>L: run lead with briefings and hire/delegate/dismiss tools
-    loop until the oracle accepts, up to a retry limit
-        L->>O: proposed answer
-        O-->>L: rejected, and the reason becomes the next prompt
-    end
-    L-->>T: accepted verdict
-    T->>T: grade the verdict and total the token usage
-    T->>M: retire every member, even after a failure
-    T-->>C: TeamRun (verdict, briefings, hiring log, usage)
+```python
+from pneuma.team import Member, Team
+
+team = Team(
+    lead=chair.compiled("decide"),       # any MethodAgent ability, compiled
+    members=[
+        Member(left, "read"),            # one @ai_method per member
+        Member(right, "read"),
+    ],
+    hooks=(),  # the default: no phases, no grading, no extra machinery
+)
+run = await team.run("who is right")
+print(run.answer)  # the lead's typed answer, exactly as it produced it
 ```
 
-The hiring seam deserves one note. The lead gets three tools — `hire` creates a helper from
-a reviewed catalog, `delegate` gives it work, `dismiss` shuts it down — and each hire
-records the hiring agent as the helper's parent, so token costs roll up the family tree the
-way a manager's budget covers their reports. The runtime runs tools concurrently, so two
-`hire` calls in one turn could both pass the budget check before either registered; the fix
-reserves the slot synchronously and only then does the slow work of spawning. An optional
-fourth tool, `hire_dynamic`, lets the lead write a new subagent's instructions itself at
-runtime — off by default, and every synthesized hire is logged with its instructions
-verbatim, because the audit trail is the safety story for prompts nobody reviewed.
+With `hooks=()` this costs one lead model cycle plus whichever members the lead chose to
+consult, and nothing else. `run.transcript` records every member call the wire actually
+carried, and everything is retired in a `finally` even when the run fails. There is no
+built-in grading and no oracle anywhere in the team layer: a team that wants its answers
+reviewed adds a review hook, and a lead that wants a hard post-condition attaches it to
+its own `AIFunction`, the way `demo/warroom.py` does.
+
+Everything else is a `TeamHook` from `pneuma.team.hooks`, added when a run needs it:
+
+**`Briefing`** asks every member its own question before the lead runs, waits for all of
+them, and folds what they said into the lead's prompt. Add it when the members hold
+private evidence the lead should see up front instead of having to discover tool by tool.
+A member that fails is rendered as an error line the lead can read; a cast whose every
+member failed refuses the run before the lead spends anything.
+
+**`Negotiation`** treats the lead's answer as a draft plan, fans it to every member for
+objections, and sends non-unanimous objections back to the lead for a bounded number of
+revision rounds. Add it when members hold disjoint evidence and a plan drafted from
+one-shot briefings can carry a flaw any one of them would catch on sight. AgentRadio
+(arXiv 2607.28430) measured a negotiation round as its single biggest layer, +67 net
+rubrics.
+
+**`Worklog`** gives every member a typed `post_discovery` tool with a closed vocabulary
+(obstacle, dead end, contradicts the plan, bears on a teammate). A post fans to every
+other teammate through `notify`, which lands at each thread's next model call, so nobody
+is interrupted mid-thought. Add it for cross-cutting work where one member's dead end is
+the thing another member is about to re-explore. AgentRadio measured passive awareness
+alone at +10.5 points net.
+
+**`Hiring`** gives the lead `hire`, `delegate`, and `dismiss` over a catalog of reviewed
+role factories, under one headcount cap, with every action logged in order. Add it when
+the right cast is only discoverable mid-run. With `dynamic=True` the lead also gets
+`hire_dynamic` and may write a new subagent's instructions itself, the layer Shepherd
+(arXiv 2605.10913) measured as worth having; the instructions are logged verbatim because
+the audit trail is the safety story for a prompt nobody reviewed. Off by default, and the
+tool's own description tells the lead to prefer catalog roles.
+
+**`Critic` and `Council`** are review as opt-in members, not a built-in grader. A
+`Critic` asks one adversarial reviewer to refute the answer; a `Council` fans it to a
+voting panel and counts approvals against a threshold. Findings re-run the lead through
+the same bounded Accept/Revise loop every hook shares, and an errored or empty reviewer
+counts against the answer rather than waving it through. Add one when the answer is worth
+a second opinion; leave both off and nothing reviews anything, honestly.
+
+**`Learning`** makes the lead's guidance a training target. It recalls one prose
+parameter from a memory backend, folds it into the request, and `train(team, cases)`
+runs a batch and takes one `TextGradOptimizer` step that rewrites the stored guidance
+from what review hooks and revise rounds actually recorded. Guidance is prose only:
+a `Procedural` (code) or `Frozen` parameter is refused at construction. Measured live
+against Bedrock: one real step changed the stored guidance text (see
+`tests/library/test_team_learning.py`, gated by `PNEUMA_LIVE_TEAM_LEARNING`).
 
 ### How a ProcessAgent walks a verified process
 
@@ -255,6 +294,7 @@ to `1` to run them.
 | `PNEUMA_LIVE_HARNESS` | Has the agent propose a harness parameter, with the detectors deciding whether to accept it. |
 | `PNEUMA_LIVE_MINE` | Checks that gradient feedback reaches both learnable parameters, and compares the learned toolkit with its starting seed. |
 | `PNEUMA_LIVE_EMBED` | Measures retrieval quality with real Cohere Embed v4 embeddings. |
+| `PNEUMA_LIVE_TEAM_LEARNING` | Runs one real traced team run and one real TextGrad step, asserting the stored guidance text actually changed. |
 | `PNEUMA_LIVE_CACHE` | Measures prompt-cache reuse across fork beams: a k=2 `propose_k` from one seeded root, asserting the second branch reports cache-read tokens. |
 | `PNEUMA_LIVE_REPLAY` | Measures cache reads on a counterfactual replay of a recorded thread's suffix. |
 
@@ -277,7 +317,9 @@ PNEUMA_LIVE_KERNEL=1 uv run pytest tests/app/test_kernel_live.py -v
 | `src/pneuma/method.py` | `@ai_method`, `MethodAgent`, and `MethodThread`. A decorated method becomes a typed AI function, and a thread keeps it running with history. |
 | `src/pneuma/gated.py` | `GatedProposer`. The answer check runs as a post-condition, rejections land in a ledger, and a proposer thread can fork into parallel branches. |
 | `src/pneuma/recall.py` | The `Recalled` marker and the `Recall` binder. Memory arrives as a normal call argument. |
-| `src/pneuma/team.py` | `Team`. Phases, briefings, the hire budget, the worklog, optional negotiation, oracle checks, and teardown. |
+| `src/pneuma/team/core.py` | `Team`. Spawn the members, run the lead with them as typed tools, drive the Accept/Revise answer loop, retire everybody. |
+| `src/pneuma/team/members.py` | The `Recruit` protocol, the `Member` adapter for typed methods, and `DynamicAgent` for runtime-synthesized hires. |
+| `src/pneuma/team/hooks/` | The hook library: `Briefing`, `Negotiation`, `Worklog`, `Hiring`, `Critic`/`Council`, and `Learning` + `train()`. |
 | `src/pneuma/process/ir.py` | The process IR: states, guards, effects, and invariants. |
 | `src/pneuma/process/tla.py` | Renders the IR to TLA+ and runs the TLC checker over it. |
 | `src/pneuma/process/interpreter.py` | Runs a verified IR, validates every choice the agent makes, and halts a run that stops making progress. |
@@ -315,7 +357,7 @@ PNEUMA_LIVE_KERNEL=1 uv run pytest tests/app/test_kernel_live.py -v
 
 | File | What it holds |
 | --- | --- |
-| `src/pneuma/demo/warroom.py` | `WarRoom`, the incident room as a `Team` subclass, plus its answer check. |
+| `src/pneuma/demo/warroom.py` | `WarRoom`, the incident room composed onto the library's `Team` with a `Briefing` hook, plus its answer check on the lead's own post-conditions. |
 | `src/pneuma/demo/staffing.py` | `Staff` and `staffing_tools`, the demo's binding of the library's hiring tools. |
 | `src/pneuma/demo/agent.py` | The string-prompt `Agent` class the message-bus experiment uses. |
 | `src/pneuma/demo/cast.py` | The specialists, the hireable roster, and the incident lead. |

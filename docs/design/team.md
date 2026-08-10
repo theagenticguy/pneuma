@@ -1,81 +1,119 @@
-# `team.py` — design rationale
+# `team/` — design rationale
 
-Why a team's phases are ordinary `asyncio` rather than a prompt, why members join a lead as typed
-tools rather than as chat peers, why the hiring catalog is a mapping the caller supplies rather
-than a registry the library owns, and why a mandate goes through a factory rather than onto an
-attribute. The module docstring states the shape; this file carries the arguments, the
-measurements, and the alternatives that lost.
+Why the team layer is a small core plus a hook library rather than one class with phases and
+flags, why members join a lead as typed tools rather than as chat peers, why review is opt-in
+members rather than a built-in oracle, and why each hook carries the design it does. The module
+docstrings state the shapes; this file carries the arguments, the measurements, and the
+alternatives that lost.
 
-## What was lifted, and what stayed behind
+## From a monolith to a core and hooks
 
-`demo/warroom.py` is a `Spawnable` that stands up four telemetry specialists, briefs them behind a
-barrier, runs an incident lead against a post-condition oracle with a hiring hook, rolls up the
-subtree's tokens, and retires everybody in a `finally`. Read it with the incident removed and what
-is left is a general shape: fan out, barrier, gated lead, budget, rollup, unconditional unwind.
+The first `team.py` grew the way orchestrators grow. It started as the war room's skeleton
+lifted into the library: fan out, barrier, gated lead, budget, rollup, unconditional unwind.
+Then every new capability became another field on the class: a rounds counter for negotiation,
+a flag for the worklog, a flag for dynamic hiring, a mandatory `oracle` override, a `grade`
+hook. At 1,655 lines the class answered every question about teams at once, and a caller who
+wanted none of it still paid for all of it: the simplest possible team required four subclass
+overrides before it would run.
 
-What stayed behind is everything that made it *that* run. `demo/incident.py`'s planted root cause
-and its `MECHANISMS` vocabulary, the four `PLANES`, `Verdict` and `Finding`, the `IncidentLead`'s
-system prompt, and `demo/agent.ROSTER` — the module-level registry of hireable roles that
-`__init_subclass__` populates (`agent.py:53-56`). None of that generalises, and one piece of it
-actively resists generalisation: a `ROSTER` is global, so two teams in one process would share
-one pool of hireable roles whether or not either wanted the other's.
+The rebuild inverts the shape. `core.Team` owns exactly what every team needs and nothing else:
+spawn the members, run the lead with the members as typed tools, retire everybody. Everything
+else arrives as a `TeamHook`, an object implementing whichever of six optional methods it
+needs (`on_assemble`, `on_request`, `tools_for_lead`, `tools_for_member`, `on_answer`,
+`on_teardown`). The bare team is the whole API for the common case:
 
-So the split is between the skeleton and the cast, which is `gated.py`'s split — skeleton versus
-judgment — restated at team scale. `Team` owns the phases, the barrier, the oracle attach, the
-budgeted hiring seam, the rollup and the unwind; `members()`, `briefing()`, `lead_function()`,
-`oracle()`, `catalog()` and `grade()` are the subclass's. The measurable form of the split is the
-same as `gated.py`'s: `tests/library/test_team.py` builds a whole team out of two `MethodAgent`s
-and a `Spy` and needs nothing from `demo/`, and `test_boundary.py` now names `team` on the library
-side.
+```python
+from pneuma.team import Member, Team
 
-## Why the phases are plain Python and not a prompt
+team = Team(
+    lead=chair.compiled("decide"),
+    members=[Member(left, "read"), Member(right, "read")],
+)
+run = await team.run("who is right")
+```
 
-`warroom.py:1-8` makes the argument this module inherits: "the fan-out order and the barrier are
-ordinary `asyncio`, so they are reproducible in a way a prompt-driven orchestrator is not." It is
-worth stating why that is a design claim rather than a preference.
+The old class's capabilities did not disappear; they moved. The briefing phase is the
+`Briefing` hook, negotiation is `Negotiation`, the worklog is `Worklog`, the hiring seam is
+`Hiring`, and two things the old class never had, review (`Critic`, `Council`) and learning
+(`Learning` + `train`), joined as ordinary hooks because the seam existed for them. What
+disappeared on purpose is the mandatory oracle: the old `Team` refused to run without a
+subclass-supplied `oracle`, and the new core grades nothing. That change has its own section
+below.
 
-### Rejected: an LLM-driven orchestrator
+Hook methods are discovered with `getattr(hook, name, None)`, never `isinstance`, so a hook
+implements the two methods it needs and nothing else, and a debugger's `hasattr` probe cannot
+detonate a guard. `tools_for_lead` and `tools_for_member` are synchronous because the runtime
+calls the thread's one `config_hook` synchronously inside `_run_cycle` and documents that it
+must not block (`config.py:186-188`); the four lifecycle methods may be sync or async and the
+core awaits whichever it finds.
 
-The obvious alternative is a lead agent holding `spawn`, `ask` and `retire` as tools, deciding for
-itself who to convene and in what order. It is more flexible, it needs no `Spawnable` at all, and
-it is what most agent frameworks ship.
+## The core pipeline and its contract
 
-It cannot be measured. A run's phase order becomes a sample from the model, so two runs of the
-same team on the same data differ in who was asked, when, and whether anybody was asked twice —
-and every experimental claim about the *team* is then confounded with a claim about the
-orchestrator's mood. The barrier in particular is unenforceable: a lead that decided to start
-reasoning after two of four reports is doing something no oracle can distinguish from a lead that
-waited, until the verdict is wrong. Determinism here is what makes the *interesting* part —
-whether disjoint evidence converges on the truth — the only variable.
+One `run` is: spawn the lead's thread (registered, not yet running), spawn every member as its
+child, call every hook's `on_assemble`, fold the request through every hook's `on_request` in
+order, run the lead, drive the answer loop, and tear down unconditionally. Three parts of that
+carry the design weight.
 
-It also costs turns for nothing. Convening a fixed cast is not a decision; it is four spawns. Each
-one routed through a model is a turn spent producing a tool call the code could have written, and
-`process/agent.py` made the same argument for deterministic corridors: asking a model to choose
-from one option buys nothing.
+### One composed `config_hook`, because the runtime honours exactly one
 
-The flexibility that is genuinely wanted survives anyway, in the place where it is a real choice:
-the lead decides who to *interrogate*, what to ask, and whom to hire, and hiring is exactly the
-seam where an unbounded decision is given a budget rather than removed.
+The runtime resolves exactly one `config_hook` per cycle, and its `tools` patch replaces the
+compiled tools rather than stacking on them (`ai_thread.py:548-553`, `config.py:166-185`, both
+re-verified against the installed package). So tool composition happens in one place or not at
+all. The core owns the single hook on each thread it manages and folds every contribution into
+it. For the lead, per cycle: the lead's own hook runs first and its full patch is honoured
+(its `tools`, when set, stand in for the compiled `tools=`, which is the replace semantics the
+lead's author already wrote against); then the members-as-tools; then each hook's
+`tools_for_lead`, rebuilt against that cycle's context. For a member, `Member.equip` installs
+one composed hook that recomposes the member's own `tools=` override ahead of whatever hooks
+contribute, so a member that carried tools cannot lose them to a hook it never asked about.
 
-### Rejected: a `Team` that owns its members
+The refusals around this constraint are deliberate about when they fire. A member constructed
+with its own `config_hook=` is refused only when a hook actually needs the slot (some hook
+implements `tools_for_member`); the bare path must not police what it does not use. A lead
+arriving with its own hook loses nothing, because the core recomposes it rather than refusing
+it; the old class refused that case, and the recomposition is what let `demo/warroom.py` keep
+its `staffing_tools` hook on the lead while riding the library's core.
 
-A shorter design has `Team.__init__` build the cast — pass the plane names, get the specialists.
-`WarRoom` is written that way (`warroom.py:68`), and for one incident it is right.
+Member tools have one more wire fact behind them. Strands validates tool names against
+`^[a-zA-Z0-9_\-]{1,}$` and drops a dotted name from the registry with only a warning logged
+(`strands/tools/tools.py:66-78`, measured), so the lead would silently lose the member.
+`Member` names are `{owner}.{method}` by construction, so the core maps the dot to an
+underscore on the wire and keeps the real name on the transcript. The duplicate-name guard
+checks the mapped name, so `a.b` and `a_b` are refused together: two tools sharing a wire name
+shadow silently, and the lead would reach one member believing it reached either.
 
-As a library base it forecloses the case the library exists for. A subclass that cannot swap the
-cast cannot supply `MethodAgent` members where the base assumed `Agent`s, cannot inject scripted
-members for an offline test without monkeypatching a constructor, and cannot build members per run
-— which matters because `members()` is called inside `execute`, so a scripted model bound onto an
-agent *after* the `Team` was constructed still reaches it. That is the same reasoning
-`ProcessAgent.decider` records for compiling inside `work()` rather than in `__init__`
-(`agent.py:143-148`): anything captured at wiring time silently bypasses the instance binding a
-test uses, and the failure mode is the worst available in an offline suite — a test that reaches
-the network instead of failing.
+### The Accept/Revise loop, bounded by the verdict
+
+Every hook with `on_answer` reviews the lead's answer in hook order. `Accept` moves to the next
+hook; `Revise(feedback, cap)` re-runs the lead with the feedback as a new request. The cap
+rides on the verdict rather than on the hook because the hook is the party that knows how much
+revision a particular finding is worth, and the core reads the cap off the latest verdict, so a
+hook may lower it mid-loop. A hook that returns `Revise` forever must still terminate:
+exhaustion is not an error, the last answer passes on, and the transcript records `revise_cap`
+so a reader can tell that the budget, not a clean review, ended the loop. Each reviewing hook
+gets its own rounds budget, and a verdict that is neither `Accept` nor `Revise` raises naming
+the hook, because a `None` silently treated as accept would grade nothing while looking like a
+review happened.
+
+### Unconditional teardown
+
+Teardown hooks run even on a mid-run fault, and the retire runs even when a teardown hook
+raises: the registry must be empty on every path. Each hook's `on_teardown` is guarded so one
+hook's raise cannot silence another's cleanup, and the first collected error resurfaces only
+when nothing else is already propagating. The members and the lead are retired with
+`return_exceptions=True`, which is the `MethodThread.retire` lesson restated: a recruit
+something else already tore down raises `ThreadNotFoundError`, which is a `KeyError` and sails
+past the handlers callers write; without the flag the first failure aborts the loop and leaves
+every later member alive, the exact failure an unwind loop exists to prevent.
+
+`Recruit.retire` being idempotent is what makes overlapping unwind paths harmless. The `Hiring`
+hook's `on_teardown` retires whatever the lead never dismissed, the core's `finally` retires
+the cast and the lead, and a dismissal that already completed costs a retry nothing.
 
 ## Why members are typed tools and `send_message` is the demo's deliberate exception
 
-The runtime injects two peer tools into every thread, and `send_message` refuses any target whose
-`input_shape` is not `STR_PROMPT`:
+The runtime injects two peer tools into every thread, and `send_message` refuses any target
+whose `input_shape` is not `STR_PROMPT`:
 
 ```python
 if peer_info.input_shape != InputShape.STR_PROMPT:
@@ -85,700 +123,401 @@ if peer_info.input_shape != InputShape.STR_PROMPT:
     )
 ```
 
-`ai_thread/tools.py:172-176`, and `continue_then_receive` additionally requires the *sender* to be
-`STR_PROMPT` (`:225`). So being addressable by the message bus is not free: it requires compiling
-an agent down to one `str` parameter, which is exactly the price `method.py`'s header itemises —
-the typed contract, the docstring-as-template, and every learnable parameter, all three lost at
-once. `demo/agent.py:132-133` pays it on purpose and raises if it ever stops paying, because the
-demo's *subject* is a room of peers that can only reach each other through the runtime.
+`ai_thread/tools.py:172-176`. So being addressable by the message bus is not free: it requires
+compiling an agent down to one `str` parameter, which is exactly the price `method.py`'s header
+itemises. The typed contract, the docstring-as-template, and every learnable parameter are all
+lost at once. `demo/agent.py` pays it on purpose and raises if it ever stops paying, because
+the demo's subject is a room of peers that can only reach each other through the runtime.
 
-A library has no reason to pay it. A `MethodAgent` compiles to `STRUCTURED` and joins a lead
-through `agents()`, which hands the lead one typed tool per capability under its qualified name —
-composition by Python typing, checkable at the call site, where a chat box is not. `notify()` is
-the inbound side channel for the cases that still want one: it appends to a thread's log without
-starting a cycle, so the next `run` sees it as context (`test_method.py:341-351`).
+A library has no reason to pay it. A `MethodAgent` compiles to `STRUCTURED` and joins a lead as
+a typed tool, checkable at the call site, where a chat box is not. `notify()` is the inbound
+side channel for the cases that still want one: it appends to a thread's log without starting a
+cycle, so the next model call sees it as context. The `Member` adapter deliberately does not
+wrap `notify`; its `thread` property exposes the live `MethodThread` for the runtime operations
+the adapter does not cover, and the `Worklog` hook reads `notify` off that handle.
 
-This is the module's central claim, so it is a test and not a docstring
-(`test_the_lead_holds_each_member_as_a_typed_tool_and_no_member_is_reachable_by_chat`), and it is
-asserted in both directions: every member's capability is in the lead's `config.tools` under its
-qualified name, *and* every member's `input_shape` is `STRUCTURED` — so no member is reachable by
-the bus at all. A team that quietly compiled its members down to one `str` to make them chattable
-would pass the first half and fail the second.
-
-Measured during this build and worth recording, because it nearly falsified the test that was
-meant to prove the claim: `_infer_input_shape` (`ai_function.py:71-95`) classifies **exactly one
-positional parameter resolving to `str`** as `STR_PROMPT`. So a `@ai_method` whose only parameter
-is `focus: str` compiles to `STR_PROMPT` and *is* chat-addressable. The typed shape is the one with
-a real signature — two or more parameters, or one that is not a `str` — which is the ordinary shape
-for anything worth calling as a tool, but not something to assume. The fixture cast was corrected
-to have real signatures. Separately measured: a `STRUCTURED` lead is still drivable by
-`handle.run("one string")`, because the positional binds to its first parameter — which is why
-`execute`'s `lead_handle.run(request)` is correct for typed leads and not only for `STR_PROMPT`
+One measured trap survives from the first build and still governs `DynamicAgent`'s shape:
+`_infer_input_shape` classifies exactly one positional parameter resolving to `str` as
+`STR_PROMPT`, so a synthesized agent whose only parameter was `request: str` would be the one
+member shape addressable by every peer's free-text `send_message`. `DynamicAgent.answer`
+carries a second typed `context` parameter deliberately, keeping the compiled shape
+`STRUCTURED`, so a dynamic hire sits behind exactly the boundary a catalog hire does.
+Separately measured and load-bearing for the core: a `STRUCTURED` lead is still drivable by
+`handle.run("one string")`, because the positional binds to its first parameter, which is why
+the core's `lead_handle.run(request)` is correct for typed leads and not only for `STR_PROMPT`
 ones.
 
-`team.py` therefore does not mention `send_message` anywhere, and the demo's `STR_PROMPT` cast
-keeps working because it subclasses this skeleton and supplies its own members — not because the
-skeleton knows what a plane is.
-
-## Why the barrier
-
-Phase 2 gathers every member's briefing and waits for all of them before the lead is spawned. The
-alternative — let the lead start while the slower members are still reading — is faster and
-wrong.
-
-A lead that begins interrogating a half-formed team produces a verdict whose evidence depends on
-scheduling: the same team, the same data, and a different answer depending on which member's model
-happened to return first. That is not a small nondeterminism, because the members hold *disjoint*
-evidence by design; a verdict formed from two of four planes is a verdict formed from different
-data, not merely an earlier one.
-
-`return_exceptions=True` is the other half. A four-member team in which one member's thread died
-is still a team worth asking, and the lead can see that one source is missing because
-`render_brief` puts every briefing — the surviving answers and the `"error: "` ones alike — into
-the text the lead is asked. Letting the exception out would lose the three members that worked and
-turn one dead thread into a dead run. The delivery is the next section, and it was missing once.
-
-Measured, because the pairing depends on it: `asyncio.gather` starts every coroutine before any
-completes (`['start-a', 'start-b', 'start-c', 'end-b', 'end-c', 'end-a']`) and returns exceptions
-positionally, so `zip(cast, answers, strict=True)` really does pair each member with its own
-outcome. The barrier test asserts from an interleaved journal the members and the lead's model both
-write to, with the slowest member declared *first*, so that a `gather` replaced by a sequential
-loop would still pass while an absent barrier would not — and separately asserts that the fast
-member finished before the slow one, which a sequential loop over a slow-first cast cannot produce.
-
-## Why the briefings reach the lead, and what an all-dead cast does
-
-The barrier is only worth holding if the evidence it waits for arrives somewhere. It did not,
-once: `brief` put the answers into the returned `TeamRun` and `execute` handed
-`lead_handle.run(request)` the bare request, so the paragraph above — the lead "can see in its own
-briefing text that one source is missing" — described a delivery that was not in the code. The
-symptom was silent in the ordinary case, because a lead holding its members as typed tools can go
-and ask them, and loud in exactly the case the barrier exists for: **measured on a two-member team
-with both members raising, the lead ran, its model context mentioned no error at all, and the run
-reported `correct=True`.** A verdict from a lead that read nothing, graded correct.
-
-Two changes, one for each half.
-
-### Delivery is a template method
-
-`render_brief(request, briefings)` renders the request and then one line per member, and `execute`
-drives the lead with its result. One text block rather than tools or extra turns, because that is
-the only channel every lead shape shares — a lead is an `AIFunction` over a typed `prompt_fn` and
-`handle.run(text)` binds to its first parameter for a `STRUCTURED` lead as much as for a
-`STR_PROMPT` one (measured above). Anything richer would have to know the lead's signature, which
-is the subclass's business.
-
-It is a template method rather than inlined because composition is a judgment. A lead that reaches
-its members another way wants them left out; a lead with a strict prompt format wants its own
-headings; and an override returning `request` unchanged restores the pre-delivery behaviour
-deliberately, which is the honest way to want it. The test asserts the override *won* — that the
-base's rendering did not also run — because a delivery that appended both would make the
-leave-them-out case unreachable.
-
-Checked against the demo before it shipped, since `WarRoom` is the one real subclass and its
-`investigation.json` is a published artifact. `WarRoom.brief` re-keys by plane, so `render_brief`
-receives plane names and the lead's request grows a `What your team reported:` section over
-`deploys`/`metrics`/`logs`/`traces`. Nothing pins the old shape — `WarRoom` is reached from
-`demo/cli.py` and from no test in the suite — and the nine published keys of `Investigation`, in
-order, are unchanged. So the default delivers and no override was needed, which is the outcome to
-prefer: the demo's lead now reads the four planes it was always supposed to have been shown.
-
-### An all-failed run is refused, not run
-
-`_check_some_briefing_survived` raises when every briefing starts with `BRIEFING_ERROR`. The
-asymmetry with `return_exceptions=True` is the whole argument: three planes of evidence with one
-missing is a team, and the lead can be told which one is absent; *nothing* is not a team. The lead
-holds no evidence of its own — that is the reason a team exists — so it would reason from the
-request alone and produce a verdict shaped exactly like a real one, which `grade` has no way to
-distinguish.
-
-Raised rather than returned as text, which breaks the "every failure in the hiring seam is text"
-rule for a reason that also explains the rule: text is for failures **a model can fix**, and there
-is no model in this one. A dead cast is a coordinator, a network or a wiring failure at the level
-above the lead, so the only honest report names the members and their errors to the *caller* — the
-party that can act. An empty cast is a different thing and stays allowed: a team that declares no
-members has not lost any, and `Toy(cast=[])` is the shape half the tests use to drive the hiring
-seam alone.
-
-`BRIEFING_ERROR` is a class attribute rather than two string literals because the rendering in
-`brief` and the check here have to agree — the check's whole job is to notice that every string is
-one of those. A subclass rendering failures differently moves both at once.
-
-## The negotiation phase: optional, bounded, off by default
-
-`negotiation_rounds: int = 0` on `Team` adds a phase between the briefing and the verdict: the
-lead's first gated ruling is treated as a draft plan, `render_plan` renders it, and each round
-fans that text to every member (`plan_request`, through the member's own `ask` — one cycle, same
-barrier, same `return_exceptions=True` and `BRIEFING_ERROR` rendering as `brief`). A member
-answers with objections or with the `APPROVAL` token; unanimity ends the negotiation early,
-anything less goes back to the lead as one `run(render_objections(...))` — a full gated cycle, so
-every revision faces the oracle exactly as the draft did. The transcript (plan, objections,
-approvals, outcome, revision per round) lands on `TeamRun.negotiation`.
-
-### The evidence for wanting it
-
-AgentRadio (arXiv 2607.28430) measured a negotiation round as its single biggest layer: +67 net
-rubrics, against +24 for passive awareness. Their MinIO case is the failure shape this phase
-exists for, and it is *this* skeleton's failure shape too: the members hold disjoint evidence by
-design — that is why there is a team — so a plan drafted from one-shot briefings can carry a flaw
-any single member would catch on sight, and `brief` was a one-shot barrier: members answered
-once, only the lead saw the answers, and the plan was never reviewed by the people holding the
-evidence it was built from. Caveats carried honestly: their n=124, single run per task, LLM
-judge, and the +29.8 headline bundles three layers — which is why the phase is off by default and
-bounded rather than the new normal.
-
-### Why zero is the default and what zero means
-
-With the budget at zero, `negotiate` returns before touching anything and `execute` is the
-pre-negotiation skeleton byte-for-byte: one member cycle each, one lead cycle, the same event
-sequence. The compatibility claim extends to the artifact — `TeamRun`'s serializer drops the
-`negotiation` key when the list is empty, so the demo's published `investigation.json` keeps its
-nine keys without `demo/` changing at all (measured: same keys, same order, aliases intact,
-round-trip equal). The test pins the *call counts* and the event sequence rather than the empty
-list, because an empty list is also what a broken phase that ran and recorded nothing returns.
-
-### Why the plan travels through `ask` and not `notify`
-
-`Recruit` guarantees three verbs — spawn, ask, retire — and `notify` is not one of them; the
-`Member` adapter deliberately does not wrap it. And an *answer* is wanted here: `notify` appends
-to a thread's log without starting a cycle, so a notify-based fan-out would deliver the plan and
-collect nothing until some later cycle that may never come. One `ask` per member per round is one
-channel every member shape already supports, one model cycle, and a captured request a test can
-read — which is the requirement the next paragraph makes load-bearing.
-
-### The delivery lesson, applied twice
-
-The briefings once never reached the lead (`render_brief`'s history above): the phase recorded
-its data faithfully and the wire was missing, and only reading the model's actual context could
-have said so. Negotiation has two such wires — plan → member, objections → lead — and both are
-pinned from scripted-model contexts, not from the transcript: the plan text is asserted inside
-each member's own model context, the objection text and the objector's name inside the lead's
-revision context, and the round-2 fan-out is asserted to carry the *revision* and not the draft.
-Measured with the wire deliberately severed (revision prompt replaced by a generic "your team
-objected"): the transcript still recorded every objection and only the context assertions failed
-— the render_brief bug's exact shape, reproduced on purpose to prove the tests can catch it. The
-negative half needed scoping: a thread's history is cumulative, so "the draft did not fan out
-again" is a claim about round 2's *own request*, not about a context that legitimately carries
-round 1 above it.
-
-### Approval is containment, and the tradeoff is `BRIEFING_ERROR`'s
-
-`approves` checks that the answer contains `APPROVAL` and does not start with `BRIEFING_ERROR`.
-Containment rather than equality because a typed member answers with a pydantic model whose
-`str()` embeds the token inside a field's repr — an equality check would silently veto every
-typed member and every negotiation would run to its cap, with nothing raised. The cost is the
-same one the `BRIEFING_ERROR` prefix carries: an objection that *quotes* the token is miscounted.
-Both the instruction (`plan_request`) and the check read the one class attribute, so a subclass
-with a stricter vocabulary moves them together — a drifted pair would make unanimity unreachable
-and every negotiation silently cap out.
-
-### The edges, refused rather than smoothed
-
-A member that raises mid-review is a briefing failure's twin: rendered under `BRIEFING_ERROR`,
-never fatal, never counted as approving — it blocks unanimity (the lead revises knowing one
-reviewer died) and the cap bounds what that blocking can cost. A cap reached without unanimity
-marks its last round `cap_reached` rather than `revised`, and the run proceeds with the last
-gated revision — the transcript says the team never agreed rather than implying it did. An empty
-cast never negotiates: `all([])` is true, so without the guard a `Toy(cast=[])` at rounds>0 would
-record a unanimous round no member ever gave. And a negative budget is refused at construction —
-`range(1, 0)` is empty, so "negotiate backwards" would silently mean "never negotiate", which is
-the fail-soft this kernel keeps refusing.
-
-What this phase deliberately is not: a member↔member channel. Objections flow member → lead and
-the revision flows lead → members; no member sees another's objection except as the lead's
-revision reflects it. A lateral channel is a different design with its own determinism argument
-to make — and the worklog below is that design, with that argument made.
-
-## The worklog: typed lateral awareness, off by default
-
-`worklog_enabled: bool = False` on `Team` gives each `Member` a `post_discovery` tool
-(`discovery_tools`, the `hiring_tools` precedent: a `config_hook` injecting cycle-bound tools
-nothing upstream ships). A posted discovery — `{kind, body}` with `kind` from the closed
-`DISCOVERY_KINDS` vocabulary and `source` bound by the wiring rather than reported by the model —
-is appended to a team-owned `Worklog` and fanned to every *other* member, to every live hire, and
-to the lead, through each thread's own `notify`. The entries land on `TeamRun.worklog`, and the
-compat serializer drops the key when the list is empty, exactly as `negotiation`'s does — a team
-that never enabled the log keeps the demo's nine-key artifact byte-identical.
-
-### Relaxing the "no cross-team messaging" non-goal, and by exactly how much
-
-The non-goals below say no cross-team messaging, and the determinism argument behind it is the
-module's spine: a message bus makes who-read-what a sample from the scheduler. The worklog
-relaxes the *lateral* half of that — members become aware of each other's discoveries — and the
-evidence for paying anything at all is AgentRadio's (arXiv 2607.28430): passive awareness alone
-measured +10.5 points net, with the gains concentrated on cross-cutting tasks. That is this
-skeleton's own shape — the members hold disjoint evidence *by design*, so one member's dead end
-is precisely the thing another member is about to spend a briefing re-exploring. Caveats carried
-as before: their n=124, single run per task, LLM judge, free-text broadcasts where this design
-insists on a typed payload.
-
-What is deliberately *not* relaxed bounds the relaxation. No member can address another (there
-is still no member→member `ask`, no `send_message`, no reply channel); a discovery is a
-broadcast, not a conversation. The vocabulary is closed — four kinds, refused as text when the
-model invents a fifth — so the channel cannot degenerate into chat. And teams still do not know
-other teams exist: this is cross-*member* awareness inside one team, not cross-team messaging.
-
-### Why `notify` this time, when negotiation chose `ask`
-
-The negotiation section above argues the plan travels through `ask` because an *answer* is
-wanted. Here the argument runs exactly the other way: no answer is wanted, and forcing one is
-the failure mode. A fan-out through `ask` would cost one full model cycle per discovery per
-member — a member mid-briefing would be interrupted to acknowledge a note it cannot yet use —
-which is the interruption cost passive awareness exists to avoid. `notify` appends to a thread's
-log without starting a cycle (`method.py:261-268`; the runtime buffers it and drains at the next
-model-call boundary, `ai_thread.py:465-476`), so a teammate reads the discovery at its own next
-step, as context. Step-boundary delivery is not an implementation choice here; it is the
-feature.
-
-The negotiation section also says the `Member` adapter "deliberately does not wrap" `notify` —
-and that stays true. The adapter's `thread` property exposes the live `MethodThread` for exactly
-"the runtime operations this adapter does not wrap", and the team holds its cast, so
-`_open_channel` reads `notify` off the spawn handle it already has. `Recruit` is untouched: a
-recruit shape without `notify` on its handle simply gets no channel (it can still be a poster if
-it exposes `equip`, and neither is required), because a mixed cast — scripted spies beside typed
-members — is half the test suite's shape and must keep working.
-
-### The lead sees it too, and `register`'s replay is why that is ordering-safe
-
-The lead's channel is `lead_handle.notify`, registered immediately after the lead spawns — which
-is *after* the briefing phase, exactly when members post their first discoveries. Notify-to-lead
-was chosen over a next-prompt prepend because it is one mechanism for every party rather than
-two, and because a prepend covers only the first prompt while notify covers every later gated
-re-ask the same way. The ordering hole — a discovery posted before the lead's thread existed —
-is closed by `Worklog.register` replaying every prior entry into a newly opened channel, and the
-replay is measured on the wire: the pending notify drains into the lead's *first* model context,
-ahead of the request `execute` runs it with. Hires get the same treatment when `hiring_tools`
-registers them (a helper hired *because* of an obstacle should not be the one teammate who never
-heard of it), and `dismiss` closes the channel with the thread.
-
-### `post` reserves before it awaits, and one dead channel never stops the rest
-
-Both are the hiring seam's lessons restated. The tool executor is concurrent
-(`strands/agent/agent.py:462`), so two `post_discovery` calls in one assistant turn interleave;
-the entry is appended to `Worklog.entries` in the same synchronous stretch that builds it, and
-only then is any `notify` awaited. A list rather than a dict-keyed aggregation, deliberately:
-appends cannot collide, keys can — measured while proving the guard test could fail, an
-entries-keyed-by-source version dropped one of two concurrent posts with nothing raised, and the
-test caught it. Each delivery is awaited under its own handler: a retired thread raises out of
-`notify`, the failure is recorded on the entry (`failed[name] = repr(error)`), and the loop
-continues — `brief`'s `return_exceptions=True` argument at worklog scale, pinned by a fixture
-whose dead channel sits *first* in the cast so the healthy deliveries prove the loop went on.
-
-### The fork interaction, documented rather than discovered
-
-A pending `notify` is worker-side inject state, not log state, and `fork` copies the log —
-`gated.py` measured it: a forked branch does not see the pending inject. A discovery delivered
-but not yet drained when a member is forked is therefore *gone from the branch*. `Team.fork`
-already refuses (teams are not forkable), so inside a team this cannot bite; it is recorded here
-because a caller holding a `Member.thread` can fork the member directly, and the durable record
-is the contract: `TeamRun.worklog` (and `Worklog.entries` mid-run) is what survives when
-in-flight deliveries do not. A branch that must know what the team knows re-delivers from the
-log — `register`'s replay is exactly that operation.
-
-### Delivery is asserted from the wire, the third time
-
-The `render_brief` precedent, applied once more: every delivery claim in
-`tests/library/test_team_worklog.py` is pinned from a scripted model's own captured context —
-the discovery text inside the *other* members' and the lead's contexts, the poster's exclusion
-as absence from the poster's whole thread, and "no tool when disabled" from the `tool_specs`
-each model call was offered rather than from any config object. Measured with the wire
-deliberately severed (`_deliver` recording success without sending): the worklog still recorded
-every entry as delivered and only the context assertions failed — the transcript-without-a-wire
-shape, reproduced on purpose to prove the tests can catch it.
-
-## Why a duplicate member name is refused at wiring time
-
-`brief` keys its mapping by `member.name`, because a name is the only identity `Recruit`
-guarantees. So a cast holding two members called `plane` produces a mapping with **one** entry:
-measured on a two-member cast answering `FIRST` and `SECOND`, the report carried
-`{'plane': 'SECOND'}` and the run was graded correct. The earlier briefing is gone from
-`TeamRun.briefings` and from whatever the lead was shown, and nothing raises.
-
-The half that costs most is the one no report can show. A reader comparing `len(briefings)` against
-`len(members())` is the only person who could notice, and no reader does that. So
-`_check_no_duplicate_members` sits with the other pre-spawn guards, where it costs nothing —
-`Counting([])` and the spies' empty event lists pin that the refusal precedes both the model call
-and the spawn, which is `_check_no_oracle_collision`'s placement lesson applied a second time. The
-fix is the caller's either way: name them apart, or override `brief` and key by something else,
-which is what `WarRoom` does when it keys by plane.
-
-## Why the oracle is a post-condition, and how it composes
-
-The argument is `gated.py`'s and holds unchanged: a check the caller runs afterwards is a check the
-caller can forget, and the loops that forget it are the ones under pressure. A post-condition
-cannot be skipped — the runtime runs every validator before the cycle returns and turns any
-exception into the text of a `[VALIDATION ERROR]` user turn the *next* attempt reads — so refusal
-is the default and the oracle's own words are the re-ask feedback. `oracle` is one of the four
-required overrides for a reason that follows directly: the only possible default is "raise
-nothing", i.e. grade every verdict correct while reporting that grading happened.
-
-The attach is the part that needed measuring. `AIFunction.replace` merges through
-`dataclasses.replace` (`ai_function.py:407`, `_merge_config`:32-49), so a field named in the call
-**overwrites**:
-
-| call on a lead carrying `post_conditions=(existing,)` | result |
-| --- | --- |
-| `replace(post_conditions=[added])` | `['added']` |
-| `replace(post_conditions=[*fn.config.post_conditions, added])` | `['existing', 'added']` |
-
-So the naive `replace(post_conditions=[self.oracle])` silently deletes every post-condition the
-subclass's lead already carried, and the failure mode is the worst available: the checks are gone,
-nothing raises, and the run reports a gated verdict. `_gated_lead` therefore reads the lead's own
-conditions off its config and prepends the oracle, which is `gated.gated()`'s composition for the
-same reason. Fields the call does not name are untouched — `max_attempts`, `system_prompt` and
-`tools` are asserted to survive, and `max_attempts` is the one that matters, because it bounds how
-many times a refused verdict is re-asked and what a never-admitted run costs.
-
-`config_hook` cannot compose the same way, because the runtime calls exactly one hook per cycle
-(`ai_thread.py:548-553`). A lead arriving with its own hook and a team with a non-empty catalog is
-a genuine conflict, and `_gated_lead` refuses it loudly rather than resolving it by precedence:
-either silent outcome is invisible — the lead loses its cycle-local tools, or the team loses its
-hiring — and the message names both ways out (compose them into one hook in `lead_function`, or
-return an empty `catalog()`). A lead with a hook and *no* catalog keeps its hook untouched, because
-the conflict is between a hook and a catalog and not between a hook and a team.
-
-### The collision guard, and why it is reachable here
-
-`ai_thread` passes the result positionally and then injects, by keyword, every bound argument whose
-name appears in the validator's signature. Those two rules are useful together and fatal for the
-*first* parameter, which already holds the result: the same slot filled twice raises `TypeError:
-got multiple values for argument`, which the runtime catches and reports to the model as a
-validation failure. The oracle appears to refuse every verdict, the message makes no sense, and
-the fix is a one-word rename nothing points at. `gated._check_no_collision` refuses exactly this
-for a propose method, and it is reachable for a lead too — a lead is an `AIFunction` over a typed
-`prompt_fn`, so `decide(question, rigour)` is the ordinary shape and an oracle whose first
-parameter is named `question` is one careless rename away.
-
-`_check_no_oracle_collision` therefore runs in `_gated_lead`, over *every* attached condition
-rather than only the oracle — the trap is a property of the runtime's kwarg injection and an extra
-condition hits it identically. Only the first parameter is checked, in `gated.py`'s spirit:
-forbidding the rest would forbid the injection the runtime documents.
-
-Measured with the guard removed, at `max_attempts=3`: **4 model calls burnt**, and the run dies as
-`AIFunctionError: Result not satisfied after 4 attempt(s)` — a `TypeError` about Python calling
-mechanics, laundered into a report that the model failed to satisfy a requirement.
-
-### Where `_gated_lead` is called, which was wrong once
-
-`_gated_lead` is where both wiring guards live, so *when* `execute` calls it decides what a
-refusal costs. The first version composed the lead where it is used — just before the spawn, after
-`assemble` and `brief` — which reads naturally and is wrong for the reason the hooks-and-budgets
-lesson names: a guard that fires after the barrier has already spent what it protects. Measured on
-a two-member team with a colliding oracle: the refusal was correct, arrived as a `RuntimeError`,
-and cost two spawns and two *real* briefing cycles to reach.
-
-So the wiring phase is now `members()`, then `_gated_lead()`, then `assemble`. The order between
-the first two also matters, and in the other direction: `members()` runs first because a subclass
-may build its cast there and hand those same objects to `lead_function()` as tools — which is the
-shape a typed team has, since `agents()` is called on the objects `members()` returns. Both
-orderings are pinned by a test that records the three calls, and both assertions were confirmed to
-fail when the composition is moved back after the barrier.
-
-This is also why `members()` is called inside `execute` at all rather than in `__post_init__`: the
-guard's cheapness comes from being before the first *spawn*, not from being at construction, and
-building the cast per run is what keeps a scripted model bound after construction reachable.
-
-### Why `oracle` is not fault-wrapped, unlike `gated.admits`
-
-`GatedProposer.admits` wraps its gate and re-raises an internal failure as a message that says it
-is internal, because the runtime cannot tell a bug from a refusal and a bug that reads as a
-refusal burns every retry. The same trap exists here — measured: a validator raising
-`AttributeError` under `max_attempts=2` is called **three times** and the cycle raises
-`AIFunctionError: Result not satisfied after 3 attempt(s)`, with the original type gone — and the
-wrap is still not applied, for two reasons.
-
-`admits` has something to wrap *around*: a gate that is a separate injected callable, a
-`candidate_of` extractor, and a `Verdict` object whose `ok` and `report_text()` reads can each fail
-independently. Those are four user-supplied surfaces on one path, which is why `gated.py` needed a
-vocabulary for "this was a fault, not a verdict". `Team.oracle` is one method the subclass writes
-directly, with no extractor and no verdict object; there is no seam at which the base could tell a
-deliberate `AssertionError` from an accidental one, so a wrap would either catch everything —
-including the refusals the oracle exists to raise — or catch nothing.
-
-And the subclass already has the tool: an oracle that wants the distinction makes it itself, in
-its own words, exactly as `HarnessProposer` does. What the library owes on this path is the part it
-can guarantee, and `test_an_oracle_that_is_itself_broken_burns_the_retries_and_the_run_still_unwinds`
-pins it: a broken oracle costs turns, and not leaked threads.
-
-## Why `grade` is defaulted and `oracle` is not
-
-Both judge a verdict, so the asymmetry needs an argument. By the time `grade` runs, the oracle has
-already gated: a verdict that reached it either satisfied the oracle or the cycle exhausted its
-attempts and raised. So `(True, [])` is a *true* default — a team whose oracle is its whole
-standard leaves `grade` alone and the report says correct, honestly. An `oracle` default would be
-"raise nothing", which reports a grading that did not happen.
-
-They stay two hooks because they answer different questions. An oracle is checked per attempt and
-its text is written for a model that must revise; a grade is computed once, for a reader, and may
-apply a standard it would be wrong to re-ask against — a stricter check the model was never told
-about, or one too expensive to run on every attempt. `warroom.py:116-118` calls `incident.verify` a
-second time for exactly that reason, and the test that makes the split observable has an oracle
-admit a verdict that `grade` then refuses, which is only visible because `correct` and
-`oracle_failures` are separate fields.
-
-## Why the catalog is a mapping and the mandate goes through the factory
-
-`demo/staffing.py` reads its roles from `ROSTER`, a module-level dict `__init_subclass__`
-populates. Two problems make it unliftable. It is global, so every team in one process shares one
-pool of hireable roles; and it is a registry of `Agent` subclasses, which is the application's base
-class. `hiring_tools` therefore takes `catalog: Mapping[str, Callable[[str], Recruit]]` — a plain
-mapping the caller supplies, called as `factory(name)`. What a team may hire is a property of that
-team.
-
-The mandate is the sharper change. `staffing.py:109` writes
-
-```python
-sub.mandate = mandate  # type: ignore[attr-defined]
-```
-
-which works only because every roster class happens to declare the attribute (`cast.py:133`,
-`:159`, `:188`). A library cannot assume it: the `Recruit` protocol says nothing about a mandate,
-so the injection would either fail on a `__slots__` recruit or silently create a field nothing
-reads — and the `type: ignore` is the marker that the type system already knew. So the mandate
-reaches the tool as an argument, is recorded on the roster's log, and is handed to the *factory*,
-which is a closure or a `partial` over whatever the recruit's constructor actually takes. Wave 2
-keeps the demo's behaviour inside its own factories, where the attribute is real.
-
-## The catalog-vs-synthesis boundary: `dynamic_subagents`, off by default
+## The `Recruit` protocol and the `Member` adapter
+
+`Recruit` is three verbs and a name: `spawn`, `ask`, `retire`. Three because that is the whole
+of what the core does to a member; anything richer would be a contract the library cannot
+honour for every member shape it wants to accept. It is a protocol rather than a base class
+because the members worth having already exist and already differ: the demo's `STR_PROMPT`
+`Agent` satisfies it as written, and `Member` adapts a `MethodAgent` capability by naming which
+keyword the request arrives as. `spawn` returns `Any` and the core reads only `.id` off it;
+demanding a `ThreadHandle` would exclude `MethodThread`, the library's own first-class member.
+
+Optional capabilities go through `getattr` probes, never through the protocol. A recruit
+without `equip` is skipped by the tool fold, and a handle without `notify` gets no worklog
+channel; a mixed cast (scripted spies beside typed members) is half the test suite's shape and
+must keep working. A member that cannot take tools is a fact, not a fault.
+
+## Where the old grading went: no oracle in the core, review as opt-in members
+
+The old `Team` required an `oracle` override and attached it as a post-condition on the lead;
+`grade` ran once more for the reader. The new core carries no grading vocabulary at all, and
+the bare team's test pins the sharpest consequence: an answer with `admitted=False` returns
+as-is, which no oracle-bearing skeleton would allow.
+
+Two forces drove the deletion. First, the mandatory override was the wrong default: the only
+possible library-supplied oracle is "raise nothing", which grades every verdict correct while
+reporting that grading happened, so the old class made every caller write one even when the
+caller had no standard to encode. Second, the post-condition seam already exists on the lead
+itself. A lead that wants a hard gate attaches its own `post_conditions`, and the runtime turns
+a refusal into re-ask feedback with no help from the team layer; `demo/warroom.py` does exactly
+that, prepending its incident check to the lead's own conditions. What the team layer owed was
+a place for review that involves the team, and that is what `Critic` and `Council` are:
+ordinary members' work riding the same Accept/Revise loop every hook shares, with no special
+phase and no privileged vocabulary.
+
+### The review-integrity rule
+
+An errored, empty, or never-spawned reviewer must never settle `Accept`. Positive evidence is
+the only thing that may wave an answer through: a reviewer whose thread died reviewed nothing,
+so its failure counts against the answer (a `Revise` for `Critic`, an objection for `Council`),
+never for it. The same asymmetry governs `detect`'s truncated sweeps: absence of findings under
+failure settles nothing. Concretely, an error is rendered under the `error: ` prefix and
+checked before the approval token, so an error that merely quotes `NO-FINDINGS` or `APPROVED`
+still reads as an error; an empty answer is rendered as an error rather than passed through,
+because the empty string contains no token and would silently read as findings with nothing for
+the lead to act on. `Council` keeps its denominator at the full panel size, so an errored
+panelist lowers the approval fraction and cannot shrink the quorum. An empty `Council` panel is
+refused at construction: `0/0` compares vacuously against any threshold, and a review by nobody
+settling `Accept` is the silent-accept defect verbatim.
+
+### Reviewers are not tools on the lead's wire
+
+A member becomes a tool the lead can call, and a lead that can consult, and lobby, its own
+adversarial reviewer mid-draft defeats the framing. So each review hook spawns the reviewers it
+was given as private threads in `on_assemble` and retires them in `on_teardown`; a reviewer
+that is already in the cast (checked by identity) is left to the core's lifecycle entirely, so
+nothing spawns or retires twice.
+
+### `advisory` changes what the verdict does, never what the record says
+
+Both hooks take `advisory=True`, under which findings and errors are recorded but the verdict
+is always `Accept`: review as annotation, not gate. The record still distinguishes clean from
+findings from error, which is what lets `compose_feedback` (the learning path) read real
+review outcomes off an advisory run.
+
+## The `Briefing` hook: barrier, delivery, and the all-dead refusal
+
+`on_assemble` asks every member its own briefing question concurrently and holds the barrier;
+`on_request` prepends the rendered brief to the request the lead is asked. The barrier argument
+is the old one and still true: members hold disjoint evidence by design, so a lead that begins
+reasoning after two of four reports produces a verdict formed from different data, not merely
+an earlier one, and no reviewer can distinguish it from a lead that waited. `asyncio.gather`
+starts every coroutine before any completes and returns exceptions positionally
+(`return_exceptions=True`), so the name-keyed pairing is sound and one dead member cannot take
+the run down.
+
+Delivery earns its own emphasis because it was once missing. An early version recorded
+briefings faithfully on the run report while the lead's prompt carried only the bare request;
+measured on a two-member team with both members raising, the lead ran, its model context
+mentioned no error at all, and the run graded itself correct. A delivery claim needs a wire.
+The hook therefore delivers through `on_request`, the seam every hook shares, and one text
+block is the right channel because the lead's first parameter is the only channel every lead
+shape has (the `STRUCTURED` positional-bind fact above). The tests assert the brief from the
+lead model's own captured context, never from the returned report.
+
+A member that raises becomes a rendered `error: ` string rather than a run-ending fault: a
+four-member team with one dead thread is still a team worth asking, and the lead can see in its
+own prompt that one source is missing. A cast whose every member failed is refused before the
+lead spends anything, and raised rather than rendered, which breaks the "failures are text"
+rule for the reason that also explains the rule: text is for failures a model can fix, and
+there is no model in this one. A dead cast is a coordinator or wiring fault at the level above
+the lead, so the only honest report names the members and their errors to the caller, the party
+that can act. Raising inside `on_assemble` is before the lead's first cycle by the pipeline
+order, so the refusal costs nothing it protects.
+
+`question_fn` exists because the interesting teams are asymmetric: a member holding a private
+view needs to be told what to do with that view. `forward_request=False` is the war-room shape,
+where a specialist answers for its own evidence and is not told what the lead was asked,
+because a specialist that read the question would be reasoning about the answer, which is the
+lead's job and the asymmetry the team exists for.
+
+## The `Negotiation` hook: bounded objections on the core's loop
+
+`on_answer` renders the lead's answer as a plan, fans it to every member concurrently (the
+briefing barrier's twin: same `gather`, same error rendering), and either every member approves
+or the objections go back as `Revise(feedback, cap=rounds)`. The old class owned this loop
+itself; the hook rides the core's, and the per-round transcript in
+`hooks_data["negotiation"]` distinguishes a round whose revision ran (`revised`) from the one
+the cap refused (`cap_reached`), so a capped-out run says the team never agreed rather than
+implying it did.
+
+The evidence for the phase existing at all: AgentRadio (arXiv 2607.28430) measured a
+negotiation round as its single biggest layer, +67 net rubrics against +24 for passive
+awareness. Their MinIO case is this layer's failure shape too: members hold disjoint evidence
+by design, so a plan drafted from one-shot briefings can carry a flaw any one member would
+catch on sight, and a briefing is exactly a one-shot barrier. Caveats carried honestly: their
+n=124, single run per task, LLM judge, and their +29.8 headline bundles three layers, which is
+why this is an opt-in hook rather than the default.
+
+The plan travels through `ask` and not `notify` because an answer is wanted: `notify` appends
+without starting a cycle, so a notify-based fan-out would deliver the plan and collect nothing
+until some later cycle that may never come. The worklog makes the opposite choice for the
+opposite reason, and the pair of arguments is the clearest statement of what each channel is
+for.
+
+Approval is containment (`APPROVAL in answer`), not equality, because a typed member answers
+with a pydantic model and `str(model)` embeds the token inside a field's repr; an equality
+check would silently veto every typed member and every negotiation would run to its cap with
+nothing raised. The cost, kept deliberately, is that an objection that quotes the token is
+miscounted. A rendered error can never approve (checked by prefix before the token), so a
+member whose thread died blocks unanimity rather than faking it, and the lead revises knowing
+one reviewer is gone. `render_objections` names the approvers alongside the objections, because
+a revision that undoes what the approvers approved is a worse plan wearing a fix's clothes. An
+empty cast accepts immediately without recording a round: an empty round is vacuously unanimous,
+and a transcript entry would record a consensus no member ever gave.
+
+Both delivery wires (plan into each member's context, objections into the lead's revision
+context) are pinned from scripted-model contexts. Measured with the wire deliberately severed
+(revision prompt replaced by a generic "your team objected"): the transcript still recorded
+every objection and only the context assertions failed, which is the briefing-delivery bug's
+exact shape, reproduced on purpose to prove the tests can catch it.
+
+## The `Worklog` hook: typed lateral awareness at step boundaries
+
+`tools_for_member` gives every member a `post_discovery` tool whose `source` is wired to the
+member's name, so attribution is something the model cannot spoof. A post appends to the
+durable log (`hooks_data["worklog"]`) and fans the rendered text to every other registered
+channel through `notify`.
+
+The evidence: AgentRadio measured passive awareness alone at +10.5 points net, concentrated on
+cross-cutting tasks, and a team's members hold disjoint evidence by design, so one member's
+dead end is precisely the thing another member is about to spend a cycle re-exploring. What is
+deliberately not granted bounds the grant: no member can address another (no member-to-member
+`ask`, no reply channel), a discovery is a broadcast, and the vocabulary is closed. Four kinds
+(`bears-on-teammate`, `contradicts-plan`, `obstacle`, `dead-end`); a kind the model invents is
+refused as text, so the model reads the refusal and posts again with a real one. Typed payloads
+over free text is the library's standing bet, applied to the one lateral channel it allows.
+
+### `notify` this time, because step-boundary delivery is the feature
+
+No answer is wanted, and forcing one is the failure mode: a fan-out through `ask` would
+interrupt a member mid-briefing to acknowledge a note it cannot yet use, one full model cycle
+per discovery per member. `notify` appends to a thread's log without starting a cycle (the
+runtime buffers it and drains at the next model-call boundary), so a teammate reads the
+discovery at its own next step, as context. The rendered text says so explicitly: awareness,
+not an instruction.
+
+### Reserve before await, and one dead channel never stops the rest
+
+The tool executor is concurrent (`strands/agent/agent.py:462`), so two posts in one assistant
+turn interleave at the first genuine suspension. The entry is appended to the log in the same
+synchronous stretch that builds it, and only then is any delivery awaited; an append on the far
+side of an await could drop one of two concurrent posts with nothing raised (measured on the
+hiring seam, the same discipline). Each delivery is awaited under its own handler: a retired
+thread raises out of `notify`, the failure lands on the entry as `failed[name]`, and the loop
+continues.
+
+### Registration replays, which is what makes ordering not matter
+
+A channel opened late receives every prior entry on registration. The lead's channel opens in
+`on_assemble`, before the lead's first cycle (the `Workspace.lead` contract exists for exactly
+this), so a discovery posted during another hook's assembly reaches the lead's first model
+context. A hire's channel opens through `on_hire` when the `Hiring` hook announces it, so a
+helper hired because of an obstacle is not the one teammate who never heard of it. The entry's
+`delivered`/`failed` record does not distinguish replay from live delivery, because both answer
+the same question: who saw this.
+
+### Per-run state is per run
+
+The entries list lives on the run's own `Workspace.data`, and the channel map resets whenever
+the hook sees a new workspace (compared by identity, because the workspace is the run). Without
+the reset, one hook instance on a `Team` that runs twice would fan run 2's first post into run
+1's retired threads and record their predictable failures on run 2's log.
+
+Every delivery claim in the worklog tests is pinned from a scripted model's own captured
+context. Measured with the wire severed (`_deliver` recording success without sending): the
+log still recorded every entry as delivered and only the context assertions failed.
+
+## The `Hiring` hook: budgeted synthesis of the cast, always unwound
+
+Two layers, deliberately. `hiring_tools(roster, catalog, ...)` is a functional seam that builds
+a `config_hook` granting `hire`/`delegate`/`dismiss` over a `Roster`; it composes outside any
+team, and `demo/staffing.py` binds it straight onto a lead's own hook. The `Hiring` class is
+that seam as a `TeamHook`: `tools_for_lead` rebuilds the tools each cycle, the roster lives for
+one run, every hire is equipped with the sibling hooks' member tools before it spawns and
+announced to them after, and `on_teardown` retires whatever the lead never dismissed.
+
+### Why the catalog is a mapping and the mandate goes through the factory
+
+The demo's original roster was a module-level registry populated by `__init_subclass__`, which
+is global (two teams in one process would share one pool of hireable roles) and typed on the
+application's own base class. `hiring_tools` therefore takes
+`catalog: Mapping[str, Callable[[str], Recruit]]`, a plain mapping the caller supplies, called
+as `factory(name)`: what a team may hire is a property of that team. The mandate reaches the
+tool as an argument and is recorded on the roster's log; it is never injected onto the recruit
+as an attribute, because the `Recruit` protocol says nothing about a mandate, so injection
+would either fail on a `__slots__` recruit or silently create a field nothing reads. A factory
+that wants the mandate on its agent closes over its own constructor, where the attribute is
+real.
+
+### A hire reserves its name and its headcount before it awaits anything
+
+The refusals and the registration into `roster.hires` run in one synchronous stretch, and only
+then is the spawn awaited, rolled back if it raises. The measured reason: the concurrent tool
+executor lets two `hire` calls in one assistant turn interleave at the first suspension, and
+with the registration on the far side of the await, both passed the cap (measured:
+`headcount == 2` under `max_hires=1`) and a duplicate name left the first recruit live and
+unregistered, unreachable by every unwind path, with nothing raised anywhere. A `Lock` was the
+rejected alternative: the checks and the write already happen inside one event-loop step, so
+there is nothing to serialise. The cap is checked before the recruit is constructed, because a
+cap that fires after the spawn already spent the thread it was refusing.
+
+`dismiss` inverts the order: retire first, unregister only on success. A `pop` before the await
+drops the roster's only reference, so a retire that raises would leave the recruit unregistered
+and alive; left registered, the raise is retried by teardown, and retire being idempotent makes
+the retry free. It is the reservation argument read backwards: put the registry write on the
+side of the await where a fault leaves the registry describing reality.
+
+### Every hire-side failure is text
+
+An unknown role, a duplicate name, a headcount cap, delegating to someone unhired, dismissing a
+stranger: all five are mistakes the model made and can fix, and all five return a string
+beginning `error: `. Measured, because the behaviour is what makes this correct rather than
+tidy: a tool returning that string reaches the model as a successful tool result whose content
+is the string, the model reads the problem, and the cycle continues. An exception would surface
+as a tool fault the model cannot act on. The exclusions define the rule: a `spawn` or `retire`
+that raises is not the lead's mistake and surfaces as a fault, and what the seam owes on those
+paths is a roster that still describes reality (the two ordering rules above).
+
+### The catalog-vs-synthesis boundary
 
 `hire` chooses from a catalog someone reviewed; `hire_dynamic` lets the lead write a new
-subagent's instructions itself, mid-run. The second exists behind `dynamic_subagents: bool =
-False`, and this section is the argument for admitting it at all, for the shape it was admitted
-in, and for the default staying off.
+subagent's instructions itself, mid-run. The evidence for admitting synthesis at all is
+Shepherd (arXiv 2605.10913), which measured runtime agent synthesis as a layer worth having:
+some work has no pre-declared role because the decomposition is only discoverable mid-run, and
+a factory for "whatever the lead just realised it needs" is not a factory anyone can review in
+advance.
 
-### The evidence, and what was actually admitted
+What is admitted is deliberately less than a prompt-driven orchestrator. Only the instructions
+are dynamic: the signature, the output type, the adapter, the lifecycle, the budget, and the
+tool surface are all fixed in `DynamicAgent` at review time, so a synthesized agent is an
+ordinary `MethodAgent` whose per-instance state happens to have been written by a model. It
+satisfies `Recruit`, joins the roster under the shared `max_hires` (one cap for both kinds,
+because two caps would let a lead run twice the intended team behind an innocent flag), gets
+the sibling equip, and is reached and released through the same `delegate` and `dismiss` as a
+catalog hire. Two contract details are pinned by tests because each is one careless
+simplification from breaking the boundary: `ai_methods()` walks the MRO, so `DynamicAgent`'s
+published tool set is asserted to be exactly `["answer"]`; and the `context` parameter keeps
+the compiled shape `STRUCTURED` (the `send_message` boundary above).
 
-Shepherd (arXiv 2605.10913) measured runtime agent synthesis — an orchestrator standing up new
-agents whose prompts it writes on the spot — as a layer worth having: some work has no
-pre-declared role because the decomposition is only discoverable mid-run. The catalog cannot
-answer that case by construction; a factory for "whatever the lead just realised it needs" is
-not a factory anyone can review in advance.
+The audit trail is the safety story. A catalog role was reviewed once, by a person, before any
+run; a synthesized agent's instructions were reviewed by nobody, and that cost cannot be
+checked away without deleting the feature. The mitigation is attribution: the roster records
+`hire_dynamic` with the instructions verbatim, so the log answers "which of these agents did a
+human review, and what exactly was the unreviewed one told to be" for every run, after the
+fact, without trusting the model's own account. A truncated record would be an audit of a
+different agent. `hire_dynamic` is a separate tool rather than a sentinel catalog role, so a
+team that never opts in keeps the exact three-tool wire it always had, and both hire kinds
+share one reservation discipline through one helper, because two copies of reserve-before-await
+is how they drift apart. `dynamic=False` is the default, and the tool's own description tells
+the lead to prefer catalog roles even when it is on: a reviewed role that fits is strictly
+better than a synthesized one, because it carries knowledge the lead did not have to write and
+a review the lead cannot give.
 
-What this skeleton admits is deliberately less than a prompt-driven orchestrator. Only the
-**instructions** are dynamic. The signature (`answer(request, context="")`), the output type
-(`str`), the adapter (`Member`), the lifecycle, the budget and the tool surface are all fixed in
-`DynamicAgent` at review time. A synthesized agent is an ordinary `MethodAgent` whose
-per-instance state happens to have been written by a model — the same `self`-renders-into-the-
-prompt split every static agent already makes (`method.py:103-124`) — so the skeleton learns
-nothing new about it: it satisfies `Recruit`, joins the roster under the shared `max_hires`,
-gets the worklog equip, and is reached and released through the same `delegate` and `dismiss`
-as a catalog hire. No parallel path anywhere, and the tests pin that from the wire.
+### The roster's lifetime is one run
 
-Two contract details are one careless simplification away from breaking the module's own
-boundary, so they are pinned by tests rather than prose. `ai_methods()` walks the MRO
-(`method.py:341-352`), so `DynamicAgent`'s published tool set is a fact about its whole
-hierarchy — the test asserts it is exactly `["answer"]`. And `answer(request: str)` alone would
-compile to `STR_PROMPT` (one positional `str` — measured), making the synthesized thread the one
-member shape addressable by every peer's free-text `send_message`; the `context` parameter keeps
-it `STRUCTURED`, behind exactly the boundary every other member sits behind.
+Every promise on the roster (the cap, the name reservation, the published log) is a promise
+about one run. Measured on the old class with one instance run twice: run 2's report opened
+with run 1's hiring log, its names were already taken, its cap was short by run 1's headcount,
+and `delegate` reached a thread run 1's teardown had retired, which reads in the audit like a
+subagent that broke rather than a run that inherited a corpse. The hook therefore stands up a
+fresh roster per workspace, keyed by identity, and `on_assemble` creates it early so
+`hooks_data["hiring"]` exists even on a run whose lead never hires.
 
-### The audit trail is the safety story
+### Sibling coordination is a hook-library convention, not core surface
 
-A catalog role was reviewed once, by a person, before any run. A synthesized agent's
-instructions were reviewed by nobody — that is the feature's cost, and it cannot be checked away
-without deleting the feature. The mitigation is attribution: the roster records
-`kind="hire_dynamic"` with the instructions **verbatim**, so `TeamRun.hiring_log` answers
-"which of these agents did a human review, and what exactly was the unreviewed one told to be" —
-for every run, after the fact, without trusting the model's own account. A truncated or
-paraphrased record would be an audit of a different agent, which is why the verbatim claim has
-its own break-tested assertion. The transcript distinguishes the two kinds everywhere they
-diverge: a separate tool name, a separate log action, a separate `team.hired_dynamic` progress
-marker, and a confirmation string ("hired X from your instructions") the lead reads back.
+A hire should carry the same member tools a cast member does and join the same worklog fan-out,
+but the core knows nothing about hiring or worklogs. So the `Hiring` hook folds every sibling's
+`tools_for_member` into the hire's own equip before spawn (the same fold the core does for the
+cast), and announces each hire to every sibling carrying `on_hire` and each dismissal to every
+`on_dismiss`. Those two names are a convention between hooks; the core's `TeamHook` protocol
+does not mention them, and a hook library that grows a new cross-cutting concern can grow a new
+convention without touching the core.
 
-### Why a separate tool, and why the default is off
+## The `Learning` hook: guidance as a gradient target
 
-`hire_dynamic` is a fourth tool rather than a sentinel role inside `catalog`, so the catalog
-`hire`'s contract stays byte-identical whether or not synthesis is enabled — a team that never
-opts in keeps the exact three-tool wire it always had, asserted from the model's own
-`tool_specs`. Both hires share one reservation discipline through one helper (`commission`),
-because two copies of reserve-before-await is how the two drift apart.
+`casestudy/learning.py` proved the loop (run, observe, phrase feedback, let `TextGradOptimizer`
+rewrite the guidance) for a single navigator. `Learning` lifts the same shape onto a team with
+the smallest possible surface: the hook recalls one prose parameter from a memory backend and
+folds its rendered text into the request; `traced_result` turns one finished `TeamRun` into the
+`Result` graph the optimizer consumes; `train(team, cases)` drives a batch and takes one step.
+It is the paved road, not a framework: one prose parameter, one step per batch, nothing
+configurable the case study did not prove necessary. Measured live against Bedrock: one real
+traced run and one real TextGrad step changed the stored guidance text.
 
-The default is off, and the tool's own description tells the lead to prefer catalog roles even
-when it is on, for the same reason the catalog defaults to empty: every capability granted to a
-lead is something a confused lead can do wrong, and a reviewed role that fits is strictly better
-than a synthesized one — it carries knowledge the lead did not have to write and a review the
-lead cannot give. Synthesis is for the case where no role fits; a team whose roles always fit
-should never see this flag.
+### Guidance is advice, never structure, and never code
 
-## Why every hiring failure is text and never an exception
+Only a prose parameter is learnable. A `Procedural`-marked field is reusable code with sandbox
+semantics and is refused at construction: code is not advice, and structural or executable
+behaviour stays in reviewed code where the optimizer cannot reach it. A `Frozen` field cannot
+receive a gradient, so accepting it would produce a training loop that reports rounds and
+learns nothing; it is refused in the same place. Anything structural about the team (the cast,
+the tools, the caps) lives in code.
 
-Five things can go wrong in the hiring seam, and a model can fix all five: an unknown role, a
-duplicate name, a headcount cap, delegating to someone unhired, dismissing a stranger. All five
-return a string beginning `error: `. The test of the rule is what it excludes, and there are two:
-a `spawn` that raises and a `retire` that raises are *not* on this list, because neither is a
-mistake the lead made and neither is anything it could do differently. They surface as faults, and
-what the seam owes on those paths is a roster that still describes reality — the two ordering
-sections above.
+### How the gradient edge survives a run the core never traced
 
-Measured, because the behaviour is what makes this correct rather than merely tidy: a tool
-returning `"error: ..."` reaches the model as a **successful** tool result whose content is that
-string —
+`AIFunction.trace` cannot be used here: the core runs the lead through its live thread handle,
+and a handle run does not scan arguments for dataflow handles. So the hook reproduces what
+`trace` does, split across the run boundary. `on_assemble` recalls the guidance under
+`no_thread_scope()`, explicitly, because when `team.run` is itself called from inside a live
+cycle the ambient scope would emit the recall event against the caller's thread and the edge
+would silently die. The recall leaves a live `ParameterView` in `hooks_data["learning"]`, and
+`traced_result` later scans the staged inputs by identity and emits the recall event against
+the lead thread's surviving log (the event log outlives the thread, measured). Interpolate the
+view into a string instead of keeping the object and the edge is already dead with every
+offline test still green, which is why `traced_result` raises on a viewless record rather than
+returning a `Result` the optimizer would walk and silently update nothing. Every run recalls a
+fresh view (a view is emitted once, so a reused one yields a parameter node on the first traced
+run and none after), so `train` may keep whichever trace it likes; it keeps the last, which saw
+the newest guidance.
 
-```
-{'toolUseId': 'scripted-...', 'status': 'success', 'content': [{'text': 'error: nope, pick another name'}]}
-```
+### Feedback comes from what the run actually recorded
 
-— and the cycle continues. So the model reads the problem and fixes it in the next turn, which is
-what the tests assert: after each refusal the scripted lead makes its remaining calls and the run
-completes. An exception would instead surface as a tool fault in the middle of a cycle the lead was
-going to finish.
-
-The cap is checked *before* the recruit is constructed, and that ordering is load-bearing rather
-than stylistic — a cap that fires after the spawn is a cap that still spent the thread it was
-refusing. The test asserts both the log and a construction spy, which is what separates the two
-failures: with the cap moved after the spawn the log assertion still passes and the spy assertion
-is the one that fails.
-
-## The roster's lifetime is one run, and `execute` is where that is enforced
-
-A `Team` instance outlives a single `handle.run`: the field's default is a construction-time object,
-and a handle runs as many times as it is called. Every promise attached to that roster is a promise
-about **one** run — the headcount cap, the duplicate-name refusal, the hiring log a report
-publishes — so a roster carried into a second run makes all three quietly false there. Measured on
-one instance and one handle, run twice:
-
-| what run 2 saw | why |
-| --- | --- |
-| its report opened with run 1's hiring log | `hiring_log=self.roster.log`, never cleared |
-| its names were already taken | `if name in roster.hires` still held run 1's hires |
-| `max_hires` was short by run 1's headcount | the cap counts `len(hires)` |
-| `delegate` reached a retired thread | run 1's `finally` retired them and left them registered |
-
-The last one is the sharpest: `delegate_failed` against a thread the previous run tore down, which
-reads in the audit like a subagent that broke rather than a run that inherited a corpse.
-
-So `execute` stands up a fresh roster before anything is spawned. It is `type(self.roster)()` and
-not `Roster()`, which is not stylistic: `WarRoom` narrows the field to a `Staff` whose `record` is
-what lands a hire's mandate on the agent it hired, so a base resetting to the library's own class
-would leave run 1 correct and brief every later run's hires on nothing — with the `type: ignore`
-that marks the attribute injection nowhere in sight. The test asserts the *subclass's* `record` ran,
-not merely that an `isinstance` held.
-
-Within a run the roster persists exactly as before, which is what makes the hiring seam usable at
-all: a lead hires on one turn and delegates on a later one. That is also the finest granularity
-worth testing — measured, the `config_hook` fires **once per cycle** and a `handle.run` is one
-cycle, so relocating the reset into the hook is indistinguishable from leaving it in `execute`.
-
-The bullet below still says "no persistent roster", and it is now true by construction rather than
-by convention.
-
-## Why a hire reserves before it awaits
-
-`hire` runs three refusals — unknown role, duplicate name, headcount cap — and then spawns. The
-first version registered the recruit *after* the spawn, which is the natural order and wrong,
-because the runtime's default tool executor is `ConcurrentToolExecutor`
-(`strands/agent/agent.py:462`): every tool call in one assistant turn is its own task, and
-`recruit.spawn` awaits. Two `hire`s in one turn therefore both read the same pre-hire roster.
-
-Measured, both scenarios:
-
-| one turn, two hires | result before the fix |
-| --- | --- |
-| names `a` and `b`, `max_hires=1` | both hired, `headcount == 2` — the cap enforced by nobody |
-| both named `dup` | two spawned, one registered, retirement counts `[0, 1]` |
-
-The second is worse than a miscounted cap. The second write to `roster.hires[name]` overwrites the
-first, so the first recruit is **live and unregistered** — and `dismiss`, `execute`'s `finally` and
-`teardown` all walk `roster.hires` to find who to retire. A leaked thread, unreachable by all three
-unwind paths, with nothing raised anywhere.
-
-The fix is a reservation: the three checks *and* the write into `roster.hires` run in one
-synchronous stretch, and only then is the spawn awaited, rolled back if it raises. A `Lock` was the
-alternative and is worse for this shape — the checks and the write already happen inside one
-event-loop step, so there is nothing to serialise and a lock would add a contention surface to
-guard a critical section that is already atomic. The rollback earns its own test: without it the fix
-trades a race for a phantom entry holding a name the model can never use and a slot against a cap
-it never filled.
-
-The fixture is the load-bearing part. `SlowSpawnSpy` awaits in `spawn`, because a spawn that never
-suspends cannot interleave — a plain `Spy` would let a broken reservation pass, which is the kind of
-test that reads correct and proves nothing.
-
-## Why `dismiss` retires before it unregisters
-
-`dismiss` used to `pop` and then `await recruit.retire()`, which hands the recruit to a local
-variable and drops the roster's only reference to it. A `retire` that raises — a coordinator hiccup,
-a `ThreadNotFoundError` from something else's teardown, the failure `return_exceptions=True` exists
-for elsewhere in this module — then leaves the recruit **unregistered and alive**, and every unwind
-path looks for it in `roster.hires`. Measured with a recruit whose first `retire` raises: one retire
-call total, and the thread still live after the `finally` *and* an explicit `teardown`.
-
-So the order is inverted — retire first, `del` only on success. The raise then leaves the recruit
-registered, where the `finally` and `teardown` both retry it, and `retire` being idempotent per
-`MethodThread`'s contract makes the retry free. This is the same reasoning as the reservation above
-read backwards: put the registry write on the side of the `await` where a fault leaves the registry
-describing reality. The dismissal is not recorded in the log, which is correct — a dismissal that
-did not complete must not appear in the audit as one.
-
-## Why the unwind is in a `finally` and `teardown()` exists as well
-
-Three ways a run ends, and the two mechanisms cover different ones. Measured against the worker:
-an exception out of `execute` propagates to the caller of `handle.run` and the worker does **not**
-call `teardown()` on that path; `terminate_now` **does** call it, with no cycle in flight. So the
-`finally` inside `execute` covers the normal and the faulting run — including the lead's own thread
-— and `teardown()` covers external termination, where `execute` may never have been entered.
-Neither is redundant, and `retire` being idempotent per `MethodThread`'s contract makes the overlap
-harmless.
-
-`return_exceptions=True` on the unwind is the `MethodThread.retire` lesson restated: a recruit
-something else already tore down raises `ThreadNotFoundError`, which is a `KeyError` and sails past
-the handlers callers write. Without it the first failure aborts the loop and leaves every later
-member alive — the exact failure an unwind loop exists to prevent.
-
-Measured with the `finally` broken (unwind moved to an `else`): a failed run leaves **two threads
-still registered** on the coordinator.
-
-## Why `fork()` raises
-
-`protocols.py:235` names `NotImplementedError` as an honest answer, and a team is the case it was
-written for. A fork copies the event log, which is the whole of an `AIThread`'s state and nowhere
-near the whole of a team's: the members are live threads this instance owns and the roster is a
-mutable registry. Two "independent" branches would retire each other's members and hire into one
-dict, so the fork would be a shared-state bug wearing a branch's clothes.
-
-## `TeamRun.verdict` is `Any`, and `run_type()` is the price
-
-`protocols.py` states `deserialize_result(serialize_result(x)) == x` as an `Ensures` on the pair.
-`TeamRun.verdict` has to be `Any` because the lead's output type is the subclass's choice, and a
-pydantic field typed `Any` does not round-trip a `BaseModel`: measured, `{"verdict":{"answer":"x"}}`
-validates back to a plain **dict**, so the base round-trips *shape* and not equality.
-
-Rather than leave the protocol's guarantee quietly false, `run_type()` is the seam: a subclass
-declares `verdict: Verdict` on a `TeamRun` subclass and names it there, and the round-trip holds.
-`demo.warroom.Investigation` is already exactly that shape, so Wave 2's rebase is one method. The
-test asserts both halves — the narrowed class round-trips equal and the base widens the verdict to
-a dict — so the seam is a decision rather than an omission.
+`compose_feedback` reads review entries that found something or errored and the core's own
+`revise`/`revise_cap` transcript entries: the feedback that was really put to the lead, plus
+the fact that a budget rather than a clean review ended a loop. When nothing objected it says
+so and asks for no additions, because an instruction to improve anyway teaches the consolidator
+to grow the parameter without a measured reason. `train` refuses a team with zero `Learning`
+hooks (nothing to train) or two (picking one silently), and refuses an empty batch, because a
+step over no trace is a no-op wearing a training run's name.
 
 ## The progress markers
 
-`CustomEvent`s named `team.assembled`, `team.briefings_in`, `team.lead_running`, `team.hired`,
-`team.hired_dynamic` and `team.graded`, mirroring `warroom`'s. They are the only observation of a phase available to a
-reader outside the process, and they are what a live tape subscribes to (`demo/live.py:55-63`,
-which reads `event.kind` and `event.payload` and stamps the thread itself, since `CustomEvent`
-carries no `thread_name`). Kinds stay namespaced under `team.*` so a subscriber can filter one
-team's progress out of a shared log. `last_event_id` skips them for want of an id
-(`runtime/usage.py:46-49`), which is why the usage baseline is captured from it and not from a
-count.
+`CustomEvent`s named `team.hired`, `team.hired_dynamic`, and `team.discovery`, emitted by the
+hooks that own those moments. The old class's phase markers (`team.assembled`,
+`team.briefings_in`, `team.lead_running`, `team.graded`) went with the phases: the core's
+pipeline is short enough that the thread events themselves (spawns, cycles, retires) are the
+observation, and a hook that wants a marker emits its own through the `ThreadContext` it
+already holds. Kinds stay namespaced under `team.*` so a subscriber can filter one team's
+progress out of a shared log.
 
-## What this module deliberately does not do
+## What this layer deliberately does not do
 
-- **No learning loop.** No optimizer, no memory, no `Recall` binding. A team run produces a
-  verdict and a bill; turning a series of runs into a gradient is a separate concern with its own
-  traps, and `gated.py` records why "admissible" and "better" must not be the same mechanism.
-- **No persistent roster.** The `Roster` lives for one run and is the evidence that run was
-  budgeted, and `execute` is what makes that true rather than a convention — see the lifetime
-  section above, where the four things a carried-over roster broke are measured. A roster that
-  outlived a run would make the headcount cap meaningless across runs and would be shared mutable
-  state between two teams that never agreed to share anything.
-- **No cross-team messaging.** No team knows another exists. The runtime already has a peer
-  channel for threads that want one, and a second one at team scope would be a message bus the
-  determinism argument above exists to avoid. Relaxed by exactly one bounded step *inside* a
-  team: `worklog_enabled` gives members typed, step-boundary awareness of each other's
-  discoveries — the worklog section above carries the evidence (AgentRadio 2607.28430, passive
-  +10.5) and the limits (no member→member addressing, closed vocabulary, off by default).
-- **No forkable teams.** See `fork()`.
+- **No grading in the core.** The bare team returns the lead's answer as produced. Review is
+  the `Critic`/`Council` hooks; a hard gate is the lead's own `post_conditions`. A built-in
+  default oracle could only be "raise nothing", which reports a grading that did not happen.
+- **No learning in the core.** The `Learning` hook and `train` are the paved road, and they
+  ride seams (`on_request`, `hooks_data`) every hook has. `gated.py` records why "admissible"
+  and "better" must not be the same mechanism.
+- **No cross-team messaging.** No team knows another exists. The one lateral channel inside a
+  team is the `Worklog` hook: typed, broadcast-only, step-boundary, closed vocabulary, opt-in.
 - **No `send_message` anywhere.** The typed join is the library's path; the bus is the demo's
   deliberate exception, and the gate that forces the choice is cited above.
-- **No `Process` coupling.** A `ProcessAgent` can be a team's lead or a team's member — it is a
-  `MethodAgent` — but the skeleton knows nothing about states or transitions, and a team is not a
-  verified process. Composing them is the caller's to do and the caller's to justify.
+- **No `Process` coupling.** A `ProcessAgent` can be a team's lead or a team's member; the
+  core knows nothing about states or transitions, and a team is not a verified process.
+  Composing them is the caller's to do and the caller's to justify.

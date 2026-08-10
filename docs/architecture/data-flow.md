@@ -4,35 +4,37 @@
 
 ## Flow 1: War-room investigation (`pneuma` console script)
 
-1. `main` parses `--max-hires`, `--out`, `--quiet`, `--truth`, and on the non-truth path calls `asyncio.run(investigate(...))`, returning 0 only when the oracle graded the verdict correct (`src/pneuma/demo/cli.py:117`).
-2. `investigate` stands up an `InMemoryCoordinator`, registers a `LocalWorker`, constructs `WarRoom(question=QUESTION, max_hires=max_hires)`, and spawns it as a thread (`src/pneuma/demo/cli.py:26-47`).
-3. `handle.run("")` drives the room with an empty request; `WarRoom.execute` prepends the room's standing question before delegating to the base skeleton (`src/pneuma/demo/warroom.py:177`).
-4. `Team.execute` captures a usage baseline, replaces the roster per run, lists `members()`, and composes the gated lead before anything is spawned (`src/pneuma/team.py:1122`).
-5. `Team.assemble` spawns each of the four `Specialist` members sequentially as children of the team thread, writing the `THREAD_SPAWNED` edge the token rollup later walks (`src/pneuma/team.py:1219`).
-6. `WarRoom.brief` awaits the base barrier — `asyncio.gather` over every member's `ask` with `return_exceptions=True` — then re-keys the answers by telemetry plane (`src/pneuma/demo/warroom.py:186`).
-7. `lead_handle.run(self.render_brief(request, briefings))` runs the `IncidentLead`, whose `hire`/`delegate`/`dismiss` tools come from `staffing_tools` and whose answer must pass `WarRoom.oracle` as a post-condition; a rejection returns as assertion text the model revises against (`src/pneuma/team.py:1187`).
-8. The `finally` retires every member, every hire, and the lead; `grade` re-runs `incident.verify` for the reader, `subtree_usage` totals the tokens, and an `Investigation` is returned, which `investigate` writes to `artifacts/investigation.json` (`src/pneuma/team.py:1194-1217`, `src/pneuma/demo/cli.py:56`).
+1. `main` parses `--max-hires`, `--out`, `--quiet`, `--truth`, and on the non-truth path calls `asyncio.run(investigate(...))`, returning 0 only when the demo's own check graded the verdict correct (`src/pneuma/demo/cli.py:115`, `src/pneuma/demo/cli.py:142-143`).
+2. `investigate` stands up an `InMemoryCoordinator`, registers a `LocalWorker`, constructs `WarRoom(question=QUESTION, max_hires=max_hires)`, and awaits `room.investigate(coordinator)` (`src/pneuma/demo/cli.py:25-52`).
+3. `WarRoom.investigate` builds four `Specialist` members and the `IncidentLead`, then composes the demo's judgment onto the lead itself: `staffing_tools` as the lead's own `config_hook` and `WarRoom.oracle` prepended to the lead's own `post_conditions` (`src/pneuma/demo/warroom.py:168-184`).
+4. It assembles the library team as `Team(lead, specialists, hooks=[watch, briefing])` — a `Briefing` hook carrying the war-room opening with `forward_request=False`, plus a demo hook that captures the lead's thread id for the usage rollup (`src/pneuma/demo/warroom.py:185-187`).
+5. `Team.run` spawns the lead's thread first, spawns every specialist as its child, and runs the `Briefing` barrier: `asyncio.gather` over every member's `ask` with `return_exceptions=True`, a failure rendered as an error string rather than a dead run (`src/pneuma/team/core.py:236-253`, `src/pneuma/team/hooks/briefing.py:72-96`).
+6. The `Briefing` hook's `on_request` folds what the specialists reported into the text the lead is asked, and the lead runs with `hire`/`delegate`/`dismiss` on its wire and each specialist as a typed tool (`src/pneuma/team/hooks/briefing.py:98-111`, `src/pneuma/team/core.py:326-355`).
+7. The lead's answer must pass `WarRoom.oracle` as a post-condition on the lead's own function; a rejection returns as assertion text the model revises against, with no grading anywhere in the team layer (`src/pneuma/demo/warroom.py:127-158`, `182-183`).
+8. `Team.run`'s `finally` retires every member and the lead; `WarRoom.grade` re-runs `incident.verify` for the reader, `subtree_usage` totals the tokens, and an `Investigation` is returned, which `investigate` writes to `artifacts/investigation.json` (`src/pneuma/team/core.py:263-283`, `src/pneuma/demo/warroom.py:189-219`, `src/pneuma/demo/cli.py:55`).
 
 ```mermaid
 sequenceDiagram
     participant CLI
     participant WarRoom
     participant Team
+    participant Briefing
     participant Members
     participant Lead
-    participant Oracle
 
-    CLI->>WarRoom: handle.run("")
-    WarRoom->>Team: execute(question + request)
-    Team->>Members: assemble - spawn per plane
-    Team->>Members: brief behind a barrier
-    Members-->>Team: briefings or error strings
-    Team->>Lead: run(render_brief)
-    Lead->>Oracle: proposed verdict
-    Oracle-->>Lead: rejection text, revise
-    Lead-->>Team: accepted verdict
-    Team->>Members: retire all, then grade
-    Team-->>CLI: Investigation
+    CLI->>WarRoom: investigate(coordinator)
+    WarRoom->>Team: run(question)
+    Team->>Members: spawn as children of the lead
+    Team->>Briefing: on_assemble - barrier
+    Briefing->>Members: ask the opening, all at once
+    Members-->>Briefing: briefings or error strings
+    Briefing->>Team: on_request - fold brief into prompt
+    Team->>Lead: run(request + brief)
+    Note over Lead: post_conditions on the lead's own function refuse and re-ask
+    Lead-->>Team: verdict
+    Team->>Members: retire all (finally)
+    Team-->>WarRoom: TeamRun
+    WarRoom-->>CLI: Investigation (graded by the demo)
 ```
 
 ## Flow 2: Verified process walk (`ProcessAgent.work`)

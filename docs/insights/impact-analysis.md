@@ -50,7 +50,7 @@ The compilation seam between a Python method and an `AIFunction`. Every agent in
 
 | Downstream | Type | Touch on change | Citation |
 |---|---|---|---|
-| `team.py` — `MethodAgent`, `ai_method`; the whole `Team`/`Member` layer | direct import | yes | `src/pneuma/team.py:55` |
+| `team/members.py` — `MethodAgent`, `ai_method`; the whole `Team`/`Member` layer | direct import | yes | `src/pneuma/team/members.py:20` |
 | `gated.py` — `MethodAgent`, `MethodThread`; `GatedProposer` subclasses it | direct import | yes | `src/pneuma/gated.py:51`, `:101` |
 | `recall.py` — `MethodAgent` and the private `_owner_name` | direct import | yes | `src/pneuma/recall.py:60`, `:406` |
 | `process/agent.py` — `MethodAgent`, `_owner_name`, `ai_method` | direct import | yes | `src/pneuma/process/agent.py:57` |
@@ -60,7 +60,7 @@ The compilation seam between a Python method and an `AIFunction`. Every agent in
 | `demo/typed_cast.py` | direct import | likely | `src/pneuma/demo/typed_cast.py:30` |
 | `MethodAgent.compiled(name)` reached by string method name | runtime dispatch | likely | `src/pneuma/process/agent.py:149`, `:251`; `src/pneuma/casestudy/live.py:119`; `src/pneuma/recall.py:308`; `src/pneuma/gated.py:283` |
 | `tests/library/test_method.py` — the surface's own suite | test | yes | `tests/library/test_method.py:26` |
-| `tests/library/test_team.py`, `test_team_dynamic.py`, `test_team_negotiation.py`, `test_team_worklog.py`, `test_recall.py` | test | yes | `tests/library/test_team.py:46`, `tests/library/test_team_dynamic.py:37`, `tests/library/test_team_negotiation.py:34`, `tests/library/test_team_worklog.py:33`, `tests/library/test_recall.py:44` |
+| the seven `tests/library/test_team*.py` suites, `test_recall.py` | test | yes | `tests/library/test_team_core.py:28`, `tests/library/test_recall.py:44` |
 | `tests/library/test_gated.py`, `test_model_cache.py`, `test_process_agent.py` | test | likely | `tests/library/test_gated.py:31`, `tests/library/test_model_cache.py:30`, `tests/library/test_process_agent.py:36` |
 | `tests/app/test_kernel_live.py`, `test_counterfactual_replay.py` | test | likely | `tests/app/test_kernel_live.py:35`, `tests/app/test_counterfactual_replay.py:58` |
 
@@ -221,13 +221,13 @@ Twenty lines of state and one verdict, shared by both detectors in `detect/`: ca
 ## Other notable surfaces
 
 - `src/pneuma/process/tla.py:269` (`check`) — 9 inbound files. `TLA_JAR` resolves `tools/tla2tools.jar` via `Path(__file__).resolve().parents[3]` (`src/pneuma/process/tla.py:28`), so moving the module up or down a directory silently breaks model checking rather than raising an import error.
-- `src/pneuma/team.py:780` (`Team`), `:108` (`Member`), `:362` (`hiring_tools`) — 7 inbound files, all four `tests/library/test_team*.py` suites plus `src/pneuma/demo/warroom.py:28` and `src/pneuma/demo/staffing.py:27`.
+- `src/pneuma/team/core.py:176` (`Team`), `src/pneuma/team/members.py:62` (`Member`), `src/pneuma/team/hooks/hiring.py:66` (`hiring_tools`) — inbound from all seven `tests/library/test_team*.py` suites plus `src/pneuma/demo/warroom.py:32-33` and `src/pneuma/demo/staffing.py:27`.
 - `src/pneuma/casestudy/rules.py:46` — 7 inbound files. The only consumer of `detect`'s flat `DEFAULT_LIMIT` / `RuleVerdict` / `audit_process` one-liner from application code.
 - `src/pneuma/detect/vacuity.py:50` — 6 inbound files. Re-exported from `src/pneuma/detect/__init__.py:85` as `ReachabilitySweep` because `vacuity.Sweep` and `objective.Sweep` are unrelated types that collided under a flat re-export (`src/pneuma/detect/__init__.py:141-145`).
 - `casestudy/minelearn.py` — 8 inbound files but 22 total references, the highest refs-per-file ratio in the repo; `Attempt`, `threshold_objective`, and `probe_objective` are each imported from four or more test files.
 - `src/pneuma/model.py:15` (`opus5`) — 6 inbound files. `cache=True` is the default because Bedrock's Converse API does not cache Anthropic prompts without an explicit `cachePoint` block (`src/pneuma/model.py:34-47`); flipping it makes every request pay full input price with no error.
 - `src/pneuma/gated.py:101` (`GatedProposer`) — 4 inbound files. Every hook it calls runs inside a post-condition validator, where the runtime turns any exception into `[VALIDATION ERROR]` feedback the next attempt reads (`src/pneuma/process/agent.py:237-243`), so a bug there burns every retry masquerading as a refusal.
-- `src/pneuma/demo/cli.py:117` (`main`) — one inbound file, but it is the declared console script `pneuma` in `pyproject.toml:22`. Renaming it breaks the installed entry point with no test coverage.
+- `src/pneuma/demo/cli.py:115` (`main`) — one inbound file, but it is the declared console script `pneuma` in `pyproject.toml:22`. Renaming it breaks the installed entry point with no test coverage.
 - `tests/library/test_boundary.py:46-50` — not a code surface, but a config gate every new top-level module hits: an undeclared module fails `test_every_module_is_declared_on_one_side_of_the_boundary` (`tests/library/test_boundary.py:126`), and a library module that reaches `polars`, `libsql`, or `pm4py` fails `:141`.
 
 ## See also

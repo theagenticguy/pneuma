@@ -44,13 +44,12 @@ async def investigate(*, max_hires: int, out: Path, quiet: bool) -> Investigatio
     subscription = tape.watch(coordinator)
 
     room = WarRoom(question=QUESTION, max_hires=max_hires)
-    handle = await coordinator.spawn(room, thread_name=room.name)
 
     # A full xhigh run takes tens of minutes; flush the tape as it grows so an
     # interrupted run still leaves a usable transcript behind.
     flusher = asyncio.create_task(_flush_periodically(tape, out))
     try:
-        result: Investigation = await handle.run("")
+        result: Investigation = await room.investigate(coordinator)
         # Persist before teardown: half an hour of xhigh reasoning should not be
         # lost to a failure on the shutdown path.
         (out / "investigation.json").write_text(result.model_dump_json(indent=2))
@@ -58,7 +57,6 @@ async def investigate(*, max_hires: int, out: Path, quiet: bool) -> Investigatio
         flusher.cancel()
         subscription.unsubscribe()
         _write_tape(tape, out)
-        await handle.terminate_now()
         await worker.close()
         await asyncio.sleep(0.1)
 
