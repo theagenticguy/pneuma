@@ -295,5 +295,79 @@ async def test_live_a_small_team_runs_end_to_end() -> None:
     assert run.turns >= 2, "expected at least a member turn and a lead turn"
 
 
+@live
+async def test_live_a_posted_discovery_lands_on_the_worklog_and_fans_out() -> None:
+    """Team worklog: a real member posts a real discovery and the fan-out reaches the others.
+
+    Plumbing, not model quality, like every test in this file: the member is *instructed* to
+    call `post_discovery`, and the assertions check that the entry landed on `TeamRun.worklog`
+    with the wired source, that it was delivered to the other member and the lead, and that no
+    delivery failed. Offline tests already pin the wire from captured contexts; this answers
+    whether the real model calls the injected tool and the notify path holds against the real
+    runtime.
+    """
+    from ai_functions import AIFunction
+    from ai_functions.ai_thread.config import ThreadConfig
+
+    from pneuma.team import Member, Team
+
+    class FieldTeam(Team):
+        name = "live-worklog-team"
+
+        def members(self):  # noqa: ANN201
+            scout, archivist = Tutor("scout"), Tutor("archivist")
+            scout.name, archivist.name = "scout", "archivist"  # Tutor.name is a class attr
+            return [
+                Member(scout, "answer", model=small_model()),
+                Member(archivist, "answer", model=small_model()),
+            ]
+
+        def briefing(self, member) -> str:  # noqa: ANN001
+            if "scout" in member.name:
+                return (
+                    "First, call the post_discovery tool exactly once with kind='obstacle' "
+                    "and a body that contains the word VOLCANO. Then answer: what is the "
+                    "tallest mountain on Earth? One sentence."
+                )
+            return "What is the tallest mountain on Earth? One sentence."
+
+        def lead_function(self) -> AIFunction[..., Any]:
+            async def prompt(request: str) -> str:
+                return (
+                    "You lead a field team. Using your team's briefing in this conversation, "
+                    f"answer the request in one sentence. Request: {request}"
+                )
+
+            return AIFunction(
+                prompt,
+                Answer,
+                ThreadConfig(
+                    name="field-lead",
+                    description="Answers the request from the team's briefings",
+                    model=small_model(),
+                ),
+            )
+
+        def oracle(self, response: Any) -> None:
+            assert isinstance(response, Answer)
+            assert response.text.strip(), "empty answer"
+
+    async with RuntimeHarness() as h:
+        # Passed at construction: Team is a dataclass, so a class-attribute override is
+        # shadowed by the generated __init__'s instance default.
+        team = FieldTeam(worklog_enabled=True)
+        handle = await h.coordinator.spawn(team, thread_name=team.name)
+        run = await handle.run("What is the tallest mountain on Earth?")
+
+    assert run.worklog, "the model never posted; the injected tool did not reach it"
+    entry = run.worklog[0]
+    assert entry["kind"] == "obstacle" and "VOLCANO" in entry["body"]
+    assert entry["source"] == "scout.answer", "source is wired, not model-reported"
+    assert "archivist.answer" in entry["delivered"], "the other member was reached"
+    assert "lead" in entry["delivered"], "and so was the lead, via register's replay"
+    assert entry["failed"] == {}, f"a live notify failed: {entry['failed']}"
+    assert "scout.answer" not in entry["delivered"], "the poster is excluded"
+
+
 # The coordinator import is used by type checkers reading spawn signatures in this module.
 _ = Coordinator
