@@ -8,6 +8,7 @@ lessons before starting work.
 
 ### ai-functions-runtime
 
+- [Restart-chain answer loops, verdict tiers, library-side DB driver](solutions/ai-functions-runtime/restart-chain-and-boundary-drivers.md) — a later hook's Revise must re-run earlier gates (budgets outside the walk); verdict tokens need a two-tier parse and fixtures relied on the containment bug; library modules import turso not libsql (boundary-derived); docstring pins drift — make them executable
 - [STRUCTURED threads work; lifecycle wrappers must not trust local state](solutions/ai-functions-runtime/structured-threads-and-lifecycle-wrappers.md) — send_message gate is tool-side only; ThreadNotFoundError is a KeyError; ScriptedModel is @final; fixture types must be module-level
 - [Gate protocols, fault-wrapping, and fork beams](solutions/ai-functions-runtime/gate-protocol-and-fork-beam.md) — async-admitting protocol attrs block sync subclass methods; wrap every hook on the validation path; fork drops pending notify; measure a guard by breaking it
 - [Recall injection: ambient-scope trap and marker limits](solutions/ai-functions-runtime/recall-injection-and-marker-traps.md) — retrieval under a live thread_scope silently kills the gradient edge (wrap in no_thread_scope); no upstream drop/auto-fill for Annotated params; refuse duplicate markers and positional-only marked slots; BM25 needs N>=4 to rank
@@ -27,6 +28,7 @@ lessons before starting work.
 
 ## Recent additions
 
+- 2026-08-11 · session-fc7f24 · roadmap P0-P2: restart-chain loop, verdict tiers, contract tests, Trajectory/Squad/Expedition (7/7 tasks, 918 tests green)
 - 2026-08-10 · session-94adc2 · hooks-over-phases lesson from the team rebuild (4/4 tasks, 881 tests green, live TextGrad step verified)
 - 2026-08-09 · session-b84f7e · suffix-replay/cache-economics + truncation-asymmetry lessons from the paper-takeaways build (6/6 tasks, 817 tests green)
 - 2026-08-07 · session-9df6ea · orchestrator state-lifetime/race lesson from the Team build (kernel complete, 5/5)
