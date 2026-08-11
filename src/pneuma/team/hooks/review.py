@@ -25,19 +25,52 @@ core's lifecycle entirely, so nothing spawns or retires twice.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Sequence
 from typing import Any
 
 from ..core import Accept, Revise, Workspace
 from ..members import Recruit
 
-__all__ = ["Council", "Critic"]
+__all__ = ["Council", "Critic", "verdict_token_present"]
 
 # A review that could not happen, rendered as text. Shared with the legacy briefing
 # convention deliberately: a prefix (rather than a wrapping token) survives any suffix the
 # error carries, and `startswith` cannot be spoofed by an answer that merely *quotes* an
 # error. Nothing carrying this prefix ever approves or reads as clean.
 REVIEW_ERROR = "error: "
+
+
+def verdict_token_present(text: str, token: str) -> bool:
+    """The token as a VERDICT, not a mention — the two-tier parse both review hooks share.
+
+    Bare containment (`token in text`) reads an objection that *quotes* the token ("I would
+    not say APPROVED here because...") as the vote it refuses to cast — the silent-accept
+    defect arriving through prose. Equality alone over-corrects the other way: a typed
+    member answers with a pydantic model, and `str(model)` embeds the token as a field value
+    (`answer='APPROVED'`), so equality would silently veto every typed member. Hence two
+    tiers, each matching one legitimate shape and nothing else:
+
+    - **Tier 1, the plain member obeying "answer with the single word X"**: the whole
+      stripped text equals the token, or some stripped line equals it, or a stripped line is
+      the token followed only by terminal punctuation (`APPROVED.` / `APPROVED!`).
+      Case-sensitive, because the instruction asks for the exact word.
+    - **Tier 2, the typed member**: the token appears as a pydantic-rendered field value —
+      `field='TOKEN'` or `field="TOKEN"` — the shape `str(BaseModel)` and `repr` produce
+      (`FinalAnswer(answer='APPROVED')`).
+
+    Anything else — the token embedded mid-sentence in prose — is a mention, never a
+    verdict. Error precedence is the *caller's* job: this parse never sees the prefix
+    question, and every call site checks `REVIEW_ERROR`/`BRIEFING_ERROR` first.
+    """
+    stripped = text.strip()
+    if stripped == token:
+        return True
+    escaped = re.escape(token)
+    line_verdict = re.compile(rf"^{escaped}[.!]?$")
+    if any(line_verdict.fullmatch(line.strip()) for line in stripped.splitlines()):
+        return True
+    return re.search(rf"=\s*(?:'{escaped}'|\"{escaped}\")", text) is not None
 
 
 def _record(work: Workspace, entry: dict[str, Any]) -> None:
@@ -74,8 +107,11 @@ class Critic:
     what is wrong and cite which part. It is explicitly permitted to find nothing, and the
     permission is load-bearing — a reviewer forced to produce findings manufactures them,
     and the loop burns its cap on noise. Findings come back as `Revise(feedback=findings,
-    cap=rounds)`; a clean response (`NO_FINDINGS` in the text, not error-prefixed) is
-    `Accept`; an error or empty response is findings by the integrity rule above.
+    cap=rounds)`; a clean response (`NO_FINDINGS` as a verdict per `verdict_token_present`,
+    not error-prefixed) is `Accept`; an error or empty response is findings by the
+    integrity rule above. The verdict parse matters here in the *findings* direction too:
+    a reviewer whose objection merely quotes the token ("this is NOT a NO-FINDINGS
+    situation: ...") is raising a finding, and containment would have read it as clean.
 
     Args:
         reviewer: Any `Recruit`. Spawned as a standalone thread in `on_assemble` unless it
@@ -137,7 +173,7 @@ class Critic:
         # nothing, and reading it as clean would be the silent-accept fallback.
         if review.startswith(REVIEW_ERROR):
             outcome = "error"
-        elif self.NO_FINDINGS in review:
+        elif verdict_token_present(review, self.NO_FINDINGS):
             outcome = "clean"
         else:
             outcome = "findings"
@@ -176,9 +212,11 @@ class Council:
 
     A panelist's error is stringified and counted as an objection — an errored reviewer must
     not wave an answer through, and with the denominator fixed at the full panel size it
-    cannot shrink the quorum either. Approval detection is containment, the
-    negotiation tradeoff (`hooks/negotiation.py`, `approves`): a typed panelist's answer embeds
-    the token inside `str(model)`, so equality would silently veto every typed member;
+    cannot shrink the quorum either. Approval detection is the two-tier verdict parse
+    (`verdict_token_present`, shared with `hooks/negotiation.py`): the token counts when it
+    stands alone as the answer or a line of it (a plain member obeying "the single word"),
+    or when it arrives as a typed member's pydantic field value (`answer='APPROVED'` inside
+    `str(model)`) — an objection that merely *quotes* the token is an objection, not a vote;
     error-prefixed answers can never approve regardless of what they quote.
 
     Args:
@@ -245,8 +283,9 @@ class Council:
         )
 
     def approves(self, review: str) -> bool:
-        """Containment, never for errors — the legacy `approves` tradeoff, kept."""
-        return not review.startswith(REVIEW_ERROR) and self.APPROVAL in review
+        """The two-tier verdict parse, never for errors — errors are checked first and can
+        never approve even when their text would match a tier."""
+        return not review.startswith(REVIEW_ERROR) and verdict_token_present(review, self.APPROVAL)
 
     async def on_answer(self, work: Workspace, answer: Any) -> Accept | Revise:
         self._round += 1

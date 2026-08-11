@@ -670,12 +670,13 @@ async def test_the_full_preset_reproduces_the_legacy_five_phase_behavior_on_one_
                     )
                 ),
                 reading("left", "LEFT-BRIEF"),
-                reading("left", "looks right, APPROVED"),
+                # The bare token: `detail='APPROVED'` rides `str(Reading)` and the two-tier
+                # verdict parse reads whole field values — a prose-wrapped mention no
+                # longer approves.
+                reading("left", "APPROVED"),
             ]
         )
-        right_model = Counting(
-            [reading("right", "RIGHT-BRIEF"), reading("right", "fine by me, APPROVED")]
-        )
+        right_model = Counting([reading("right", "RIGHT-BRIEF"), reading("right", "APPROVED")])
         members = [
             Member(Analyst("left"), "read", model=left_model),
             Member(Analyst("right"), "read", model=right_model),

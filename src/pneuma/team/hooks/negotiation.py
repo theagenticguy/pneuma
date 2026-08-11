@@ -10,11 +10,16 @@ cap read off the verdict. Evidence for the phase existing at all: AgentRadio
 members hold disjoint evidence by design, so a plan drafted from one-shot briefings can carry
 a flaw any one of them would catch on sight.
 
-Approval is containment-based (`APPROVAL in answer`), deliberately: a typed member answers
-with a pydantic model, and `str(model)` embeds the token inside `field='APPROVED'` rather
-than standing alone — an equality check would silently veto every typed member and every
-negotiation would run to its cap. A rendered error can never approve: a member whose thread
-died did not review anything, so it blocks unanimity rather than faking it.
+Approval is the two-tier verdict parse (`review.verdict_token_present`), not bare
+containment and not equality. Containment read an objection that *quotes* the token ("I
+cannot say APPROVED while the plan misreads my evidence") as the approval it refuses to
+give; equality would silently veto every typed member, whose pydantic answer embeds the
+token as a field value (`field='APPROVED'` inside `str(model)`) rather than standing alone.
+So the parse accepts exactly the two legitimate shapes — the token as the whole answer or a
+line of it (terminal punctuation tolerated), or the token as a rendered field value — and
+reads everything else, prose mentions included, as an objection. A rendered error can never
+approve: a member whose thread died did not review anything, so it blocks unanimity rather
+than faking it.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from typing import Any
 
 from ..core import Accept, Revise, Workspace
 from .briefing import BRIEFING_ERROR
+from .review import verdict_token_present
 
 __all__ = ["Negotiation"]
 
@@ -74,8 +80,14 @@ class Negotiation:
         )
 
     def approves(self, answer: str) -> bool:
-        """Containment, not equality (typed members embed the token); errors never approve."""
-        return not answer.startswith(BRIEFING_ERROR) and self.APPROVAL in answer
+        """The two-tier verdict parse: the token alone (or alone on a line, terminal
+        punctuation tolerated) approves, and so does a typed member's rendered field value
+        (`field='APPROVED'`) — a prose *mention* of the token does not, because an objection
+        quoting the word it withholds is still an objection. Errors are checked first and
+        never approve, whatever their text quotes."""
+        return not answer.startswith(BRIEFING_ERROR) and verdict_token_present(
+            answer, self.APPROVAL
+        )
 
     def render_objections(self, objections: Mapping[str, str], approved: Sequence[str]) -> str:
         """Every non-approving answer, attributed; the approvers named rather than dropped.

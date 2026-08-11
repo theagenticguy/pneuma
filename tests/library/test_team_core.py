@@ -409,6 +409,104 @@ async def test_two_answer_hooks_each_get_their_own_budget_in_order() -> None:
     assert run.answer.cites == ["afterB"]
 
 
+class AcceptingWitness:
+    """Accepts everything, recording every answer it was shown."""
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    def on_answer(self, work: Workspace, answer: Any) -> Accept:
+        self.seen.append(answer)
+        return Accept()
+
+
+class AlwaysRevise:
+    """Revises every answer it sees, with a fixed cap — the budget-exhaustion probe."""
+
+    def __init__(self, feedback: str, cap: int) -> None:
+        self.feedback = feedback
+        self.cap = cap
+
+    def on_answer(self, work: Workspace, answer: Any) -> Revise:
+        return Revise(self.feedback, cap=self.cap)
+
+
+async def test_a_later_hooks_revision_goes_back_through_the_earlier_gate() -> None:
+    """The restart-chain claim: hook A accepts the draft, hook B revises it — and A is
+    consulted AGAIN on the revised answer before the run returns it. Under the old
+    per-hook-loop semantics this test FAILS: A's loop ended at its first `Accept` and was
+    never re-entered, so B's mutation shipped unreviewed by A (`a.seen` stayed at one
+    entry, the draft)."""
+    a, b = AcceptingWitness(), OneRevision("B wants a citation")
+    async with RuntimeHarness() as h:
+        lead, lead_model = scripted_lead([ruling(cites=["draft"]), ruling(cites=["revised"])])
+        run = await Team(lead, [], hooks=[a, b]).run("go", h.worker.coordinator)
+
+    assert len(lead_model.contexts) == 2, "one draft, one revision"
+    assert any("B wants a citation" in p for p in lead_model.prompts(1))
+    assert run.answer.cites == ["revised"], "the revised answer is the one returned"
+    assert len(a.seen) == 2, "A re-reviewed after B's revision — the gate the old loop skipped"
+    assert a.seen[0].cites == ["draft"] and a.seen[1].cites == ["revised"]
+    assert b.seen[-1].cites == ["revised"], "B accepted the answer it asked for"
+
+
+async def test_budgets_persist_across_restarts_and_cap_records_after_own_spend() -> None:
+    """Two ever-revising hooks with cap=1 each buy exactly one revision apiece across the
+    whole loop — restarts re-consult a hook but never refill its budget — and each hook's
+    `revise_cap` lands only after that hook's own revision spent it. Two instances of one
+    class also prove the label disambiguation: budgets and transcript entries stay
+    per-instance under `#n` suffixes."""
+    a, b = AlwaysRevise("A objects", cap=1), AlwaysRevise("B objects", cap=1)
+    async with RuntimeHarness() as h:
+        lead, lead_model = scripted_lead(
+            [ruling(cites=["draft"]), ruling(cites=["afterA"]), ruling(cites=["afterB"])]
+        )
+        run = await Team(lead, [], hooks=[a, b]).run("go", h.worker.coordinator)
+
+    assert len(lead_model.contexts) == 3, "draft + at most one re-run per hook's budget"
+    assert any("A objects" in p for p in lead_model.prompts(1))
+    assert any("B objects" in p for p in lead_model.prompts(2))
+    assert run.answer.cites == ["afterB"]
+    assert [(e["kind"], e["hook"]) for e in run.transcript] == [
+        ("revise", "AlwaysRevise#1"),
+        ("revise_cap", "AlwaysRevise#1"),
+        ("revise", "AlwaysRevise#2"),
+        ("revise_cap", "AlwaysRevise#2"),
+    ], "each cap entry follows its own hook's spend, budgets never refilled by restarts"
+
+
+async def test_a_cap_exhausted_hook_records_revise_cap_once_across_later_passes() -> None:
+    """A hook whose budget is spent (cap=0, exhausted on sight) is revisited on every
+    restart another hook causes — twice here — and still records `revise_cap` exactly once."""
+
+    class Broke:
+        def on_answer(self, work: Workspace, answer: Any) -> Revise:
+            return Revise("no budget for this", cap=0)
+
+    class TwoRevisions:
+        def __init__(self) -> None:
+            self.seen: list[Any] = []
+
+        def on_answer(self, work: Workspace, answer: Any) -> Accept | Revise:
+            self.seen.append(answer)
+            if len(self.seen) <= 2:
+                return Revise("go again")
+            return Accept()
+
+    async with RuntimeHarness() as h:
+        lead, lead_model = scripted_lead(
+            [ruling(cites=["draft"]), ruling(cites=["v2"]), ruling(cites=["v3"])]
+        )
+        run = await Team(lead, [], hooks=[Broke(), TwoRevisions()]).run("go", h.worker.coordinator)
+
+    assert len(lead_model.contexts) == 3, "Broke's cap=0 bought no lead cycles"
+    assert run.answer.cites == ["v3"]
+    cap_entries = [e for e in run.transcript if e["kind"] == "revise_cap"]
+    assert cap_entries == [{"kind": "revise_cap", "hook": "Broke", "rounds": 0}], (
+        "revisited on every restart, recorded once"
+    )
+
+
 async def test_a_verdict_that_is_neither_accept_nor_revise_raises_naming_the_hook() -> None:
     class Confused:
         def on_answer(self, work: Workspace, answer: Any) -> None:

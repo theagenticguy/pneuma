@@ -12,9 +12,14 @@ cross-cutting tasks — and a team's members hold disjoint evidence by design.
 **`post` reserves before it awaits** (the hiring seam's lesson): the entry is appended in
 the same synchronous stretch that builds it, and only then is any `send` awaited — the tool
 executor is concurrent (`strands/agent/agent.py:462`), so two posts in one assistant turn
-interleave, and an append on the far side of an await could drop one. **One channel failing
-never stops the rest**: each delivery is awaited under its own handler and a dead teammate
-becomes `failed[name]` on the entry rather than a run-ending fault.
+interleave, and an append on the far side of an await could drop one. **The fan-out itself
+is concurrent** (`asyncio.gather`): the deliveries run side by side, so one slow channel no
+longer holds the posting member's tool return behind every other teammate's. **One channel
+failing never stops the rest**: each delivery runs under its own handler (`_deliver` records
+and swallows, so gather never sees an exception) and a dead teammate becomes `failed[name]`
+on the entry rather than a run-ending fault. A consequence of the concurrency: `delivered`
+is a set-like membership record — names land in completion order, not registration order,
+and the order carries no meaning.
 
 **Registration replays.** A channel opened late — the lead's, a hire's — receives every
 prior entry on registration, so a discovery posted during the briefing phase reaches the
@@ -29,6 +34,7 @@ that runs twice must not replay run 1's discoveries into run 2's threads
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -125,10 +131,13 @@ class Worklog:
             "failed": {},
         }
         self._entries(work).append(entry)  # reserved before any await
-        for name, send in list(self._channels.items()):
-            if name == source:
-                continue
-            await self._deliver(entry, name, send)
+        await asyncio.gather(
+            *(
+                self._deliver(entry, name, send)
+                for name, send in list(self._channels.items())
+                if name != source
+            )
+        )
         return entry
 
     async def _deliver(
