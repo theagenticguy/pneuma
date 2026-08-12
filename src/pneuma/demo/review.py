@@ -125,14 +125,19 @@ def build_team(diff: str, effort: Effort) -> Team:
 
 
 def read_diff(diff_cmd: str) -> str:
-    if not sys.stdin.isatty():
-        diff = sys.stdin.read()
-    else:
+    """Piped stdin wins when it carries content; otherwise `diff_cmd` runs.
+
+    An empty non-TTY stdin (headless shells, CI) falls THROUGH to the command
+    rather than erroring — the first cut treated no-TTY as "stdin owns the
+    diff" and made `--diff-cmd` unreachable anywhere without a terminal.
+    """
+    diff = "" if sys.stdin.isatty() else sys.stdin.read()
+    if not diff.strip():
         diff = subprocess.run(  # noqa: S602 — the user's own shell command, their machine
             diff_cmd, shell=True, capture_output=True, text=True, check=True
         ).stdout
     if not diff.strip():
-        raise SystemExit(f"no diff: {diff_cmd!r} produced nothing and stdin was empty")
+        raise SystemExit(f"no diff: stdin was empty and {diff_cmd!r} produced nothing")
     if len(diff) > DIFF_LIMIT:
         diff = diff[:DIFF_LIMIT] + f"\n... [truncated at {DIFF_LIMIT} chars]"
     return diff
