@@ -20,6 +20,7 @@ strands-ai-functions = { git = "https://github.com/strands-labs/ai-functions.git
 
 [project.scripts]
 pneuma = "pneuma.demo.cli:main"
+pneuma-timeline = "pneuma.demo.timeline_demo:main"
 
 [dependency-groups]
 dev = [
