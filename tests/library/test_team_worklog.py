@@ -79,7 +79,9 @@ class DeadReceiver:
         return self.thread
 
     async def ask(self, request: str) -> Any:
-        return f"nothing to report, {Negotiation.APPROVAL}"
+        # The verdict on its own line: a prose-embedded mention would not count as approval
+        # under the two-tier verdict parse, and this member's job is to approve.
+        return f"nothing to report.\n{Negotiation.APPROVAL}"
 
     async def retire(self) -> None:
         self.retirements += 1
@@ -160,7 +162,10 @@ def scripted_lead(turns: list[Turn]) -> tuple[AIFunction[..., Any], Counting]:
     return Chair().compiled("decide", model=model), model
 
 
-APPROVING = f"looks right to me, {Negotiation.APPROVAL}"
+# The bare token: a typed member's approval rides `detail='APPROVED'` in `str(Reading)`,
+# and the two-tier verdict parse (review.verdict_token_present) reads the token as a whole
+# field value or a whole line — a prose-wrapped mention no longer approves.
+APPROVING = Negotiation.APPROVAL
 MARKER = "[team worklog]"
 
 
@@ -333,6 +338,45 @@ async def test_two_posts_in_one_assistant_turn_both_land_with_no_lost_update() -
         "both texts reached the other member's model — an append on the far side of an "
         "await could drop one with nothing raised"
     )
+
+
+# ── 6. The fan-out is concurrent: one slow channel does not serialize the rest ──
+
+
+async def test_the_fan_out_runs_deliveries_concurrently_not_one_channel_after_another() -> None:
+    """Two slow channels journal their start/end boundaries: a concurrent fan-out shows both
+    starts before either end (start-start-end-end), where a sequential one would show
+    start-end-start-end — the second channel waiting out the first's whole delivery. Journal
+    ordering, not wall-clock timing, so the claim cannot flake on a loaded machine."""
+    import asyncio
+
+    class _Team:
+        hooks: list[Any] = []
+
+    journal: list[tuple[str, str]] = []
+
+    def slow_channel(name: str) -> Any:
+        async def notify(text: str) -> None:
+            journal.append(("start", name))
+            await asyncio.sleep(0.05)
+            journal.append(("end", name))
+
+        return notify
+
+    log = Worklog()
+    work = Workspace(team=_Team(), request="r", coordinator=None, members=[])  # type: ignore[arg-type]
+    await log.register(work, "a", slow_channel("a"))
+    await log.register(work, "b", slow_channel("b"))
+    entry = await log.post(work, "obstacle", "SLOW-FAN", "someone")
+
+    assert [phase for phase, _ in journal] == ["start", "start", "end", "end"], (
+        f"both deliveries must be in flight at once; {journal} is a sequential fan-out where "
+        f"one slow channel delays the posting member's tool return behind the other's sleep"
+    )
+    # Membership, not order: `delivered` fills in completion order under the concurrent
+    # fan-out, so its ordering carries no meaning.
+    assert set(entry["delivered"]) == {"a", "b"}
+    assert entry["failed"] == {}
 
 
 # ── The edges ──

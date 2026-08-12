@@ -151,7 +151,13 @@ def scripted_lead(turns: list[Turn]) -> tuple[AIFunction[..., Any], Counting]:
     return Chair().compiled("decide", model=model), model
 
 
-APPROVING = f"looks right to me, {Negotiation.APPROVAL}"
+APPROVING = Negotiation.APPROVAL
+"""A member obeying the instruction literally: the single word, standing alone.
+
+Prose-wrapped approvals ("looks right to me, APPROVED") are *mentions* under the two-tier
+verdict parse and no longer approve — the same reading that stops a quoting objection from
+counting as a vote. A typed member's `reading(APPROVING)` still approves via tier 2: the
+token arrives as the whole pydantic field value (`detail='APPROVED'`)."""
 
 
 # ── 1. Unanimous approval accepts in round one ──
@@ -285,6 +291,78 @@ async def test_the_round_cap_is_reached_without_unanimity_and_the_run_proceeds()
     )
     assert run.transcript[-1]["kind"] == "revise_cap", "the core recorded the cap itself"
     assert len(stubborn.requests) == 3, "one review per round including the capped one"
+
+
+# ── 5. Verdict parsing: a quoted token is a mention, not an approval ──
+
+
+async def test_an_objection_quoting_the_token_mid_prose_does_not_approve() -> None:
+    """Guard-must-fire: run against the old containment check (`APPROVAL in answer`) this
+    test FAILED — the objection below quotes the token mid-prose, containment counted it as
+    approval, and the flawed draft shipped with zero revision rounds. The two-tier parse
+    reads it as the objection it is: a revision cycle runs, and the plain-token second
+    answer is what actually approves."""
+    async with RuntimeHarness() as h:
+        wary = Spy(
+            "wary",
+            answers=(
+                "I cannot say APPROVED while the plan misreads my evidence",
+                Negotiation.APPROVAL,
+            ),
+        )
+        lead, lead_model = scripted_lead([ruling("DRAFT-PLAN-ALPHA"), ruling("REVISED-PLAN-BETA")])
+        run = await Team(lead, [wary], hooks=[Negotiation(rounds=2)]).run(
+            "go", h.worker.coordinator
+        )
+
+    rounds = run.hooks_data["negotiation"]
+    assert [e["outcome"] for e in rounds] == ["revised", "unanimous"], (
+        "quoting the token inside an objection must not read as a vote"
+    )
+    assert rounds[0]["approved"] == []
+    assert "misreads my evidence" in "\n".join(lead_model.prompts(1)), (
+        "the quoting objection travels to the lead as an objection"
+    )
+    assert run.answer.cites == ["REVISED-PLAN-BETA"]
+
+
+async def test_a_typed_members_field_value_approval_still_approves() -> None:
+    """Tier 2 of the parse, wire-verified: a typed member's approval arrives as
+    `str(model)` with the token as a pydantic-rendered field value (`detail='APPROVED'`),
+    never standing alone on a line — the parse must read that as a verdict or every typed
+    member is silently vetoed and every negotiation runs to its cap."""
+    async with RuntimeHarness() as h:
+        member_model = Counting([reading(Negotiation.APPROVAL)])
+        members = [Member(Analyst("left"), "read", model=member_model)]
+        lead, lead_model = scripted_lead([ruling("DRAFT-PLAN-ALPHA")])
+        run = await Team(lead, members, hooks=[Negotiation(rounds=2)]).run(
+            "go", h.worker.coordinator
+        )
+
+    assert len(lead_model.contexts) == 1, "the typed approval cost no revision cycle"
+    rounds = run.hooks_data["negotiation"]
+    assert [e["outcome"] for e in rounds] == ["unanimous"]
+    assert rounds[0]["approved"] == ["left-analyst.read"]
+    assert "='APPROVED'" in rounds[0]["objections"]["left-analyst.read"], (
+        "the recorded answer really is the field-value rendering tier 2 exists for"
+    )
+
+
+async def test_a_trailing_period_and_a_last_line_verdict_both_approve() -> None:
+    """Tier 1's tolerance: `APPROVED.` (terminal punctuation) and a multi-line answer whose
+    last line is the bare token are both genuine verdicts from a plain member."""
+    async with RuntimeHarness() as h:
+        brisk = Spy("brisk", answers=("APPROVED.",))
+        careful = Spy("careful", answers=("Checked my evidence.\nAPPROVED",))
+        lead, lead_model = scripted_lead([ruling("DRAFT-PLAN-ALPHA")])
+        run = await Team(lead, [brisk, careful], hooks=[Negotiation(rounds=2)]).run(
+            "go", h.worker.coordinator
+        )
+
+    assert len(lead_model.contexts) == 1
+    rounds = run.hooks_data["negotiation"]
+    assert [e["outcome"] for e in rounds] == ["unanimous"]
+    assert set(rounds[0]["approved"]) == {"brisk", "careful"}
 
 
 # ── The edges ──

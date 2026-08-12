@@ -16,7 +16,7 @@ team is the whole API for the common case::
     print(run.answer)
 
 **The one hard mechanical constraint.** The runtime resolves exactly one `config_hook` per
-cycle and its `tools` patch *replaces* the compiled tools (`ai_thread.py:548-553`,
+cycle and its `tools` patch *replaces* the compiled tools (`ai_thread.py:548-554`,
 `config.py:166-185`, re-verified against the installed package). So the core owns the single
 hook on each thread and folds every contribution into it: the lead's own hook and tools are
 recomposed first, then the member tools, then every `tools_for_lead`; a member's own `tools=`
@@ -112,7 +112,7 @@ class TeamHook(Protocol):
 
     `tools_for_lead` and `tools_for_member` are **synchronous**, because the runtime calls the
     one `config_hook` synchronously inside `_run_cycle` and documents "must not block"
-    (`config.py:186-188`); the four lifecycle methods may be sync or async and the core awaits
+    (`config.py:166-185`); the four lifecycle methods may be sync or async and the core awaits
     whichever it finds.
     """
 
@@ -285,41 +285,85 @@ class Team:
     # ── The answer loop ──
 
     async def _answer_loop(self, work: Workspace, lead_handle: Any, answer: Any) -> Any:
-        """Every hook with `on_answer` reviews in order; `Revise` re-runs the lead, bounded.
+        """Every hook with `on_answer` reviews in order; `Revise` re-runs the lead, then the
+        walk RESTARTS from the first reviewing hook, with per-hook budgets that persist.
 
-        The rounds counter is per hook, so two revising hooks each get their own budget, and
-        the cap is read off the *latest* verdict — a hook may lower it mid-loop and the loop
-        honours the new number. Cap exhaustion passes the last answer and records itself; a
+        Restart-chain, not per-hook loops, because an earlier hook's `Accept` graded the
+        answer as it stood *then*: when a later hook's `Revise` re-runs the lead, the mutated
+        answer must go back through every prior gate or an accepted-then-mutated answer ships
+        unreviewed. So the loop ends only when one full uninterrupted pass yields nothing but
+        `Accept` and cap-exhausted pass-throughs.
+
+        The rounds counter is per hook and persists across restarts — a restart re-consults
+        a hook, it does not refill its budget — and the cap is read off the *latest* verdict,
+        so a hook may lower (or keep raising, spending its own budget) mid-loop. Termination:
+        every restart increments some hook's rounds, bounded by the sum of the caps in play.
+        Cap exhaustion passes the answer through and records `revise_cap` once per hook; a
         verdict that is neither `Accept` nor `Revise` is a wiring bug and raises naming the
         hook, because a `None` silently treated as accept would grade nothing while looking
         like a review happened.
         """
-        for hook in self.hooks:
-            on_answer = getattr(hook, "on_answer", None)
-            if on_answer is None:
-                continue
-            label = type(hook).__name__
-            rounds = 0
-            while True:
+        reviewers = [
+            (label, on_answer)
+            for label, hook in self._reviewer_labels()
+            if (on_answer := getattr(hook, "on_answer", None)) is not None
+        ]
+        rounds: dict[str, int] = dict.fromkeys((label for label, _ in reviewers), 0)
+        cap_recorded: set[str] = set()
+        revised = True
+        while revised:
+            revised = False
+            for label, on_answer in reviewers:
                 verdict = await _maybe_await(on_answer(work, answer))
                 if isinstance(verdict, Accept):
-                    break
+                    continue
                 if not isinstance(verdict, Revise):
                     raise RuntimeError(
                         f"{label}.on_answer returned {verdict!r}; it must return Accept() or "
                         f"Revise(feedback) — anything else silently reviewed nothing."
                     )
-                if rounds >= verdict.cap:
-                    work.transcript.append({"kind": "revise_cap", "hook": label, "rounds": rounds})
-                    break
-                rounds += 1
+                if rounds[label] >= verdict.cap:
+                    if label not in cap_recorded:
+                        cap_recorded.add(label)
+                        work.transcript.append(
+                            {"kind": "revise_cap", "hook": label, "rounds": rounds[label]}
+                        )
+                    continue
+                rounds[label] += 1
                 work.transcript.append(
-                    {"kind": "revise", "hook": label, "round": rounds, "feedback": verdict.feedback}
+                    {
+                        "kind": "revise",
+                        "hook": label,
+                        "round": rounds[label],
+                        "feedback": verdict.feedback,
+                    }
                 )
                 answer = await lead_handle.run(
                     f"Your answer was reviewed and needs revision.\n\nFeedback: {verdict.feedback}"
                 )
+                revised = True
+                break
         return answer
+
+    def _reviewer_labels(self) -> list[tuple[str, TeamHook]]:
+        """Each hook under a budget-stable label: the type name, index-suffixed on collision.
+
+        Two hooks of one class would otherwise share a label and merge their revise budgets.
+        Single instances keep the clean type name so transcripts read as they always did;
+        only genuine collisions grow a `#n` suffix (1-based, in hook order).
+        """
+        counts: dict[str, int] = {}
+        for hook in self.hooks:
+            name = type(hook).__name__
+            counts[name] = counts.get(name, 0) + 1
+        seen: dict[str, int] = {}
+        labelled: list[tuple[str, TeamHook]] = []
+        for hook in self.hooks:
+            name = type(hook).__name__
+            seen[name] = seen.get(name, 0) + 1
+            label = name if counts[name] == 1 else f"{name}#{seen[name]}"
+            labelled.append((label, hook))
+        return labelled
 
     # ── The tool composer ──
 
@@ -327,7 +371,7 @@ class Team:
         """The lead's one `config_hook`, folding every tool source into one patch.
 
         The runtime calls exactly one hook per cycle and its `tools` patch replaces the
-        compiled tools (`ai_thread.py:548-553`; `config.py:166-185`, both re-verified against
+        compiled tools (`ai_thread.py:548-554`; `config.py:166-185`, both re-verified against
         the installed package), so composition happens here or not at all. Order per cycle:
         the lead's own hook runs first and its full patch is honoured — its `tools`, when it
         sets them, stand in for the compiled `tools=` rather than stacking on top (the

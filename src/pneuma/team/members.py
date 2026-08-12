@@ -136,13 +136,15 @@ class Member:
         The seam hook-contributed member tools ride in on: the core equips each member with one
         composed hook between construction and `assemble`, without the caller writing any
         wiring. Refused when the member was constructed with its own `config_hook=` override,
-        because the runtime calls exactly one hook per cycle (`ai_thread.py:548-553`), so
+        because the runtime calls exactly one hook per cycle (`ai_thread.py:548-554`,
+        executable: tests/library/test_ai_functions_contract.py), so
         silently dropping either side costs tools invisibly. A *previously equipped* hook is
         replaced rather than refused: the equipped slot is team-owned, and a second run on the
         same handle re-equips the same cast.
 
         The hook's `tools` patch replaces the compiled tools for the cycle (the merge
-        semantics `config.py:166-185` documents), so `spawn` composes the member's own
+        semantics `config.py:166-185` documents; executable:
+        tests/library/test_ai_functions_contract.py), so `spawn` composes the member's own
         `tools=` override back in ahead of whatever the hook adds — a member that carried
         tools must not lose them to a hook it never asked about.
         """

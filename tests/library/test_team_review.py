@@ -36,6 +36,10 @@ class Ruling(BaseModel):
     cites: list[str] = Field(default_factory=list, description="What it relies on")
 
 
+class Assessment(BaseModel):
+    verdict: str = Field(description="The clean token, or the findings")
+
+
 # ── The cast ──
 
 
@@ -55,6 +59,17 @@ class RedTeam(MethodAgent):
     @ai_method(str, description="Refute one answer, or say you cannot")
     def review(self, brief: str, style: str = "harsh") -> str:
         """Review this brief with {style} rigour: {brief}"""
+
+
+class Judge(MethodAgent):
+    """A reviewer whose answer is a *model*, so `str(answer)` renders field values —
+    the tier-2 shape (`verdict='NO-FINDINGS'`), unlike `@ai_method(str)` which unwraps."""
+
+    name = "judge"
+
+    @ai_method(Assessment, description="Assess one answer")
+    def assess(self, brief: str, style: str = "harsh") -> Assessment:
+        """Assess this brief with {style} rigour: {brief}"""
 
 
 class Counting(Model):
@@ -444,7 +459,88 @@ async def test_council_spawns_only_the_panelists_the_cast_does_not_carry() -> No
     assert entries(run)[0]["approved"] == ["insider", "outsider"]
 
 
-# ── 5. Advisory mode: annotation, never a gate ──
+# ── 5. Verdict parsing: a quoted token is a mention, not a verdict ──
+
+
+async def test_a_reviewer_objection_that_quotes_no_findings_is_findings_not_clean() -> None:
+    """Guard-must-fire: under the old containment check (`NO_FINDINGS in review`) this test
+    FAILED — the reviewer's prose below quotes the token while *raising* a finding, and
+    containment read the objection as a clean review, shipping the fabricated citation with
+    zero revisions. The two-tier parse reads a mid-prose mention as findings."""
+    async with RuntimeHarness() as h:
+        reviewer = Voice(
+            "red-team",
+            "this is NOT a NO-FINDINGS situation: the citation is fabricated",
+            "NO-FINDINGS",
+        )
+        lead, lead_model = scripted_lead([ruling(cites=["a"]), ruling(cites=["b"])])
+        run = await Team(lead, [], hooks=[Critic(reviewer)]).run("go", h.worker.coordinator)
+
+    assert len(lead_model.contexts) == 2, "the quoting objection must cost a revision"
+    assert "the citation is fabricated" in "\n".join(lead_model.prompts(1))
+    assert [e["outcome"] for e in entries(run)] == ["findings", "clean"]
+
+
+async def test_a_panelist_objection_that_quotes_approved_mid_prose_is_an_objection() -> None:
+    """Guard-must-fire, Council shape: under the old containment check (`APPROVAL in
+    review`) this test FAILED — an objection that quotes the token counted as the vote it
+    was refusing to cast, and 1/1 accepted the flawed draft. The parse reads it as the
+    objection it is; the plain-token second answer is what approves."""
+    async with RuntimeHarness() as h:
+        wary = Voice(
+            "wary",
+            "I would not say APPROVED here because the plan misreads my evidence",
+            "APPROVED",
+        )
+        lead, lead_model = scripted_lead([ruling(cites=["a"]), ruling(cites=["b"])])
+        run = await Team(lead, [], hooks=[Council([wary], threshold=1.0)]).run(
+            "go", h.worker.coordinator
+        )
+
+    assert len(lead_model.contexts) == 2, "quoting the token inside an objection is no vote"
+    assert "misreads my evidence" in "\n".join(lead_model.prompts(1))
+    first, second = entries(run)
+    assert first["approved"] == [] and first["accepted"] is False
+    assert second["approved"] == ["wary"] and second["accepted"] is True
+
+
+async def test_a_trailing_period_and_a_last_line_verdict_both_count_as_approval() -> None:
+    """Tier 1's tolerance: `APPROVED.` (terminal punctuation) and a multi-line answer whose
+    last line is the bare token are both genuine plain-member verdicts."""
+    async with RuntimeHarness() as h:
+        brisk = Voice("brisk", "APPROVED.")
+        careful = Voice("careful", "Checked my evidence.\nAPPROVED")
+        lead, lead_model = scripted_lead([ruling()])
+        run = await Team(lead, [], hooks=[Council([brisk, careful], threshold=1.0)]).run(
+            "go", h.worker.coordinator
+        )
+
+    assert len(lead_model.contexts) == 1
+    assert entries(run)[0]["approved"] == ["brisk", "careful"]
+    assert entries(run)[0]["accepted"] is True
+
+
+async def test_a_typed_reviewers_clean_verdict_is_read_out_of_its_field_value() -> None:
+    """Tier 2, Critic shape: a reviewer whose `@ai_method` output is a *model* answers with
+    the token as a pydantic field value inside `str(model)` (`verdict='NO-FINDINGS'`), never
+    standing alone on a line — the parse must read that as clean or every model-typed
+    reviewer's clean review would burn the lead's cap. (`@ai_method(str)` reviewers unwrap
+    to the bare token and ride tier 1; this is the shape tier 2 exists for.)"""
+    async with RuntimeHarness() as h:
+        reviewer_model = Counting([Turn(tool_calls=(("Assessment", {"verdict": "NO-FINDINGS"}),))])
+        reviewer = Member(Judge(), "assess", model=reviewer_model)
+        lead, lead_model = scripted_lead([ruling()])
+        run = await Team(lead, [], hooks=[Critic(reviewer)]).run("go", h.worker.coordinator)
+
+    assert len(reviewer_model.contexts) == 1 and len(lead_model.contexts) == 1
+    (entry,) = entries(run)
+    assert entry["outcome"] == "clean"
+    assert "verdict='NO-FINDINGS'" in entry["review"], (
+        "the recorded review really is the field-value rendering tier 2 exists for"
+    )
+
+
+# ── 6. Advisory mode: annotation, never a gate ──
 
 
 async def test_advisory_critic_records_findings_but_never_revises() -> None:
@@ -477,7 +573,7 @@ async def test_advisory_council_records_a_failed_vote_but_never_revises() -> Non
     assert entry["approved"] == []
 
 
-# ── 6. Guards, and both hooks on one team ──
+# ── 7. Guards, and both hooks on one team ──
 
 
 def test_an_empty_council_is_refused_at_construction() -> None:
