@@ -233,11 +233,14 @@ verdict (`discrimination.py`):
   many coats (near-duplicate accepts).
 - `adapter.py` connects the vacuity walk to pneuma's own process IR.
 
-The memory layer (`memory/turso_backend.py`) is the one place the project improves
-something the library already has: a libSQL backend that ranks retrieval by meaning using
-Cohere Embed v4 embeddings instead of word overlap, learns simple numeric settings from
-scored feedback within schema-declared bounds, and measures its own retrieval quality with
-test probes so "search works" is a measured claim.
+The memory layer is the one place the project improves something the library already has: a
+backend that ranks retrieval by meaning using Cohere Embed v4 embeddings instead of word
+overlap, learns simple numeric settings from scored feedback within schema-declared bounds,
+and measures its own retrieval quality with test probes so "search works" is a measured
+claim. Two interchangeable versions of it, passing the same behavioural contract:
+`memory/turso_backend.py` on libSQL, so parameters sit in the same file as the audit log,
+and `memory/sqlite_backend.py` on stdlib `sqlite3` + `sqlite-vec`, for a caller with no
+libSQL file to share. The stored database is portable between them.
 
 ### Library and application
 
@@ -333,6 +336,7 @@ PNEUMA_LIVE_KERNEL=1 uv run pytest tests/app/test_kernel_live.py -v
 | `src/pneuma/detect/gaming.py` | Probes a gate for rewarding gate-fitting, and an accepted set for being one mechanism. |
 | `src/pneuma/detect/adapter.py` | Connects `vacuity` to pneuma's `Process` IR. |
 | `src/pneuma/memory/turso_backend.py` | A libSQL memory backend with vector retrieval and score learning. |
+| `src/pneuma/memory/sqlite_backend.py` | The same backend over stdlib `sqlite3` + `sqlite-vec`, for callers with no libSQL file. |
 | `src/pneuma/memory/embedding.py` | Calls Cohere Embed v4 on Bedrock and caches the vectors in the same database file. |
 | `src/pneuma/model.py` | The claude-opus-5 Bedrock configuration. |
 

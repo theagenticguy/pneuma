@@ -11,6 +11,11 @@ dependencies = [
     "polars>=1.43.1",
     "libsql>=0.1.11",
     "pyturso>=0.7.2",
+    # Loadable vector extension for stdlib sqlite3, used only by
+    # memory/sqlite_backend.py. A library-side dependency on purpose: unlike polars
+    # and pm4py it is a single small shared object with no transitive deps, so the
+    # library keeps its "no dataframe engine" property with it installed.
+    "sqlite-vec>=0.1.9",
 ]
 
 # PyPI 0.3.0 predates runtime/usage.py (the subtree token-rollup helpers), so we
