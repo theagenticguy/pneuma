@@ -54,6 +54,7 @@ Hand-written rationale, one per module. Each states why the module is shaped the
 - [`detect/adversary.py`](design/adversary.md) — why adversarial search sits beside the prober, and how "worthless" is adjudicated without a human.
 - [`detect/gaming.py`](design/gaming.md) — why a passing gate and a diverse-looking accepted set are the same defect.
 - [`memory/turso_backend.py`](design/turso_backend.md) — why the Turso memory backend is shaped the way it is.
+- [`memory/sqlite_backend.py`](design/sqlite_backend.md) — why there is a second, stdlib-`sqlite3` backend over the same contract, and the NULL-distance decision.
 - [`casestudy/learning.py`](design/learning.md) — why the navigator's playbook is learned the way it is.
 - [`casestudy/minelearn.py`](design/minelearn.md) — why the mining loop learns two parameters rather than one.
 - [`casestudy/harnesslearn.py`](design/harnesslearn.md) — why exactly one harness parameter is learnable and the other five are not.
