@@ -57,6 +57,10 @@ built-in oracle. Every other capability is an opt-in `TeamHook` in `team/hooks/`
 - `briefing.py` — ask every member first, fold answers into the lead's prompt
 - `negotiation.py` — bounded objection/revision rounds over the lead's draft
 - `worklog.py` — typed `post_discovery` fan-out; passive teammate awareness
+- `artifacts.py` — versioned shared documents (`team/artifacts.py` is the store): members
+  `propose_change` on their own branch, the lead alone commits/merges, overlapping edits
+  always surface as a conflict, and `split_brain` probes for two branches deciding one
+  design question differently
 - `hiring.py` — lead-side hire/delegate/dismiss over a role catalog (+ `dynamic=True`
   for lead-written subagent instructions, logged verbatim)
 - `review.py` — `Critic` (one adversarial reviewer) and `Council` (voting panel)

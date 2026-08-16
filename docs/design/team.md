@@ -343,6 +343,24 @@ Every delivery claim in the worklog tests is pinned from a scripted model's own 
 context. Measured with the wire severed (`_deliver` recording success without sending): the
 log still recorded every entry as delivered and only the context assertions failed.
 
+## The `Artifacts` hook: a versioned artifact plane, landed only by the lead
+
+The `Worklog` gives members a way to *tell* each other something; `Artifacts` gives them a way
+to *change* something together. `tools_for_member` grants `read_artifact` and `propose_change`
+with the author bound by the wire (the worklog's attribution rule applied to writes);
+`tools_for_lead` grants read, `list_proposals`, `commit_change` and `merge_change`. Proposals
+land on the proposing member's own branch and change nothing anyone else reads; `main` moves
+only when the lead fast-forwards it or lands a proven non-overlapping three-way merge, and an
+overlapping edit always surfaces as conflict text rather than as a silent overwrite. Conflicts
+are rows, so a collision is queryable a run later. `split_brain` is a three-valued probe over
+the plane, in `detect/discrimination.py`'s style: two branches settling one design question
+differently, none observed, or nothing recorded to compare.
+
+Why the lead alone commits, why commit is fast-forward-or-conflict rather than auto-merge, why
+overlap can never be resolved by rule, why the store outlives the run while the report does
+not, and what the plane deliberately does not build (no megafile decomposer, no ossification
+licensing, no cross-team store): [artifacts.md](artifacts.md).
+
 ## The `Hiring` hook: budgeted synthesis of the cast, always unwound
 
 Two layers, deliberately. `hiring_tools(roster, catalog, ...)` is a functional seam that builds
@@ -516,6 +534,9 @@ progress out of a shared log.
   and "better" must not be the same mechanism.
 - **No cross-team messaging.** No team knows another exists. The one lateral channel inside a
   team is the `Worklog` hook: typed, broadcast-only, step-boundary, closed vocabulary, opt-in.
+  The one lateral *write* is the `Artifacts` hook, and it is asymmetric on purpose: members
+  propose, only the lead lands, and no team shares a plane with another
+  ([artifacts.md](artifacts.md)).
 - **No `send_message` anywhere.** The typed join is the library's path; the bus is the demo's
   deliberate exception, and the gate that forces the choice is cited above.
 - **No `Process` coupling.** A `ProcessAgent` can be a team's lead or a team's member; the

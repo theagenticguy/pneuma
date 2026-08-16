@@ -95,7 +95,7 @@ graph TD
     RC["Recalled + Recall<br/><code>recall.py</code><br/>fills a parameter from memory on each call"]
     PA["ProcessAgent<br/><code>process/agent.py</code><br/>walks a verified process and does the work in each state"]
     TM["Team<br/><code>team/core.py</code><br/>runs a lead over live members; hooks add everything else"]
-    HK["TeamHook library<br/><code>team/hooks/</code><br/>briefing, negotiation, worklog, hiring, review, learning"]
+    HK["TeamHook library<br/><code>team/hooks/</code><br/>briefing, negotiation, worklog, artifacts, hiring, review, learning"]
 
     MA -->|"spawn() puts one ability<br/>on a live thread"| MT
     MA -->|"subclass"| GP
@@ -112,7 +112,7 @@ graph TD
 | `GatedProposer` | `gated.py` · 423 | An agent whose answers are checked before they count. A rejected answer goes straight back to the model with the reason, and it tries again. If the checker itself has a bug, the agent reports it as a bug rather than treating it as a rejected answer. `propose_k` forks parallel branches from one seeded root, and a loop that stops making progress is halted and voiced as a dead end instead of spinning to the retry cap. |
 | `Recalled` + `Recall` | `recall.py` · 409 | Lets a method declare, on its signature, that a parameter comes from memory. The library fetches the value on every call and passes it in as a normal argument. Because the value arrives as an argument, the training loop can see it and improve the stored content. |
 | `ProcessAgent` | `process/agent.py` · 401 | An agent tied to a verified flowchart. The agent proposes the next step. If the proposal is not allowed, the interpreter refuses it and asks again. The same agent then does the work inside each step it enters. |
-| `Team` | `team/core.py` · 463 | Runs a group. The core does exactly three things: spawn the members, run the lead with each member as a typed tool, and retire everybody in a `finally`. Everything else (briefings, negotiation, the worklog, hiring, review, learning) is an opt-in hook from `team/hooks/`. The answer comes back ungraded unless a review hook was added. |
+| `Team` | `team/core.py` · 463 | Runs a group. The core does exactly three things: spawn the members, run the lead with each member as a typed tool, and retire everybody in a `finally`. Everything else (briefings, negotiation, the worklog, the artifact plane, hiring, review, learning) is an opt-in hook from `team/hooks/`. The answer comes back ungraded unless a review hook was added. |
 
 ### Teams: a bare core, then hooks
 
@@ -163,6 +163,17 @@ other teammate through `notify`, which lands at each thread's next model call, s
 is interrupted mid-thought. Add it for cross-cutting work where one member's dead end is
 the thing another member is about to re-explore. AgentRadio measured passive awareness
 alone at +10.5 points net.
+
+**`Artifacts`** gives every member `read_artifact` and `propose_change` over shared
+documents, and the lead alone `commit_change` and `merge_change`. A proposal is an immutable
+content-addressed revision on the proposing member's own branch, so it changes nothing anyone
+else reads until the lead lands it; the author is bound by the hook, not reported by the
+model. When a teammate committed first, the lead gets the whole collision back — both
+versions, their common ancestor, a three-way diff — and clean non-overlapping edits merge
+while overlapping ones always surface as a conflict, because the author whose edit disappears
+is the one who knew why it was there. Add it when members produce a shared artifact rather
+than a shared opinion. `split_brain(store)` then probes, three-valued, whether two branches
+settled one design question differently.
 
 **`Hiring`** gives the lead `hire`, `delegate`, and `dismiss` over a catalog of reviewed
 role factories, under one headcount cap, with every action logged in order. Add it when
@@ -319,7 +330,7 @@ PNEUMA_LIVE_KERNEL=1 uv run pytest tests/app/test_kernel_live.py -v
 | `src/pneuma/recall.py` | The `Recalled` marker and the `Recall` binder. Memory arrives as a normal call argument. |
 | `src/pneuma/team/core.py` | `Team`. Spawn the members, run the lead with them as typed tools, drive the Accept/Revise answer loop, retire everybody. |
 | `src/pneuma/team/members.py` | The `Recruit` protocol, the `Member` adapter for typed methods, and `DynamicAgent` for runtime-synthesized hires. |
-| `src/pneuma/team/hooks/` | The hook library: `Briefing`, `Negotiation`, `Worklog`, `Hiring`, `Critic`/`Council`, and `Learning` + `train()`. |
+| `src/pneuma/team/hooks/` | The hook library: `Briefing`, `Negotiation`, `Worklog`, `Artifacts`, `Hiring`, `Critic`/`Council`, and `Learning` + `train()`. |
 | `src/pneuma/process/ir.py` | The process IR: states, guards, effects, and invariants. |
 | `src/pneuma/process/tla.py` | Renders the IR to TLA+ and runs the TLC checker over it. |
 | `src/pneuma/process/interpreter.py` | Runs a verified IR, validates every choice the agent makes, and halts a run that stops making progress. |
