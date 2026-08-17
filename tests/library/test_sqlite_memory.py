@@ -1,6 +1,6 @@
-"""The stdlib-`sqlite3` + `sqlite-vec` memory backend: one shared contract, three new guards.
+"""The stdlib-`sqlite3` + `sqlite-vec` + FTS5 memory backend: one shared contract, seven guards.
 
-Two jobs, and keeping them apart is the point of the section headings below.
+Three jobs, and keeping them apart is the point of the section headings below.
 
 **The shared contract.** Everything `tests/library/test_turso_memory.py` asserts about
 behaviour — monotonic never-reused ids, ranking by cosine distance ASC, a content-addressed
@@ -27,6 +27,25 @@ says so.
    `_require_rankable_query` makes `test_a_degenerate_query_vector_raises_...` fail, because
    the search returns an empty list that reads exactly like an irrelevant corpus.
 
+**The hybrid retrieval path**, which is this backend's own capability rather than a port:
+`_search` fuses the vector ranking with an FTS5 `bm25()` one by RRF, because only this
+driver's FTS can rank at all (Turso's `fts_score()` is 0.0 for every row). Four more guards,
+each also broken deliberately and observed to fail:
+
+4. The lexical index must not drift from `memory_entry`. Dropping `_fts_replace` from
+   `update_entry` makes `test_a_rewritten_entry_re_indexes_lexically` fail — and the failure
+   is the *interesting* one: the entry still retrieves, on its pre-rewrite words.
+5. RRF must fuse on ranks, never on the raw scores. Fusing `1 / (k + score)` instead makes
+   `test_fusion_reads_ranks_not_scores` fail, because a bm25 score of -1e-06 and a cosine
+   distance of 1.0 are six orders of magnitude apart and the lexical channel dominates
+   arithmetically.
+6. Query text must be escaped into a MATCH expression. Passing it through raw makes
+   `test_a_query_with_fts5_operators_is_not_a_syntax_error` fail with `fts5: syntax error`
+   or, worse, `no such column: x`, which reads as a schema bug rather than as untrusted input.
+7. A fallback must not mask a dual failure. Returning `[]` when both channels are out makes
+   `test_both_channels_unavailable_raises_rather_than_returning_nothing` fail, which is guard
+   3's argument one level up.
+
 Nothing here needs credentials or a network. The live retrieval measurement — whether Cohere
 Embed v4 semantically separates a real playbook — is a property of the embedding model, not
 of the driver, and is measured once in the Turso module rather than duplicated here.
@@ -49,10 +68,13 @@ from ai_functions.types.graph import GradFeedback
 from pydantic import BaseModel, Field
 
 from pneuma.memory import (
+    RRF_K,
     CeilingNotSeparable,
     SqliteMemoryBackend,
     digest_of,
+    fts_match_expression,
     pack_vector,
+    reciprocal_rank_fusion,
     sqlite_connect,
     unpack_vector,
 )
@@ -133,6 +155,47 @@ class Zeros:
     def embed(self, texts: Any, input_type: str) -> list[list[float]]:
         del input_type
         return [[0.0, 0.0, 0.0, 0.0] for _ in texts]
+
+
+TOPICS = ("procedure", "timing", "money")
+
+
+class TopicOnly:
+    """An embedder that sees only the topic word and is blind to every other token.
+
+    The double the hybrid tests need, and it is not a strawman — it is a caricature of the
+    failure a real embedding model actually has. A sentence embedder compresses a sentence to
+    a few hundred floats, so a rare literal token (an identifier, a case number, a
+    spelled-out rule name) contributes almost nothing to the vector and a query containing it
+    lands nowhere near the entry that holds it. `TopicOnly` makes that exact loss
+    *reproducible*: every entry on one topic is at cosine distance 0.0 from every query on
+    that topic, so ordering inside a topic is a tie the vector channel cannot break, and an
+    entry on a different topic is unreachable no matter how many query terms it contains
+    verbatim.
+
+    `BagOfWords` cannot serve here, and that is the point of adding a second double: it
+    embeds token counts, so its cosine ordering *already* approximates BM25 and the two
+    channels agree on almost every query. A test that hybrid beats vector needs a corpus
+    where they disagree.
+    """
+
+    model_id = "topiconly:v1"
+    dimensions = len(TOPICS)
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def embed(self, texts: Any, input_type: str) -> list[list[float]]:
+        assert input_type in (DOCUMENT, QUERY)
+        self.calls += 1
+        vectors: list[list[float]] = []
+        for text in texts:
+            vector = [1.0 if topic in text.lower() else 0.0 for topic in TOPICS]
+            if not any(vector):
+                vector = [1.0] * len(TOPICS)  # no topic named: equidistant from all of them
+            norm = math.sqrt(sum(x * x for x in vector))
+            vectors.append([x / norm for x in vector])
+        return vectors
 
 
 class CaptureFn:
@@ -670,6 +733,897 @@ def test_a_degenerate_query_vector_raises_rather_than_returning_nothing(tmp_path
     with pytest.raises(ValueError, match="zero magnitude"):
         memory.search_entries("guidance", "any query at all", k=3)
     memory.close()
+
+
+# ── The lexical channel: FTS5 and bm25, which Turso cannot do ──
+
+
+def test_bm25_is_negative_so_ascending_is_best_first(tmp_path: Path) -> None:
+    """The engine behaviour the whole lexical channel's ordering rests on, asserted directly.
+
+    Two facts as properties of the database rather than of this module, because getting either
+    backwards fails *soft*: an inverted lexical ranking still returns k plausible entries.
+
+    First, `bm25()` returns real, distinct, order-bearing scores — which is precisely what
+    Turso's `fts_score()` does not do (0.0 for every matching row) and is therefore the reason
+    hybrid retrieval exists in this backend and not in that one.
+    `test_turso_fts_cannot_rank_...` is the other half of this pair, one file over.
+
+    Second, FTS5 *negates* the score so that ASCending is best-first, matching every other
+    `ORDER BY ... ASC` in the module. So the strongest match is the most negative number,
+    which is the opposite of most BM25 implementations. Recorded so a future FTS5 that stops
+    negating fails here rather than silently inverting retrieval.
+
+    The score range is asserted too: measured, one query over three entries spans six orders
+    of magnitude. That is the concrete fact that makes any linear blend of bm25 with cosine
+    distance a fitted constant, and therefore the fact `reciprocal_rank_fusion` exists for.
+    """
+    memory, ids = _seeded(tmp_path)
+    scored = memory.fts_entries("guidance", "appeal fine already sent", k=3)
+    assert scored, "the lexical channel found nothing in a corpus containing the words"
+    scores = [score for _, _, score in scored]
+
+    assert all(score < 0.0 for score in scores), "bm25 stopped being negative"
+    assert scores == sorted(scores), "bm25 ASC stopped being best-first"
+    assert scored[0][0] == ids[2], "the entry holding every query term did not rank first"
+    assert len(set(scores)) == len(scores), "bm25 stopped discriminating between matches"
+    assert abs(scores[0]) > abs(scores[-1]) * 100, (
+        f"the bm25 range collapsed, so the incommensurable-scales argument for RRF would "
+        f"need re-measuring: {scores}"
+    )
+    memory.close()
+
+
+def test_a_query_with_fts5_operators_is_not_a_syntax_error(tmp_path: Path) -> None:
+    """MATCH is a query language, so prose going into it must be escaped, not passed through.
+
+    Guard 6, and the mutant is one line: `MATCH ?` bound to `query` instead of to
+    `fts_match_expression(query)`. Every input below then raises from inside a ranking path,
+    and the last three are the nasty ones — `no such column: x` reads as a schema bug rather
+    than as untrusted input, so a reader would look in the DDL.
+
+    Measured on this build, raw:
+
+        ''      -> OperationalError: fts5: syntax error near ""
+        'AND'   -> OperationalError: fts5: syntax error near "AND"
+        'NEAR(' -> OperationalError: fts5: syntax error near ""
+        '-x'    -> OperationalError: no such column: x
+        'a:b'   -> OperationalError: no such column: a
+
+    Note where the danger is not: binding the parameter stops SQL injection into the
+    *statement*, and MATCH parsing happens afterwards, on the bound value. So the placeholder
+    is no protection at all here — which is exactly why this needs a test rather than a
+    comment.
+
+    Asserted through `hybrid_entries` rather than `fts_entries` alone, because the property
+    that matters is that a hostile query still *retrieves* — the vector channel must carry it
+    — rather than merely not crashing.
+    """
+    memory, _ = _seeded(tmp_path)
+    hostile = [
+        "AND",
+        "already AND",
+        'he said "AND" loudly',
+        "NEAR(appeal fine)",
+        "-appeal",
+        "note: check the appeal",
+        "((unbalanced",
+        "^caret *star",
+        "!!! ???",
+        "\\\\\\",
+        "café Ünïcode",
+        "价格 上涨",
+    ]
+    for query in hostile:
+        assert isinstance(memory.fts_entries("guidance", query, k=2), list), query
+        hits, channels = memory.hybrid_entries("guidance", query, k=2)
+        assert channels, f"no channel ranked {query!r}"
+        assert "vector" in channels, f"the vector channel must carry {query!r}"
+        assert len(hits) <= 2
+
+    # Two token-free queries are deliberately not in that list, and finding out why was the
+    # useful part of writing this test. `""` and `"   "` are each a syntax error to raw MATCH
+    # *and* embed to the zero vector under `BagOfWords` (no tokens, so no buckets set), so
+    # they are genuine dual-channel failures and `hybrid_entries` raises — guard 7 firing on
+    # a real input rather than a constructed one, which is a better argument for the guard
+    # than the constructed case. What belongs here is that the *escaping* handles them
+    # without a syntax error.
+    for token_free in ("", "   "):
+        assert fts_match_expression(token_free) == ""
+        with pytest.raises(ValueError, match="Neither channel"):
+            memory.hybrid_entries("guidance", token_free, k=2)
+
+    # And the escaping is a pure function, so its output is assertable without a database.
+    assert fts_match_expression('he said "AND" loudly') == '"he" OR "said" OR "AND" OR "loudly"'
+    assert fts_match_expression("!!! ???") == "", "a token-free query must report itself as such"
+    assert fts_match_expression('a "quoted" bit') == '"a" OR "quoted" OR "bit"'
+    memory.close()
+
+
+def test_an_operator_word_is_matched_as_a_term_not_parsed_as_an_operator(
+    tmp_path: Path,
+) -> None:
+    """`AND` in a query must find the entry containing the word `AND`, not restructure it.
+
+    Not-crashing is the weak half of guard 6. The strong half is that the escaping keeps the
+    query *meaning* what it said: an entry whose text literally contains `AND` is found by a
+    query containing `AND`, which is what a caller searching stored prose expects.
+
+    Also pins the rejected cheap fix. Wrapping the whole query in one quoted literal parses
+    fine and turns every query into a phrase search: measured, `"he said ""AND"" loudly"`
+    returns zero rows against a corpus holding all four words. That mutant leaves the lexical
+    channel silently contributing nothing rather than raising, which is the worse failure and
+    the reason `fts_match_expression` tokenises.
+
+    The second entry deliberately contains no `and`, which took a failed run to notice and is
+    worth recording: `unicode61` folds case, so a first draft whose other entry read "appeals
+    and fines" matched the query `AND` too — correctly, since `and` is an ordinary English
+    word there. The corpus has to isolate the term for the assertion to be about operator
+    handling rather than about English.
+    """
+    memory = _backend(tmp_path)
+    target = memory.add_entry("guidance", "escalate when the operator AND the reviewer disagree")
+    memory.add_entry("guidance", "unrelated advice concerning appeals, fines, penalties")
+
+    found = memory.fts_entries("guidance", "AND", k=3)
+    assert [entry_id for entry_id, _, _ in found] == [target], (
+        "an operator word was not searched as a term"
+    )
+    assert found[0][2] < 0.0, "a term match through an operator word scored nothing"
+
+    # The rejected cheap fix, run directly so its silence is visible rather than argued.
+    # One quoted literal is a *phrase* search: it parses, and it only matches when the
+    # query's tokens appear consecutively in that exact order. So a real question about the
+    # entry finds nothing, while the entry's own text verbatim finds it — which is the shape
+    # that makes the mutant dangerous. It never raises; the lexical channel just goes quiet
+    # for every query that is not an exact substring.
+    def phrase_match(text: str) -> list[tuple[Any, ...]]:
+        return fetch_rows(
+            memory.connection,
+            "SELECT entry_id FROM memory_entry_fts "
+            "WHERE memory_entry_fts MATCH ? AND actor_id = ?",
+            ('"' + text.replace('"', '""') + '"', "nav"),
+        )
+
+    assert phrase_match('when does the operator "AND" the reviewer escalate') == [], (
+        "one-quoted-literal escaping now behaves as a term search, so the tokenising "
+        "argument in fts_match_expression needs re-measuring"
+    )
+    assert phrase_match("escalate when the operator") == [(target,)], (
+        "the mutant is not a phrase search either, so its failure mode is not what is claimed"
+    )
+    # The same question through the real escaping does find the entry, which is the contrast.
+    assert [i for i, _, _ in memory.fts_entries("guidance", "when does the operator escalate")] == [
+        target
+    ]
+    memory.close()
+
+
+def test_the_lexical_index_does_not_leak_across_actors_or_parameters(tmp_path: Path) -> None:
+    """`UNINDEXED` on the key columns, and the namespace filters, both asserted.
+
+    Two mutants in one test because they fail the same way — extra hits from outside the
+    namespace, at a bm25 score indistinguishable from a real content match.
+
+    Without `UNINDEXED` on `actor_id` / `param` / `entry_id`, those values become searchable
+    terms, so a query mentioning `guidance` matches every entry of the `guidance` parameter.
+    Without the `memory_entry_fts.actor_id = ?` filter, one actor's entries rank in another's
+    search — and the actors-are-isolated property is one this backend advertises.
+
+    The actor ids are deliberately long nonsense words rather than `"a"` and `"b"`. A first
+    draft used the short ones and the `UNINDEXED` assertion passed for the wrong reason: `a`
+    appears in the entry *text*, so a query for it matches whether or not the key column is
+    indexed. A probe term has to be absent from every value to say anything about the index.
+    """
+    path = tmp_path / "shared.db"
+    a = SqliteMemoryBackend(Advice, actor_id="navigatorzz", path=path, embedder=BagOfWords())
+    b = SqliteMemoryBackend(Advice, actor_id="reviewerzz", path=path, embedder=BagOfWords())
+    a.add_entry("guidance", "the appeal belongs to the first actor")
+    b.add_entry("guidance", "the appeal belongs to the second actor")
+
+    assert [value for _, value, _ in a.fts_entries("guidance", "appeal", k=5)] == [
+        "the appeal belongs to the first actor"
+    ], "the lexical channel crossed the actor namespace"
+
+    # None of these three terms appears in any entry value, so a hit could only come from an
+    # indexed key column.
+    assert a.fts_entries("guidance", "navigatorzz", k=5) == [], "actor_id is indexed as a term"
+    assert a.fts_entries("guidance", "guidance", k=5) == [], "param is indexed as a term"
+    assert a.fts_entries("guidance", "1", k=5) == [], "entry_id is indexed as a term"
+    a.close()
+    b.close()
+
+
+# ── FTS sync: the index is derived state, so its drift is countable ──
+
+
+def test_a_rewritten_entry_re_indexes_lexically(tmp_path: Path) -> None:
+    """Guard 4, and its broken form is the reason `fts_drift` reports `stale` separately.
+
+    Consolidation rewrites entry text, so this is the write path that matters most. The
+    embedding cache handles its half *structurally* — content addressing means a new digest
+    cannot hit an old cache row, which
+    `test_embedding_cache_is_content_addressed_so_a_rewrite_re_embeds` asserts. The FTS index
+    has no such property: it is keyed by entry id, so nothing about its layout prevents
+    staleness and `_fts_replace` has to be called.
+
+    Broken deliberately by removing `_fts_replace` from `update_entry`. The failure is worth
+    describing because it is not a crash and not an empty result: the entry keeps retrieving,
+    on its *pre-rewrite* words. So a query about text that no longer exists anywhere in the
+    store returns a confident hit, and a query about the new text returns nothing from the
+    lexical channel — retrieval degrades while every count and every result length stays
+    plausible. That is why the assertion is two-sided (old words gone, new words found) rather
+    than just checking the new text is present.
+    """
+    memory, ids = _seeded(tmp_path)
+    assert memory.fts_drift() == []
+
+    assert [i for i, _, _ in memory.fts_entries("guidance", "appeal", k=3)] == [ids[2]]
+    memory.update_entry("guidance", ids[2], "a rewritten note about xyzzy tokens instead")
+
+    assert memory.fts_drift() == [], "the index did not follow the rewrite"
+    assert memory.fts_entries("guidance", "appeal", k=3) == [], (
+        "the pre-rewrite words still match, so the entry retrieves for reasons that are gone"
+    )
+    assert [i for i, _, _ in memory.fts_entries("guidance", "xyzzy", k=3)] == [ids[2]]
+    memory.close()
+
+
+def test_every_entry_write_path_keeps_the_index_in_step(tmp_path: Path) -> None:
+    """Add, update, remove, wholesale save, consolidate, delete: `fts_drift` empty after each.
+
+    Manual sync means one missed call is one silently un-indexed entry, so the check is run
+    after *every* write path rather than after the one being demonstrated. Enumerated
+    explicitly rather than checked once at the end, because a later path can hide an earlier
+    one's mistake — a wholesale `save` clears the whole parameter and would paper over a
+    missed `add_entry`.
+
+    `_save`'s wholesale replace is the subtle one: ids are never reused, so an orphaned index
+    row left by a save is never overwritten by a later insert either. They would accumulate
+    across saves, each one a lexical hit whose join finds nothing.
+    """
+    memory, ids = _seeded(tmp_path)
+    assert memory.fts_drift() == [], "after add_entry"
+
+    memory.update_entry("guidance", ids[0], "updated text for the first entry")
+    assert memory.fts_drift() == [], "after update_entry"
+
+    memory.remove_entry("guidance", ids[1])
+    assert memory.fts_drift() == [], "after remove_entry"
+
+    memory.save("guidance", ["wholesale one", "wholesale two"])
+    assert memory.fts_drift() == [], "after a wholesale save"
+    assert len(fetch_rows(memory.connection, "SELECT entry_id FROM memory_entry_fts", ())) == 2, (
+        "the retired ids' index rows survived the save"
+    )
+
+    memory.delete("guidance")
+    assert memory.fts_drift() == [], "after delete resets to the schema default"
+
+    # And through the shared tool provider, which is how a consolidating agent writes.
+    from pneuma.memory import EntryToolProvider
+
+    provider = EntryToolProvider(memory, "guidance")  # type: ignore[arg-type]
+    tools = {t.tool_name: t for t in asyncio.run(provider.load_tools())}
+    tools["add_entry"]._tool_func(value="added through the agent tool")  # type: ignore[attr-defined]
+    assert memory.fts_drift() == [], "after a tool-driven add"
+    memory.close()
+
+
+def test_fts_drift_names_all_three_disagreements(tmp_path: Path) -> None:
+    """The audit method has teeth: each way the index can diverge is reported as its own kind.
+
+    Constructed by corrupting the index directly, because the write paths are correct — which
+    is the point. `fts_drift` is the check that they *stay* correct, so it has to be able to
+    see a divergence that no supported operation produces.
+
+    Three kinds rather than one boolean, because they need different fixes and they fail
+    differently: `missing` costs lexical recall, `stale` returns the entry for words it no
+    longer contains, `orphaned` shrinks the candidate set through a join that finds nothing.
+    """
+    memory, ids = _seeded(tmp_path)
+
+    memory.connection.execute(
+        "DELETE FROM memory_entry_fts WHERE actor_id = ? AND entry_id = ?", ("nav", ids[0])
+    )
+    memory.connection.execute(
+        "UPDATE memory_entry_fts SET value = 'not what the entry says' "
+        "WHERE actor_id = ? AND entry_id = ?",
+        ("nav", ids[1]),
+    )
+    memory.connection.execute(
+        "INSERT INTO memory_entry_fts (value, actor_id, param, entry_id) "
+        "VALUES ('a row for an entry that never existed', 'nav', 'guidance', '999')"
+    )
+    memory.connection.commit()
+
+    assert memory.fts_drift() == [
+        ("guidance", ids[0], "missing"),
+        ("guidance", ids[1], "stale"),
+        ("guidance", "999", "orphaned"),
+    ]
+
+    assert memory.reindex_fts() == 3
+    assert memory.fts_drift() == [], "the repair did not converge"
+    assert memory.reindex_fts() == 0, "reindex is not idempotent"
+    assert [i for i, _, _ in memory.fts_entries("guidance", "revisit", k=3)] == [ids[0]]
+    memory.close()
+
+
+def test_a_turso_written_corpus_is_indexed_lexically_on_first_open(tmp_path: Path) -> None:
+    """The arrangement no trigger could have covered, which is why sync is manual.
+
+    A trigger cannot index rows that predate it, and this backend advertises exactly that
+    situation: `test_a_turso_written_database_ranks_under_this_backend` makes a
+    Turso-written file reopening here a supported property. Those `memory_entry` rows arrive
+    with no `memory_entry_fts` table in the file at all, so without the `reindex_fts` call in
+    `init_schema` the lexical channel would be permanently empty for a ported corpus — and
+    `_search` would silently fall back to `["vector"]` forever, which is a real degradation
+    reported in the meta and noticed by nobody.
+
+    Same argument covers a borrowed `connection=` somebody else wrote entries through.
+    """
+    from pneuma.memory import TursoMemoryBackend
+
+    path = tmp_path / "portable.db"
+    written = TursoMemoryBackend(Advice, actor_id="nav", path=path, embedder=BagOfWords())
+    ids = [written.add_entry("guidance", text) for text in ENTRIES]
+    written.embed_pending("guidance")
+    written.close()
+
+    reopened = SqliteMemoryBackend(Advice, actor_id="nav", path=path, embedder=BagOfWords())
+    assert reopened.fts_drift() == [], "the ported corpus was not backfilled into the index"
+    assert [i for i, _, _ in reopened.fts_entries("guidance", "appeal fine sent", k=3)] == [ids[2]]
+
+    _, channels = reopened.hybrid_entries("guidance", "appeal fine sent", k=2)
+    assert channels == ["vector", "fts"], "a ported corpus fell back to one channel"
+    reopened.close()
+
+
+# ── Fusion: RRF over ranks, deterministic, and honest about which channel ran ──
+
+
+def test_fusion_reads_ranks_not_scores() -> None:
+    """Guard 5, asserted on the pure function so the claim needs no database.
+
+    RRF's whole justification is that it never touches a score, and the mutant is to fuse on
+    them — `1 / (k + score)` or any normalise-then-blend. The two lists below are the measured
+    shape of the problem: cosine distances live on [0, 2] and bm25 scores ranged over six
+    orders of magnitude on a three-entry corpus (-1.45 to -9.9e-07). Under any linear mix the
+    bm25 term either dominates or vanishes depending on corpus size, and the `alpha` that
+    fixes it for one corpus is a fitted constant nobody measured — the defect class
+    `pneuma.detect` exists to catch.
+
+    Three properties, and the third is the one a score-based fusion loses:
+
+    Rank position alone decides the contribution, so the same ranks fuse identically whatever
+    scores produced them. Agreement across channels accumulates, so an entry both channels
+    ranked outscores an entry only one did — that is the actual retrieval claim hybrid search
+    makes. And ties are *exact*, not nearly-equal, which is why the caller has to break them
+    on something measured rather than on dict order.
+    """
+    vector = ["a", "b", "c"]
+    lexical = ["c", "d"]
+
+    fused = reciprocal_rank_fusion([vector, lexical])
+    assert set(fused) == {"a", "b", "c", "d"}, "fusion is over the union of the channels"
+
+    # `c` is rank 3 in one channel and rank 1 in the other; `a` is rank 1 in one only.
+    assert fused["c"] == pytest.approx(1 / (RRF_K + 3) + 1 / (RRF_K + 1))
+    assert fused["a"] == pytest.approx(1 / (RRF_K + 1))
+    assert fused["c"] > fused["a"], "agreement between channels did not promote a hit"
+
+    # Identical ranks fuse identically, whatever the scores behind them were.
+    assert reciprocal_rank_fusion([vector, lexical]) == fused
+
+    # Exact ties, not near-ties: `a` at rank 1 of one channel and `c` at rank 1 of the other.
+    single = reciprocal_rank_fusion([["a"], ["c"]])
+    assert single["a"] == single["c"], "same-rank hits must tie exactly, so ties need breaking"
+
+    # One channel fuses to that channel's own order, which is how a fallback is expressed.
+    alone = reciprocal_rank_fusion([vector, []])
+    assert sorted(alone, key=lambda i: -alone[i]) == vector
+    assert reciprocal_rank_fusion([[], []]) == {}
+
+    # `k` is a shape parameter, not a threshold: it reweights and cannot reorder a single
+    # channel or drop a hit. That is what makes a constant tolerable in a ranking path.
+    for k in (1, 10, RRF_K, 1000):
+        shaped = reciprocal_rank_fusion([vector, lexical], k=k)
+        assert set(shaped) == set(fused)
+        assert shaped["c"] > shaped["a"]
+
+    # And the mutant's arithmetic, run inline against real measured numbers so its failure is
+    # a demonstration rather than a claim. These are the actual values from a three-entry
+    # corpus: cosine distances near 1.0, bm25 scores near -1e-06. Under `1 / (k + score)` the
+    # bm25 term is ~1/60 and the cosine term is ~1/61 — indistinguishable — so the fusion is
+    # decided by float noise, and on a larger corpus (bm25 -2.48) the lexical term becomes
+    # 1/57.5 and dominates outright. Neither behaviour is a ranking; both look like one.
+    def score_fusion(
+        vector_distances: dict[str, float], bm25: dict[str, float]
+    ) -> dict[str, float]:
+        blended: dict[str, float] = {}
+        for scores in (vector_distances, bm25):
+            for entry_id, score in scores.items():
+                blended[entry_id] = blended.get(entry_id, 0.0) + 1.0 / (RRF_K + score)
+        return blended
+
+    small = score_fusion({"a": 0.0, "b": 1.0}, {"c": -1.0e-06})
+    assert small["c"] > small["a"], (
+        "a single weak lexical hit does not outrank a perfect vector match under score "
+        "fusion, so the incommensurable-scales argument needs re-measuring"
+    )
+    large = score_fusion({"a": 0.0}, {"c": -2.48})
+    assert large["c"] / large["a"] > 1.04, "the corpus-size sensitivity of a score blend is gone"
+
+
+def test_hybrid_retrieval_finds_a_lexical_hit_the_vector_channel_misses(
+    tmp_path: Path,
+) -> None:
+    """The claim hybrid retrieval makes, measured: it strictly dominates the vector channel.
+
+    "Strictly dominates" is a real claim and this is what makes it checkable. Identical
+    embeddings, the vector candidate list over-fetched rather than truncated, so the lexical
+    channel can only *add* candidates — and here it adds the one that matters.
+
+    The corpus and the embedder are built so the two channels genuinely disagree. `TopicOnly`
+    is blind to everything but the topic word, so `ORD-4471` contributes nothing to any
+    vector and the entry holding it sits at distance 1.0 from a `procedure` query while three
+    irrelevant same-topic entries sit at 0.0. Pure vector at k=3 therefore returns the three
+    ties and never reaches it. This is a caricature of a real embedding failure, not an
+    invented one: a rare literal token in a few-hundred-float sentence embedding is close to
+    unrecoverable, which is exactly the case BM25 wins.
+
+    The pure-vector baseline is asserted first, in the same test. Without it this would pass
+    against a corpus where vector search already worked, and the dominance claim would be
+    untested.
+
+    Two queries, because a failed first draft taught the difference and it is the sharpest
+    thing to know about RRF. The draft asserted that the exact-term hit came back *first* for
+    `"procedure question about rule ORD-4471"`, and it came back second. That is RRF working
+    correctly, not a bug: `procedure` is in three other entries too, so the target sits at
+    lexical rank 1 but the entry at vector rank 1 is *also* at lexical rank 3, and two
+    endorsements beat one. `1/61 + 1/63 > 1/61`. The lesson is that RRF promotes on
+    *agreement*, so a query whose terms are shared across the corpus buys less promotion than
+    a query whose terms discriminate — and the honest claim to test is reachability in the
+    top-k plus first place when the lexical channel actually discriminates.
+    """
+    memory = SqliteMemoryBackend(
+        Advice, actor_id="nav", path=tmp_path / "topic.db", embedder=TopicOnly()
+    )
+    ids = [
+        memory.add_entry("guidance", text)
+        for text in (
+            "procedure note: never revisit a state already passed through",
+            "procedure note: prefer the transition that ends the case",
+            "procedure note: escalate when the operator disagrees",
+            "money note: rule ORD-4471 governs the penalty ledger",
+        )
+    ]
+
+    # A query sharing a term with the rest of the corpus: promotion into the top-k, and the
+    # entry endorsed by both channels stays ahead of the one endorsed by one.
+    mixed = "procedure question about rule ORD-4471"
+    vector_only = memory.search_entries("guidance", mixed, k=3)
+    assert ids[3] not in [h.entry_id for h in vector_only], (
+        "the vector channel already finds it, so this corpus does not test the claim"
+    )
+    assert {h.distance for h in vector_only} == {0.0}, "the same-topic tie is not reproducing"
+
+    hits, channels = memory.hybrid_entries("guidance", mixed, k=3)
+    assert channels == ["vector", "fts"]
+    assert ids[3] in [h.entry_id for h in hits], (
+        f"the exact-term match is still unreachable at k=3: {[h.entry_id for h in hits]}"
+    )
+    assert hits[0].entry_id == ids[0], "two channel endorsements did not beat one"
+    assert next(h for h in hits if h.entry_id == ids[3]).distance == 1.0, (
+        "the promoted hit lost its real cosine distance"
+    )
+
+    # A query whose terms discriminate: the exact-term match is the only lexical hit, so it
+    # takes first place outright.
+    sharp = "ORD-4471 penalty ledger"
+    assert [i for i, _, _ in memory.fts_entries("guidance", sharp, k=9)] == [ids[3]]
+    sharp_hits, _ = memory.hybrid_entries("guidance", sharp, k=3)
+    assert sharp_hits[0].entry_id == ids[3], (
+        f"a discriminating lexical hit was not promoted to first: "
+        f"{[h.entry_id for h in sharp_hits]}"
+    )
+    memory.close()
+
+
+def test_over_fetching_is_what_makes_agreement_detectable(tmp_path: Path) -> None:
+    """At exactly k per channel, RRF cannot see the overlap it is supposed to reward.
+
+    The reason `hybrid_entries` fetches `overfetch * k` candidates rather than `k`, and writing
+    it taught the sharper version of the claim. The obvious story — "over-fetching reaches a
+    hit ranked k+1 by vector and 1 by BM25" — is not the binding one, because a top-ranked
+    lexical hit is already *in* the k-length lexical list and reaches the fusion either way.
+
+    The binding one is agreement. RRF's whole mechanism is that an entry both channels endorse
+    outscores an entry only one does, and an overlap between two lists is only visible if the
+    lists are long enough to contain it. Over-fetch is therefore not a recall trick; it is what
+    makes the fusion rule *operative* rather than decorative.
+
+    Measured on the corpus below with `query = "procedure ledger"`:
+
+        vector:  1 (0.00), 2 (0.00), 3 (0.29), 4 (0.42), 5 (1.00)
+        lexical: 4, 3, 5, 1, 2
+
+    Entry 3 is second in both channels and first in neither. At `overfetch=1, k=1` the fusion
+    sees `[1]` and `[4]`, no overlap exists, and the answer is whichever wins the tiebreak — so
+    the fused result is decided by a rerank rather than by agreement. At `overfetch=3` it sees
+    `[1, 2, 3]` and `[4, 3, 5]`, entry 3 accumulates both terms, and it wins outright:
+    `1/63 + 1/62 > 1/61`. Same corpus, same query, same k — only the candidate depth differs.
+    """
+    memory = SqliteMemoryBackend(
+        Advice, actor_id="nav", path=tmp_path / "overfetch.db", embedder=TopicOnly()
+    )
+    ids = [
+        memory.add_entry("guidance", text)
+        for text in (
+            "procedure note: alpha",
+            "procedure note: beta",
+            "procedure timing note: gamma ledger",
+            "procedure timing money note: delta ledger ledger ledger",
+            "money note: epsilon ledger ledger",
+        )
+    ]
+    query = "procedure ledger"
+    agreed = ids[2]
+
+    # The arrangement the docstring's arithmetic depends on: second in both, first in neither.
+    assert [h.entry_id for h in memory.search_entries("guidance", query, k=5)][:3] == ids[:3]
+    assert [i for i, _, _ in memory.fts_entries("guidance", query, k=5)][:2] == [ids[3], agreed]
+
+    fused, _ = memory.hybrid_entries("guidance", query, k=1)
+    assert [h.entry_id for h in fused] == [agreed], (
+        "the doubly-endorsed entry did not win, so over-fetching is not reaching the overlap"
+    )
+
+    starved, _ = memory.hybrid_entries("guidance", query, k=1, overfetch=1)
+    assert [h.entry_id for h in starved] != [agreed], (
+        "overfetch=1 already sees the overlap, so the over-fetch is not load-bearing here"
+    )
+
+    with pytest.raises(ValueError, match="overfetch must be >= 1"):
+        memory.hybrid_entries("guidance", "anything", k=1, overfetch=0)
+    memory.close()
+
+
+def test_an_rrf_tie_is_not_decided_by_which_channel_was_fused_first(tmp_path: Path) -> None:
+    """Ties are broken on measured quantities, never on the order the channels were listed in.
+
+    `detect/objective.py` carries the measured version of this defect: on a 21^3 metric grid
+    21 points tied for smallest `edge_share` while scoring from 0.0 to 0.9744, so which one
+    became "the emptiest answer" was decided by `itertools.product`'s iteration order. Its fix
+    and this one are the same fix — tiebreak on a measured quantity, then on a stable
+    identifier — and the comment at `hybrid_entries` cites it.
+
+    **Writing this test the obvious way produced a toothless one, and that is worth recording
+    because the obvious way is what a reader would reach for.** The first draft ran the same
+    search five times, then re-ran it in subprocesses under three `PYTHONHASHSEED` values, and
+    asserted one stable answer. It passed with the entire tiebreak deleted, and it had to: a
+    `dict` in CPython iterates in *insertion* order, and hash seeding does not touch that. So
+    the seed loop was measuring nothing at all, and "deterministic" was being confirmed by a
+    property that holds whether or not the code is correct.
+
+    What the fused order can actually depend on is the sequence `reciprocal_rank_fusion`
+    inserts keys in — which is the order the channel lists are passed. Swapping
+    `[vector, lexical]` to `[lexical, vector]` is therefore the real mutant, and it flips an
+    unsorted tie while leaving a properly-broken one alone. That is the assertion below: the
+    fusion is called both ways round on a corpus with a genuine RRF tie, and the answer must
+    not move.
+
+    The corpus is built so the tie is exact and the tiebreak is *visible*. Under `TopicOnly`
+    all three entries sit at distance 0.0, so the vector channel is one flat tie in id order,
+    while `"procedure ledger"` reverses the lexical order — entries 1 and 3 land at
+    RRF 0.032266 each (rank 1+3 and rank 3+1), and bm25 puts 3 ahead. So insertion order says
+    `1` and the measured tiebreak says `3`, and the two are distinguishable.
+
+    One limit of this, found by mutating and worth stating rather than leaving for somebody to
+    rediscover: deleting the tiebreak *and* swapping the channels to lexical-first passes every
+    test here, and it is not a hole. Measured over 3000 random channel pairs, that combination
+    is behaviourally identical to the explicit tiebreak — Python's sort is stable, so
+    lexical-first insertion preserves lexical order inside an RRF tie, which is exactly what
+    ordering on `bm25` does. The reason to keep the explicit key anyway is that the equivalence
+    rests on two coincidences a reader cannot see (CPython dicts iterating in insertion order,
+    and `sorted` being stable) and would break silently the moment either channel's fetch order
+    stopped matching its score order. The explicit form says what it means; that is the whole
+    claim, and it is not one a test can make.
+    """
+    memory = SqliteMemoryBackend(
+        Advice, actor_id="nav", path=tmp_path / "ties.db", embedder=TopicOnly()
+    )
+    ids = [
+        memory.add_entry("guidance", text)
+        for text in (
+            "procedure note: aaa",
+            "procedure note: bbb ledger",
+            "procedure note: ccc ledger ledger",
+        )
+    ]
+    query = "procedure ledger"
+
+    vector = [h.entry_id for h in memory.search_entries("guidance", query, k=9)]
+    lexical = [i for i, _, _ in memory.fts_entries("guidance", query, k=9)]
+    assert vector == ids, "the vector channel is not the flat id-ordered tie this test needs"
+    assert lexical == list(reversed(ids)), "the lexical channel does not reverse it"
+
+    fused = reciprocal_rank_fusion([vector, lexical])
+    assert fused[ids[0]] == pytest.approx(fused[ids[2]]), (
+        f"the RRF tie this test rests on is gone: {fused}"
+    )
+
+    ordered = [h.entry_id for h in memory.hybrid_entries("guidance", query, k=3)[0]]
+    assert ordered[0] == ids[2], (
+        f"the tie was decided by insertion order rather than reranked on bm25: {ordered}"
+    )
+
+    # The mutant, run inline: fusing the channels the other way round changes the dict's
+    # insertion order and must not change the answer.
+    swapped = reciprocal_rank_fusion([lexical, vector])
+    assert list(swapped) != list(fused), "the two fusions insert in the same order after all"
+    assert swapped == fused, "RRF scores depend on channel order, which they must not"
+    assert sorted(
+        swapped,
+        key=lambda i: (
+            -swapped[i],
+            dict((e, s) for e, _, s in memory.fts_entries("guidance", query, k=9))[i],
+            i,
+        ),
+    ) == ordered, "the tiebreak is not independent of the fusion's insertion order"
+
+    # Stable across repeated calls too, which is the weaker claim but the one a caller sees.
+    assert {
+        tuple(h.entry_id for h in memory.hybrid_entries("guidance", query, k=3)[0])
+        for _ in range(5)
+    } == {tuple(ordered)}
+    memory.close()
+
+
+def test_bm25_breaks_an_rrf_tie_before_the_entry_id_does(tmp_path: Path) -> None:
+    """The rerank step: among entries tying on RRF, the better lexical match comes first.
+
+    The tiebreak order `(-rrf, bm25, distance, entry_id)` is not arbitrary. `bm25` sits first
+    among the tiebreakers because it is exactly the information RRF discarded on purpose — the
+    fusion reads ranks, so the score is still available and unused, and it is the sharpest
+    thing left to order a rank tie by.
+
+    Asserted where the id order and the bm25 order *disagree*, which is the only arrangement
+    that can tell the two apart. With `TopicOnly` every entry here is at distance 0.0, so the
+    vector channel contributes one flat tie and the lexical channel decides. The entry
+    mentioning the query terms twice is the stronger bm25 match and is deliberately given the
+    *later* id, so a fallback to `entry_id` would put it second.
+    """
+    memory = SqliteMemoryBackend(
+        Advice, actor_id="nav", path=tmp_path / "rerank.db", embedder=TopicOnly()
+    )
+    weak = memory.add_entry("guidance", "procedure note: the ledger is reviewed")
+    strong = memory.add_entry("guidance", "procedure note: ledger ledger ledger audit")
+    assert int(strong) > int(weak), "the stronger match must hold the later id"
+
+    scored = dict((i, s) for i, _, s in memory.fts_entries("guidance", "ledger", k=2))
+    assert scored[strong] < scored[weak], "bm25 does not prefer the repeated-term entry"
+
+    hits, _ = memory.hybrid_entries("guidance", "ledger", k=2)
+    assert [h.entry_id for h in hits] == [strong, weak], (
+        "the RRF tie was broken by entry id rather than reranked on bm25"
+    )
+    memory.close()
+
+
+# ── Honest degradation: which channel ranked, and when a raise is the only honest answer ──
+
+
+def test_a_query_with_no_lexical_hit_falls_back_to_pure_vector(tmp_path: Path) -> None:
+    """No matching term is a legitimate lexical miss, so the vector channel carries it alone.
+
+    Two distinct ways to have no lexical hit, and they must behave identically because they
+    are the same finding: the query's terms are absent from the index, or the query has no
+    indexable token at all. Neither is an error — the semantic channel is precisely the one
+    that handles a question sharing no vocabulary with its answer, which is why an embedding
+    backend exists here in the first place.
+
+    `channels == ["vector"]` in the meta is what makes the fallback auditable after the fact.
+    Without it a caller reading an event log cannot tell a fused result from a degraded one,
+    and a corpus that fell back on every query for a month would look exactly like one that
+    never did.
+    """
+    memory, ids = _seeded(tmp_path)
+
+    for query in ("kubernetes ingress certificate rotation", "!!! ???"):
+        assert memory.fts_entries("guidance", query, k=3) == [], query
+        hits, channels = memory.hybrid_entries("guidance", query, k=2)
+        assert channels == ["vector"], f"{query!r} did not fall back cleanly"
+        assert len(hits) == 2, "the vector channel must still rank the corpus"
+        assert all(h.distance < float("inf") for h in hits), "a vector hit lost its distance"
+
+    # And the fallback ranking is the vector channel's own, unperturbed.
+    query = "revisit a state already passed through"
+    memory.connection.execute("DELETE FROM memory_entry_fts WHERE actor_id = 'nav'")
+    memory.connection.commit()
+    hits, channels = memory.hybrid_entries("guidance", query, k=3)
+    assert channels == ["vector"]
+    assert [h.entry_id for h in hits] == [
+        h.entry_id for h in memory.search_entries("guidance", query, k=3)
+    ], "single-channel fusion reordered the vector ranking"
+    assert ids[0] == hits[0].entry_id
+    memory.close()
+
+
+def test_a_degenerate_query_embedding_falls_back_to_the_lexical_channel(
+    tmp_path: Path,
+) -> None:
+    """A behaviour *fix*, not merely a new path — and the one place hybrid changes an answer.
+
+    `search_entries` raises on a zero-magnitude query vector, and rightly: it has one channel,
+    every distance is NULL, and returning `[]` would read as "this corpus has nothing
+    relevant". `hybrid_entries` has two channels, so in exactly this case the refusal would be
+    discarding a real, rankable result to protect a distinction that is no longer at risk.
+    BM25 does not need an embedding.
+
+    So the two paths deliberately disagree here, and both are asserted in the same test
+    because the disagreement is the finding. `channels == ["fts"]` records which ranking
+    produced the hits, and the hits carry `distance=inf` — an honest "cosine did not rank
+    this" rather than a fabricated 0.0 that would claim a perfect vector match.
+    """
+    memory = _backend(tmp_path, embedder=Zeros())
+    ids = [memory.add_entry("guidance", text) for text in ENTRIES]
+
+    with pytest.raises(ValueError, match="zero magnitude"):
+        memory.search_entries("guidance", "appeal fine already sent", k=3)
+
+    hits, channels = memory.hybrid_entries("guidance", "appeal fine already sent", k=3)
+    assert channels == ["fts"], "the lexical channel did not carry a degenerate embedding"
+    assert hits[0].entry_id == ids[2]
+    assert all(h.distance == float("inf") for h in hits), (
+        "an unranked-by-cosine hit was given a fabricated distance"
+    )
+    memory.close()
+
+
+def test_both_channels_unavailable_raises_rather_than_returning_nothing(
+    tmp_path: Path,
+) -> None:
+    """Guard 7: the fallback must not become a way to hide a total retrieval failure.
+
+    The argument is `_require_rankable_query`'s, one level up. With both channels out, `[]`
+    is indistinguishable from "this corpus has nothing relevant" — and that collapse is the
+    failing-soft defect the whole backend is designed against. Broken deliberately by
+    returning `[]` instead of raising: the search came back empty and every caller-visible
+    signal was identical to a legitimate miss.
+
+    The message must name *both* reasons. Naming only the embedding invites a caller to
+    re-embed and retry against a corpus that also had no lexical hit, which is a fix for a
+    problem they only half have.
+    """
+    memory = _backend(tmp_path, embedder=Zeros())
+    memory.add_entry("guidance", "an entry whose vector is degenerate too")
+
+    with pytest.raises(ValueError) as raised:
+        memory.hybrid_entries("guidance", "kubernetes ingress certificate rotation", k=3)
+    message = str(raised.value)
+    assert "zero magnitude" in message, "the embedding half of the failure is unnamed"
+    assert "FTS index" in message, "the lexical half of the failure is unnamed"
+    assert "zeros" in message, "the embedder is not named"
+
+    # An empty corpus is *not* this case: nothing to rank is a legitimate empty answer, and
+    # it must not be routed into the dual-failure raise. Asserted on a second actor rather
+    # than a second file, since the corpus check is per-parameter-per-actor.
+    empty = SqliteMemoryBackend(
+        Advice, actor_id="unseeded", path=tmp_path / "mem.db", embedder=Zeros()
+    )
+    empty.save("guidance", [])
+    assert empty.hybrid_entries("guidance", "anything", k=3) == ([], [])
+    empty.close()
+    memory.close()
+
+
+def test_the_distance_ceiling_caps_the_vector_channel_only(tmp_path: Path) -> None:
+    """`distance_ceiling` is a statement about cosine confidence, so BM25 is exempt.
+
+    Not an oversight, and there is no BM25 counterpart to add. bm25 scores are unbounded,
+    negative, and move with corpus size and term frequency, so "far" has no fixed meaning and
+    `calibrate_ceiling` — which derives a threshold from a *distance* distribution — has
+    nothing to work with. A ceiling invented for it would be the fitted constant this whole
+    retrieval path refuses.
+
+    Two halves, and the boundary between them is exactly where a first draft got it wrong.
+    The ceiling applies to a hit *the vector channel scored*, whatever channel also found it —
+    so an entry at distance 1.0 under a ceiling of 0.5 is dropped even when it is the top
+    lexical hit, because the embedding did rank it and did say "far". What the ceiling cannot
+    touch is a hit the vector channel never scored at all: those carry `distance=inf`, and
+    `inf <= ceiling` is False, so a plain comparison would drop every one of them. Hence the
+    filter tests `entry_id not in distances` instead. The lexical-only case is reachable
+    through a degenerate query embedding, which is the arrangement below.
+    """
+    memory = SqliteMemoryBackend(
+        Advice,
+        actor_id="nav",
+        path=tmp_path / "ceiling.db",
+        embedder=TopicOnly(),
+        distance_ceiling=0.5,
+    )
+    near = memory.add_entry("guidance", "procedure note: the usual advice")
+    far = memory.add_entry("guidance", "money note: rule ORD-4471 governs the ledger")
+
+    assert [h.entry_id for h in memory.search_entries("guidance", "procedure", k=5)] == [near], (
+        "the ceiling is not excluding the far entry on the vector channel"
+    )
+
+    # Scored by the vector channel and beyond the ceiling, so dropped — even though it is the
+    # strongest lexical hit. The ceiling is a claim about the embedding, and the embedding
+    # made one.
+    hits, channels = memory.hybrid_entries("guidance", "procedure ORD-4471", k=5)
+    assert channels == ["vector", "fts"]
+    assert [h.entry_id for h in hits] == [near], (
+        "the ceiling stopped applying to a vector-scored hit"
+    )
+
+    # Never scored by the vector channel, so exempt. `Zeros` makes every distance NULL, the
+    # vector channel returns nothing, and the surviving hits carry `inf` — which no ceiling
+    # can judge and a naive comparison would discard entirely.
+    lexical_only = SqliteMemoryBackend(
+        Advice,
+        actor_id="lex",
+        path=tmp_path / "ceiling.db",
+        embedder=Zeros(),
+        distance_ceiling=0.5,
+    )
+    exempt = lexical_only.add_entry("guidance", "money note: rule ORD-4471 governs the ledger")
+    surviving, lexical_channels = lexical_only.hybrid_entries("guidance", "ORD-4471", k=5)
+    assert lexical_channels == ["fts"]
+    assert [h.entry_id for h in surviving] == [exempt], (
+        "the ceiling dropped a lexical-only hit it has no scale to judge"
+    )
+    assert surviving[0].distance == float("inf")
+    lexical_only.close()
+
+    # And the cap has not simply been disabled: tightened past every real distance, the
+    # vector-scored hits all go.
+    memory.distance_ceiling = -1.0
+    capped, _ = memory.hybrid_entries("guidance", "procedure", k=5)
+    assert capped == [], "the ceiling no longer caps the vector channel at all"
+    assert far not in [h.entry_id for h in capped]
+    memory.close()
+
+
+async def test_search_meta_records_which_channels_ranked(tmp_path: Path) -> None:
+    """The fused ranking reaches `_search`'s meta without changing the gradient contract.
+
+    Two claims, and the first is the one the optimizer depends on: `results` and `distances`
+    keep their shape and their meaning through the hybrid path, because
+    `test_search_meta_carries_retrieved_entry_ids` and the three links after it are a contract
+    with the library, not with this file.
+
+    The second is the new auditability. `channels`, `rrf_k`, and `lexical_metric` are what let
+    a reader of an event log tell a fused result from a fallback, know what constant fused it,
+    and know the row came from the backend whose engine can rank lexically at all — a
+    `TursoMemoryBackend` row never carries `lexical_metric`, because `fts_score()` cannot rank.
+
+    `distances` holding `inf` for a lexical-only hit is asserted directly. It is deliberately
+    not rounded to a number: `inf` reads as "cosine did not rank this", where a substituted
+    0.0 would claim a perfect match.
+    """
+    memory, ids = _seeded(tmp_path)
+    view = await memory.search("guidance", "appeal fine already sent", k=2)
+    assert view.meta["channels"] == ["vector", "fts"]
+    assert view.meta["rrf_k"] == RRF_K
+    assert view.meta["lexical_metric"] == "bm25"
+    assert view.meta["distance_metric"] == "vec_distance_cosine"
+    assert set(view.meta["distances"]) == set(view.meta["results"])
+    assert ids[2] in view.meta["results"]
+    assert list(view.value) == list(view.meta["results"].values())
+    memory.close()
+
+    degenerate = SqliteMemoryBackend(
+        Advice, actor_id="zeros", path=tmp_path / "mem.db", embedder=Zeros()
+    )
+    degenerate.add_entry("guidance", "an appeal may only follow a fine that was already sent")
+    fallback = await degenerate.search("guidance", "appeal fine", k=1)
+    assert fallback.meta["channels"] == ["fts"], "a fallback is invisible in the event log"
+    assert list(fallback.meta["distances"].values()) == [float("inf")]
+    degenerate.close()
 
 
 # ── Retrieval discrimination: the guard against failing soft ──

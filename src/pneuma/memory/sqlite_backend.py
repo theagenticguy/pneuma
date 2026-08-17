@@ -37,13 +37,53 @@ other, and this module reuses `pack_vector` rather than adding a second packer.
 
 Ranking is an ordinary table scan ordered ASC, not a `vec0` virtual table. See the design
 doc for why an exact scan is the honest choice at these entry counts.
+
+**Hybrid retrieval lives here and nowhere else, because only this driver can rank
+lexically.** `turso_backend.py` has no FTS path and its docstring says why: Turso's FTS
+exists, but `fts_score()` returns 0.0 for *every* matching row, so it can select a matching
+set and cannot order it — the ABC's `k` would take an arbitrary subset. Stdlib `sqlite3`
+ships FTS5 with a real `bm25()`: measured on this build (SQLite 3.53.1, `ENABLE_FTS5`),
+`bm25(memory_entry_fts)` returns distinct negative scores that order by match strength. So
+`hybrid_entries` and `_search` fuse a vector channel with a lexical one, and the Turso
+sibling keeps a pure-vector `_search`. That is a capability difference between two engines,
+not a design difference between two backends, and it is the one place the "drop-in sibling"
+claim is deliberately asymmetric.
+
+**Fusion is Reciprocal Rank Fusion, not a weighted score blend, and that is a defect-class
+decision rather than a preference.** Cosine distance is on [0, 2] and small-is-better;
+`bm25()` is unbounded, negative, and corpus-dependent. Any `alpha * vector + (1 - alpha) *
+lexical` needs a normalisation and an `alpha`, and neither is measured — they are fitted
+constants sitting in a ranking path where a wrong value fails soft, which is exactly the
+defect class `pneuma.detect` exists to catch and the same argument
+`calibrate_ceiling` makes about a guessed `distance_ceiling`. RRF reads only each channel's
+*rank*, so it needs no shared scale and has one constant (`RRF_K = 60`) whose effect is a
+monotone reweighting of ranks rather than a threshold.
+
+**The lexical index is a second copy of the entry text, kept honest by being countable.**
+The design doc rejects a `vec0` table partly because it duplicates state that can diverge;
+`memory_entry_fts` duplicates state too. The difference is auditability: a drifted *vector*
+fails by returning plausible neighbours nobody can check, while a drifted *text* copy is
+directly comparable to its source in one query. `fts_drift` is that query, and it sits
+beside `unranked_entries` and `degenerate_entries` for the same reason they exist.
+
+**Sync is manual, not by trigger, and two facts force it.** `init_schema` splits `SCHEMA`
+on `;` and runs the statements one at a time — deliberately, because `executescript` issues
+an implicit `COMMIT` that would commit a borrowed connection's in-flight transaction — and a
+`CREATE TRIGGER ... BEGIN ...; ...; END` body contains semicolons, so the split hands SQLite
+`OperationalError: incomplete input` (measured). More decisively, a trigger cannot index
+rows that predate it: the portability property this backend rests on lets
+`TursoMemoryBackend` write a corpus that is then reopened here, and those `memory_entry`
+rows exist with no FTS rows at all. A backfill is required either way, and once
+`init_schema` reconciles the index there is nothing left for a trigger to buy.
 """
 
 from __future__ import annotations
 
 import ast
+import re
 import sqlite3
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -92,8 +132,6 @@ from .turso_backend import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from ai_functions.types.graph import GradFeedback
     from pydantic import BaseModel
     from strands.models import Model
@@ -140,15 +178,153 @@ CREATE TABLE IF NOT EXISTS memory_score_observation (
 );
 
 {CACHE_SCHEMA}
-"""
-"""Identical in shape to `turso_backend.SCHEMA`, and deliberately a separate literal.
 
-Every type here (`TEXT`, `REAL`, `INTEGER`, `PRIMARY KEY`, `CREATE INDEX IF NOT EXISTS`) is
-plain SQLite, so the two DDLs happen to be byte-identical today. They are not shared,
-because importing the Turso module's schema would make a Turso-side change to a column a
-silent change to this backend's storage — and the whole reason this file exists is that the
-two engines are not the same engine.
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_entry_fts USING fts5(
+  value,
+  actor_id UNINDEXED,
+  param    UNINDEXED,
+  entry_id UNINDEXED,
+  tokenize = 'unicode61'
+);
 """
+"""The first four tables are identical in shape to `turso_backend.SCHEMA`, deliberately as a
+separate literal; `memory_entry_fts` has no Turso counterpart and cannot have one.
+
+Every type in the shared part (`TEXT`, `REAL`, `INTEGER`, `PRIMARY KEY`, `CREATE INDEX IF
+NOT EXISTS`) is plain SQLite, so those DDLs happen to be byte-identical today. They are not
+shared, because importing the Turso module's schema would make a Turso-side change to a
+column a silent change to this backend's storage — and the whole reason this file exists is
+that the two engines are not the same engine.
+
+`memory_entry_fts` is the lexical half of hybrid retrieval, and three choices in it are
+load-bearing:
+
+**Contentless-adjacent by convention, not by `content=''`.** FTS5 offers a true external-
+content table (`content='memory_entry'`), which stores no text of its own and reads the
+original row by rowid. It is rejected: it binds the index to `memory_entry.rowid`, an
+implicit alias on a table whose primary key is the composite `(actor_id, param, entry_id)`.
+Nothing in this module ever reads that rowid, so nothing would notice it changing — and
+measured, `VACUUM` after a delete leaves surviving rowids alone *this* time, which is worse
+than a guarantee because it invites the assumption. Every joinable identity in this file is
+already `(actor_id, param, entry_id)`, so the index carries those three columns
+`UNINDEXED` and joins on them. The cost is one duplicated copy of the entry text; `fts_drift`
+makes the duplication auditable rather than trusted.
+
+**`UNINDEXED` on the three key columns.** Without it an actor id or a parameter name becomes
+a searchable term, so a query mentioning `guidance` matches every entry of the `guidance`
+parameter at a bm25 score indistinguishable from a real content match. They are stored for
+the join and excluded from the index.
+
+**`tokenize='unicode61'`, which is the default, written out.** The default is not a detail
+here: it folds diacritics and splits on Unicode categories, so `café` and `价格 上涨` tokenize
+(verified) rather than collapsing to nothing. Naming it means a future switch to `porter` or
+`trigram` — each of which would change what `bm25()` scores and therefore what the fused
+ranking returns — is a visible edit rather than a silent inherit.
+"""
+
+
+RRF_K = 60
+"""The rank-smoothing constant in Reciprocal Rank Fusion: `1 / (RRF_K + rank)`.
+
+60 is the value from Cormack, Clarke & Buettcher's original RRF paper and it is a *shape*
+parameter, not a fitted threshold — which is the whole reason a constant is tolerable here at
+all. Raising it flattens the contribution curve so the two channels approach equal weight
+per rank; lowering it sharpens the premium on being first. Every value orders the fused list
+somehow, and no value can make the fusion return nothing or admit a hit neither channel
+found, so a wrong `RRF_K` degrades ranking quality rather than silently changing what the
+result *means*. Contrast a normalisation-and-`alpha` blend, where the same wrongness makes
+one channel's scores dominate arithmetically while every observable signal stays identical.
+
+Exposed as a module constant rather than a default argument so the value a fused ranking used
+is nameable from a test and from the result meta.
+"""
+
+_FTS_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+"""Runs of word characters, underscore excluded: the tokens a query contributes to MATCH.
+
+Deliberately the same *class* of split `unicode61` performs rather than an attempt to
+reproduce it exactly. It does not have to match: a token this finds that FTS5 would have
+folded away simply matches nothing, and `fts_entries` treats a zero-hit query as an honest
+lexical miss.
+"""
+
+
+def fts_match_expression(query: str) -> str:
+    """Turn arbitrary user text into a safe FTS5 MATCH expression: `"tok" OR "tok" OR ...`.
+
+    Query text here is *model-authored or user-authored prose*, and MATCH is a query language
+    of its own — not a string. Passing prose through raw is both a crash and a correctness
+    problem, and every case below was measured against this build rather than read off the
+    documentation:
+
+        MATCH ''            -> OperationalError: fts5: syntax error near ""
+        MATCH 'AND'         -> OperationalError: fts5: syntax error near "AND"
+        MATCH 'NEAR('       -> OperationalError: fts5: syntax error near ""
+        MATCH '-x'          -> OperationalError: no such column: x
+        MATCH 'a:b'         -> OperationalError: no such column: a
+
+    So a bare `AND` in an entry query, an unbalanced paren from a truncated prompt, or a
+    colon in `note: check this` each raise from inside a ranking path — and the last two
+    raise `no such column`, which reads as a schema bug rather than as untrusted input. Note
+    what the parameter placeholder does *not* protect: binding stops SQL injection into the
+    statement, and MATCH parsing happens afterwards on the bound value.
+
+    Tokenising and re-quoting rather than escaping in place, because the two obvious cheaper
+    fixes are both wrong. Wrapping the whole query in one quoted literal (`'"' + query + '"'`)
+    parses fine but means a *phrase* search: measured, `"he said ""AND"" loudly"` returns 0
+    rows against a corpus containing every one of those words, so the lexical channel would
+    silently contribute nothing for any query longer than an exact substring. And escaping
+    only `"` leaves `-x`, `a:b`, and `(` still raising.
+
+    Each token becomes its own quoted literal, which makes FTS5 treat operator words as
+    ordinary terms — verified, `"a" OR "AND"` matches — and the tokens are OR-ed because a
+    disjunction is the recall-shaped choice: an AND over a nine-word question would require
+    every word present and the channel would be empty in exactly the cases hybrid retrieval
+    exists to catch. Ranking within the matched set is `bm25()`'s job, and it already
+    rewards a row matching more of the query.
+
+    Returns:
+        A MATCH expression, or `""` when the query holds no indexable token at all
+        (punctuation only, say). Empty is returned rather than a placeholder expression
+        because `fts_entries` must be able to tell "the lexical channel cannot run" from
+        "it ran and matched nothing" — collapsing those is the same failing-soft mistake
+        `_require_rankable_query` refuses on the vector side.
+    """
+    tokens = _FTS_TOKEN.findall(query)
+    return " OR ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
+def reciprocal_rank_fusion(channels: Sequence[Sequence[str]], k: int = RRF_K) -> dict[str, float]:
+    """Fuse ranked id lists into `{entry_id: rrf_score}`, higher is better.
+
+    Reads each channel's *rank position only* — never its score — which is the point.
+    `vec_distance_cosine` yields [0, 2] where small is better, `bm25()` yields unbounded
+    negatives where small is also better but on a scale that moves with corpus size and term
+    frequency; measured on a three-entry corpus, bm25 scores ranged over five orders of
+    magnitude (-1.45 to -9.9e-07) for the same query. There is no normalisation of those two
+    that is not a fitted constant, so ranks are used and the scales never meet.
+
+    A hit present in both channels accumulates both terms, so agreement between an
+    independent semantic ranking and an independent lexical one is what promotes an entry —
+    which is the actual retrieval claim hybrid search makes.
+
+    Args:
+        channels: One ranked list of entry ids per channel, best first. An empty
+            channel contributes nothing, which is how a fallback is expressed:
+            fusing over one channel returns that channel's own order.
+        k: Rank smoothing; see `RRF_K`.
+
+    Returns:
+        `{entry_id: score}` over the union of the channels. Unordered on purpose —
+        ties are real and frequent (any two ids appearing at the same rank in
+        single-channel lists of the same length tie exactly), so the caller breaks
+        them explicitly rather than inheriting dict order.
+    """
+    fused: dict[str, float] = {}
+    for ranking in channels:
+        for position, entry_id in enumerate(ranking):
+            fused[entry_id] = fused.get(entry_id, 0.0) + 1.0 / (k + position + 1)
+    return fused
 
 
 class VectorExtensionUnavailable(RuntimeError):
@@ -212,10 +388,13 @@ def load_vector_extension(connection: sqlite3.Connection) -> None:
 
 
 class SqliteMemoryBackend(MemoryBackend):
-    """Memory over stdlib `sqlite3` + `sqlite-vec`: addressable entries, vector recall.
+    """Memory over stdlib `sqlite3` + `sqlite-vec` + FTS5: addressable entries, hybrid recall.
 
     Behaviourally the same object as `TursoMemoryBackend` — the two pass one shared test
-    contract — so the surface below is stated by reference rather than re-argued.
+    contract — so most of the surface below is stated by reference rather than re-argued. The
+    one deliberate asymmetry is the lexical channel: `_search` here fuses a vector ranking
+    with a `bm25()` one, and the Turso sibling cannot, because its `fts_score()` returns 0.0
+    for every matching row. See the module docstring.
 
     ## Public surface
 
@@ -223,17 +402,28 @@ class SqliteMemoryBackend(MemoryBackend):
         `path`, `connection`, `backend_id`, `close`, `init_schema`
 
     Entries (list parameters), keyed by never-reused monotonic ids:
-        `list_entries`, `add_entry`, `update_entry`, `remove_entry`, `search_entries`
+        `list_entries`, `add_entry`, `update_entry`, `remove_entry`
+
+    Retrieval, three ways, and the choice between them is not cosmetic:
+        `hybrid_entries` — vector + `bm25()`, fused by RRF. What `_search` uses.
+        `search_entries` — the vector channel alone. What `probe_retrieval`,
+            `calibrate_ceiling`, and the shared `EntryToolProvider` use, because a
+            distance-distribution verdict cannot be measured through a fused ranking.
+        `fts_entries` — the lexical channel alone, mostly for auditing which channel
+            produced a hit.
 
     Numeric parameters, learned from `GradFeedback.score`:
         `numeric_value`, `observations`
 
     Retrieval quality, because an embedding backend fails soft:
-        `probe_retrieval`, `calibrate_ceiling`, `distance_ceiling` (`None` = no cap)
+        `probe_retrieval`, `calibrate_ceiling`, `distance_ceiling` (`None` = no cap;
+        applies to the vector channel only, since `bm25()` has no calibratable scale)
 
-    Countable retrieval gaps, both of which a bare `search` hides:
+    Countable retrieval gaps, every one of which a bare `search` hides:
         `unranked_entries` — no cached vector, so the inner join drops them
         `degenerate_entries` — zero-magnitude vector, so `vec_distance_cosine` is NULL
+        `fts_drift` — the lexical index disagrees with `memory_entry` (missing / stale /
+            orphaned), repaired by `reindex_fts`
 
     Inherited from `MemoryBackend` and *not* overridden, deliberately: `recall`, `query`,
     `search`, `consolidate`, `save`, `fetch`, `delete`. Overriding those instead of the
@@ -291,15 +481,28 @@ class SqliteMemoryBackend(MemoryBackend):
     # ── Storage setup ──
 
     def init_schema(self) -> None:
-        """Create the memory tables if absent. Safe to call on a shared database.
+        """Create the memory tables if absent, then reconcile the FTS index against them.
 
         Statements are split and run one at a time rather than through
         `executescript`, which issues an implicit `COMMIT` first and would therefore
-        commit a borrowed connection's in-flight transaction on the way past.
+        commit a borrowed connection's in-flight transaction on the way past. That split is
+        also why FTS sync is manual rather than trigger-driven: a `CREATE TRIGGER ... BEGIN
+        ...; ...; END` body contains semicolons, so splitting on `;` hands SQLite
+        `OperationalError: incomplete input`. Measured, not inferred.
+
+        `reindex_fts` runs on every open, and it is not merely defensive. Two supported
+        arrangements produce `memory_entry` rows with no FTS row at all, and both are
+        properties this backend advertises: a database written by `TursoMemoryBackend` and
+        reopened here has no `memory_entry_fts` table until this call creates it, and a
+        `connection=` handle somebody else wrote entries into never went through this
+        module's write path. A trigger could not have covered either, since it cannot index
+        rows that predate it. It is a no-op — one comparison query, no writes — once the
+        index agrees.
         """
         for statement in filter(str.strip, SCHEMA.split(";")):
             self.connection.execute(statement)
         self.connection.commit()
+        self.reindex_fts()
 
     def _seed_defaults(self) -> None:
         """Write each parameter's schema default on first use of this actor.
@@ -439,6 +642,127 @@ class SqliteMemoryBackend(MemoryBackend):
         )
         return (int(row[0]) if row is not None else -1) + 1
 
+    # ── Lexical index sync ──
+    #
+    # Every write to `memory_entry` is paired with the matching write to
+    # `memory_entry_fts` *before* the `commit()` that publishes it, so the two are
+    # never both visible and disagreeing. Manual rather than trigger-driven for the
+    # reasons `init_schema` and the module docstring give; `fts_drift` is the check
+    # that the pairing was not missed anywhere, and it is asserted after every write
+    # path in the test suite rather than argued here.
+
+    def _fts_delete(self, name: str, entry_id: str) -> None:
+        """Drop one entry's row from the lexical index. Uncommitted."""
+        self.connection.execute(
+            "DELETE FROM memory_entry_fts WHERE actor_id = ? AND param = ? AND entry_id = ?",
+            (self.actor_id, name, entry_id),
+        )
+
+    def _fts_insert(self, name: str, entry_id: str, value: str) -> None:
+        """Add one entry's row to the lexical index. Uncommitted."""
+        self.connection.execute(
+            "INSERT INTO memory_entry_fts (value, actor_id, param, entry_id) VALUES (?, ?, ?, ?)",
+            (value, self.actor_id, name, entry_id),
+        )
+
+    def _fts_replace(self, name: str, entry_id: str, value: str) -> None:
+        """Re-index one entry: delete then insert, because FTS5 has no upsert on a join key.
+
+        Delete-then-insert rather than `UPDATE ... SET value = ?`, which FTS5 does support.
+        The reason is that the delete is unconditional, so an entry that somehow acquired two
+        index rows converges to one instead of updating both and staying doubled — and a
+        doubled row would score the entry twice in `bm25()`, promoting it for no reason a
+        reader could see.
+        """
+        self._fts_delete(name, entry_id)
+        self._fts_insert(name, entry_id, value)
+
+    def _fts_delete_param(self, name: str) -> None:
+        """Drop every index row for one parameter, for a wholesale replace. Uncommitted."""
+        self.connection.execute(
+            "DELETE FROM memory_entry_fts WHERE actor_id = ? AND param = ?",
+            (self.actor_id, name),
+        )
+
+    def fts_drift(self) -> list[tuple[str, str, str]]:
+        """Rows where `memory_entry` and `memory_entry_fts` disagree, as `(param, id, why)`.
+
+        The lexical index is a second copy of the entry text, and the design doc rejects a
+        `vec0` vector table partly *because* it would duplicate state that can diverge. This
+        duplication is accepted on one condition: that the divergence is countable, in the
+        same spirit as `unranked_entries` and `degenerate_entries`. Three ways they can
+        disagree, and they need different fixes, so they are reported separately:
+
+            `missing`   — an entry with no index row, so it is invisible to the lexical
+                          channel while ranking normally on the vector one. This is what a
+                          Turso-written database looks like before `reindex_fts`.
+            `stale`     — an index row whose text is not the entry's current text. The
+                          serious one: the entry still matches, on the *old* words, so
+                          retrieval keeps working and keeps being wrong. A rewritten entry
+                          that skipped `_fts_replace` looks exactly like this.
+            `orphaned`  — an index row for an entry that no longer exists. It contributes a
+                          lexical hit whose join to `memory_entry` finds nothing, so it
+                          silently shrinks the candidate set.
+
+        Should always be empty. It is a method rather than an assertion so a caller who
+        borrowed the connection and wrote entries through it can find out.
+        """
+        rows = fetch_rows(
+            self.connection,  # pyright: ignore[reportArgumentType]
+            "SELECT e.param, e.entry_id, 'missing' FROM memory_entry e "
+            "LEFT JOIN memory_entry_fts f "
+            "  ON f.actor_id = e.actor_id AND f.param = e.param AND f.entry_id = e.entry_id "
+            "WHERE e.actor_id = ? AND f.entry_id IS NULL "
+            "UNION ALL "
+            "SELECT e.param, e.entry_id, 'stale' FROM memory_entry e "
+            "JOIN memory_entry_fts f "
+            "  ON f.actor_id = e.actor_id AND f.param = e.param AND f.entry_id = e.entry_id "
+            "WHERE e.actor_id = ? AND f.value <> e.value "
+            "UNION ALL "
+            "SELECT f.param, f.entry_id, 'orphaned' FROM memory_entry_fts f "
+            "LEFT JOIN memory_entry e "
+            "  ON e.actor_id = f.actor_id AND e.param = f.param AND e.entry_id = f.entry_id "
+            "WHERE f.actor_id = ? AND e.entry_id IS NULL "
+            "ORDER BY 1, 2, 3",
+            (self.actor_id, self.actor_id, self.actor_id),
+        )
+        return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+    def reindex_fts(self) -> int:
+        """Rebuild this actor's lexical index from `memory_entry`; return rows reconciled.
+
+        `memory_entry` is the single source of truth and the index is derived, so a
+        disagreement is repaired in one direction only — there is no case where the index is
+        right and the entry is wrong. Called by `init_schema` on every open, which is what
+        makes the two arrangements that cannot be trigger-covered work: a database written by
+        `TursoMemoryBackend` (no FTS table existed) and a borrowed connection somebody else
+        wrote entries into.
+
+        Scoped to this actor, and deliberately not to the whole file. Several actors share
+        one database, and reindexing another actor's entries from this backend would be a
+        write outside the namespace every other statement in this module confines itself to.
+        A rebuild that reached across actors would also make two backends opening the same
+        file at once each undo the other's in-flight state.
+
+        Returns 0 when the index already agrees, which is the normal case and costs one
+        comparison query.
+        """
+        drift = self.fts_drift()
+        if not drift:
+            return 0
+        for param, entry_id, _ in drift:
+            self._fts_delete(param, entry_id)
+        for param, entry_id, _ in drift:
+            row = fetch_one(
+                self.connection,  # pyright: ignore[reportArgumentType]
+                "SELECT value FROM memory_entry WHERE actor_id = ? AND param = ? AND entry_id = ?",
+                (self.actor_id, param, entry_id),
+            )
+            if row is not None:
+                self._fts_insert(param, entry_id, str(row[0]))
+        self.connection.commit()
+        return len(drift)
+
     def add_entry(self, name: str, value: str) -> str:
         """Append an entry and return its stable id."""
         self._require_list(name)
@@ -457,6 +781,7 @@ class SqliteMemoryBackend(MemoryBackend):
                 time.time(),
             ),
         )
+        self._fts_replace(name, entry_id, value)
         self.connection.commit()
         return entry_id
 
@@ -468,6 +793,14 @@ class SqliteMemoryBackend(MemoryBackend):
         next search re-embeds it. A cache keyed by entry id would serve the pre-rewrite
         vector for post-rewrite text, and the mistake would be invisible because a vector
         search always returns something ranked.
+
+        The lexical index gets the same treatment for the same reason, and this is the write
+        path a consolidation rewrite takes. Content addressing handles the vector side
+        *structurally* — a new digest cannot hit an old cache row — but the FTS index is keyed
+        by entry id, so nothing about its layout makes staleness impossible and
+        `_fts_replace` has to be called. Skipping it leaves the entry matching on its
+        pre-rewrite words: retrieval keeps working, keeps returning the entry, and returns it
+        for the wrong reasons. `fts_drift` reports that as `stale`.
         """
         self._require_list(name)
         if not self._entry_exists(name, entry_id):
@@ -477,11 +810,17 @@ class SqliteMemoryBackend(MemoryBackend):
             "WHERE actor_id = ? AND param = ? AND entry_id = ?",
             (value, digest_of(value), time.time(), self.actor_id, name, entry_id),
         )
+        self._fts_replace(name, entry_id, value)
         self.connection.commit()
         return True
 
     def remove_entry(self, name: str, entry_id: str) -> bool:
-        """Delete an entry by id. The id is retired, never reused."""
+        """Delete an entry by id. The id is retired, never reused.
+
+        The index row goes with it. Left behind it would be an `orphaned` row: a lexical hit
+        whose join to `memory_entry` finds nothing, so the fused candidate set shrinks with
+        no signal that it did.
+        """
         self._require_list(name)
         if not self._entry_exists(name, entry_id):
             return False
@@ -489,10 +828,11 @@ class SqliteMemoryBackend(MemoryBackend):
             "DELETE FROM memory_entry WHERE actor_id = ? AND param = ? AND entry_id = ?",
             (self.actor_id, name, entry_id),
         )
+        self._fts_delete(name, entry_id)
         self.connection.commit()
         return True
 
-    # ── Vector retrieval ──
+    # ── Retrieval: two channels, fused ──
 
     def embed_pending(self, name: str) -> int:
         """Embed every entry of `name` that has no cached vector; return the count.
@@ -516,7 +856,15 @@ class SqliteMemoryBackend(MemoryBackend):
         return len(pending)
 
     def search_entries(self, name: str, query: str, k: int = 5) -> list[Retrieved]:
-        """Return the top-k entries by `vec_distance_cosine ASC`.
+        """Return the top-k entries by `vec_distance_cosine ASC`. The vector channel alone.
+
+        Kept pure-vector deliberately, even though `_search` is hybrid by default. Three
+        callers need a single-metric ranking and would be made unsound by a fused one:
+        `probe_retrieval`, whose whole verdict is a margin between two *distance*
+        distributions; `calibrate_ceiling`, which derives a distance threshold from that
+        margin; and `EntryToolProvider`, imported from `turso_backend` and shared with a
+        backend that has no lexical channel at all. `hybrid_entries` is the fused path, and
+        `_search` routes through it.
 
         Ranking happens in the database over a JOIN against the embedding cache, so no
         corpus is materialized in Python. It is an ordinary table scan with an ORDER BY,
@@ -580,19 +928,274 @@ class SqliteMemoryBackend(MemoryBackend):
         cosine is undefined without a direction. Raising here rather than returning `[]`
         keeps "no relevant entries" and "no ranking was possible" distinguishable, which is
         the distinction the `Discrimination` guard exists to protect.
+
+        Still a refusal on this path, and that is not an inconsistency with
+        `hybrid_entries`, which degrades to the lexical channel in the same situation.
+        `search_entries` is single-channel by contract — `probe_retrieval` and
+        `calibrate_ceiling` need it to be — so here there genuinely is no ranking left, and
+        the distinction the raise protects is genuinely at risk.
         """
-        row = fetch_one(
-            self.connection,  # pyright: ignore[reportArgumentType]
-            "SELECT vec_distance_cosine(?, ?)",
-            (vector, vector),
-        )
-        if row is None or row[0] is None:
+        if not self._query_vector_is_rankable(vector):
             raise ValueError(
                 f"The embedding for query {query[:60]!r} has zero magnitude, so "
                 "vec_distance_cosine cannot rank anything against it and every distance "
                 f"would be NULL. Embedder {self.cache.embedder.model_id!r} returned a "
                 "degenerate vector; an empty result list would have hidden that."
             )
+
+    def fts_entries(self, name: str, query: str, k: int = 5) -> list[tuple[str, str, float]]:
+        """Return the top-k entries by `bm25()` ASC, as `(entry_id, value, bm25_score)`.
+
+        The lexical channel, and the capability that has no Turso counterpart: `bm25()`
+        returns real, distinct, order-bearing scores where Turso's `fts_score()` returns 0.0
+        for every matching row. Measured on this build over a three-entry corpus, one query
+        scored -1.4506, -1.07e-06, and -9.86e-07 — three ranks, and a range spanning six
+        orders of magnitude, which is the concrete reason `reciprocal_rank_fusion` reads ranks
+        and not scores.
+
+        **`bm25()` is negative and ASCending is best-first**, which is the opposite sign
+        convention from most BM25 implementations and is easy to get backwards. SQLite's FTS5
+        negates the score specifically so that `ORDER BY rank` (an alias for `bm25()` on the
+        table) is best-first, matching every other `ORDER BY ... ASC` in this module.
+        `test_bm25_is_negative_so_ascending_is_best_first` pins it as a property of the
+        database, so a future FTS5 that flips the sign fails there rather than silently
+        inverting the lexical channel — which would fail soft, since an inverted ranking still
+        returns k plausible entries.
+
+        Three shapes in the SQL that were established by probing and each of which fails
+        differently:
+
+        The MATCH target is the **unaliased table name**. `FROM memory_entry_fts f ... WHERE f
+        MATCH ?` raises `OperationalError: no such column: f`, and so does `bm25(f)`; both the
+        match operand and the `bm25()` argument must be the literal table name even when the
+        rest of the query is aliased.
+
+        `bm25(memory_entry_fts)` is aliased to `bm25_score` and the ORDER BY names the alias,
+        not a second call. FTS5 auxiliary functions are only valid in a full-text query, and
+        repeating the call is a second evaluation of a nontrivial function per row.
+
+        The **actor and parameter filters sit on the FTS table**, not only on the joined
+        entry table. They are the same rows either way, but filtering the virtual table lets
+        FTS5 drop non-matching rows before the join instead of after — and, more importantly,
+        makes the namespace confinement visible in the same clause as the MATCH.
+
+        Returns `[]` for a query with no indexable token, and for one whose tokens are all
+        absent from the corpus. Those are *both* honest lexical misses and the caller treats
+        them identically; what neither of them is, is a crash — see `fts_match_expression`
+        for the five MATCH inputs that used to be one.
+        """
+        self._require_list(name)
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        expression = fts_match_expression(query)
+        if not expression:
+            return []
+        rows = fetch_rows(
+            self.connection,  # pyright: ignore[reportArgumentType]
+            "SELECT e.entry_id, e.value, bm25(memory_entry_fts) AS bm25_score "
+            "FROM memory_entry_fts "
+            "JOIN memory_entry e "
+            "  ON e.actor_id = memory_entry_fts.actor_id "
+            "  AND e.param = memory_entry_fts.param "
+            "  AND e.entry_id = memory_entry_fts.entry_id "
+            "WHERE memory_entry_fts MATCH ? "
+            "  AND memory_entry_fts.actor_id = ? AND memory_entry_fts.param = ? "
+            "ORDER BY bm25_score ASC, e.entry_id ASC LIMIT ?",
+            (expression, self.actor_id, name, k),
+        )
+        return [(str(row[0]), str(row[1]), float(row[2])) for row in rows]
+
+    def hybrid_entries(
+        self, name: str, query: str, k: int = 5, overfetch: int = 3
+    ) -> tuple[list[Retrieved], list[str]]:
+        """Fuse the vector and lexical channels by RRF; return `(hits, channels_used)`.
+
+        The retrieval `_search` uses, and it strictly dominates the vector channel it
+        replaces: the embeddings are identical, the vector candidate list is over-fetched
+        rather than truncated, and the lexical channel can only add candidates a cosine
+        ranking missed. An exact-term match that the embedder happens to place far away — a
+        rare identifier, a case number, a spelled-out rule name — is the case a bag-of-vectors
+        model reliably loses and BM25 reliably wins.
+
+        ## Fusion
+
+        Both channels are fetched at `overfetch * k` (bounded below by `k`) and fused by
+        `reciprocal_rank_fusion`, which reads rank positions only. Over-fetching is what makes
+        the fusion mean anything: at exactly `k` per channel, an entry ranked k+1 by vector
+        and 1 by BM25 could never be promoted, so the fusion would only ever reorder what the
+        vector channel already returned. Three is a shape choice with the same character as
+        `RRF_K` — larger costs a longer candidate list and cannot change what the fusion
+        *means*.
+
+        ## Deterministic tiebreaking, and why it needs saying
+
+        RRF ties are not an edge case, they are the common case. Two entries at the same rank
+        in two single-channel lists tie exactly, and with one channel running *every* pair of
+        adjacent hits has a distinct score only because the ranks differ — so any fallback to
+        dict insertion order decides real winners. `detect/objective.py` carries the measured
+        version of this defect: on a 21^3 metric grid, 21 points tied for smallest
+        `edge_share` while scoring anywhere from 0.0 to 0.9744, and which one became "the
+        answer" was decided by `itertools.product`'s iteration order. Its fix and this one are
+        the same fix — tiebreak on a *measured* quantity, then on a stable identifier:
+
+            (-rrf_score, bm25_score, distance, entry_id)
+
+        `bm25_score` first among the tiebreakers because it is the requested rerank and it is
+        the quantity RRF deliberately discarded, so it is exactly the information available to
+        break a rank tie. `distance` next, for a tie among entries the lexical channel did not
+        score. `entry_id` last, so the order is total: with it, the same corpus and query
+        return the same list on every run and in every process, which is what makes a
+        retrieval assertion in a test a claim about ranking rather than about a hash seed.
+        Entries missing from a channel sort last within it (`+inf`), never first.
+
+        ## Honest degradation
+
+        `channels` names which rankings actually produced the hits, and it travels into
+        `_search`'s meta so a reader auditing an event log can tell a fused result from a
+        fallback. Four cases:
+
+            `["vector", "fts"]`  both ran and both matched — the normal case.
+            `["vector"]`         no lexical hit (every query term absent, or the query has no
+                                 indexable token). Pure vector, unchanged behaviour.
+            `["fts"]`            the query embedding is degenerate but terms matched. This is
+                                 a **behaviour fix**: `search_entries` raises here, and
+                                 rightly, because it has only the one channel. With a working
+                                 lexical ranking, refusing would discard a real result to
+                                 protect a distinction that is no longer at risk.
+            raise                both channels are unavailable. Only then, and the message
+                                 names both reasons, because `[]` here would read as "this
+                                 corpus has nothing relevant" when the truth is "nothing could
+                                 be ranked at all" — the failing-soft collapse the whole
+                                 backend is designed against.
+
+        `distance_ceiling` is applied to the vector channel and to nothing else. BM25 has no
+        ceiling and cannot be given one by analogy: the scores are unbounded, negative, and
+        move with corpus size and term frequency, so there is no value a caller could
+        calibrate and no `calibrate_ceiling` that could derive one. A hit the lexical channel
+        found and the vector channel placed beyond the ceiling therefore survives — correctly,
+        since the ceiling is a statement about *cosine* confidence and says nothing about an
+        exact term match. Both facts are in the result meta so the asymmetry is auditable
+        rather than surprising.
+
+        Returns:
+            `(hits, channels)`. `hits` are `Retrieved`, so a caller cannot tell a fused
+            result from a vector one by type. `distance` is the cosine distance where the
+            vector channel scored the entry, and `inf` for a lexical-only hit — an honest
+            "this metric did not rank it" rather than a fabricated number, and readable as
+            such by the `distance_ceiling` comparison, which `inf` fails.
+
+        Raises:
+            ValueError: `k < 1`, or neither channel could rank.
+        """
+        self._require_list(name)
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        if overfetch < 1:
+            raise ValueError(f"overfetch must be >= 1, got {overfetch}")
+        if not self._entry_rows(name):
+            return [], []
+
+        candidates = max(k * overfetch, k)
+
+        lexical = self.fts_entries(name, query, k=candidates)
+        lexical_ranking = [entry_id for entry_id, _, _ in lexical]
+        bm25_scores = {entry_id: score for entry_id, _, score in lexical}
+
+        self.embed_pending(name)
+        query_vector = self.cache.vector(query, QUERY)
+        vector_rankable = self._query_vector_is_rankable(query_vector)
+        vector: list[Retrieved] = []
+        if vector_rankable:
+            vector = self._vector_channel(name, query_vector, candidates)
+        elif not lexical:
+            # Both channels are out, and only now is a raise the honest answer. Naming both
+            # reasons because a caller seeing only the embedding half would re-embed and try
+            # again against a corpus that also had no lexical hit.
+            raise ValueError(
+                f"Neither channel can rank query {query[:60]!r} for '{name}': the embedding "
+                f"from {self.cache.embedder.model_id!r} has zero magnitude, so every "
+                "vec_distance_cosine is NULL, and no query term appears in the FTS index "
+                "either. An empty result list would have read as an irrelevant corpus."
+            )
+
+        distances = {hit.entry_id: hit.distance for hit in vector}
+        values = {hit.entry_id: hit.value for hit in vector}
+        values.update({entry_id: value for entry_id, value, _ in lexical})
+
+        fused = reciprocal_rank_fusion([[hit.entry_id for hit in vector], lexical_ranking], k=RRF_K)
+        ordered = sorted(
+            fused,
+            key=lambda entry_id: (
+                -fused[entry_id],
+                bm25_scores.get(entry_id, float("inf")),
+                distances.get(entry_id, float("inf")),
+                entry_id,
+            ),
+        )
+
+        hits = [
+            Retrieved(
+                entry_id=entry_id,
+                value=values[entry_id],
+                distance=distances.get(entry_id, float("inf")),
+            )
+            for entry_id in ordered
+        ]
+        if self.distance_ceiling is not None:
+            # Vector-channel-only, as the docstring argues. A lexical-only hit carries
+            # `distance=inf`, so it must be exempted explicitly rather than compared: `inf <=
+            # ceiling` is False, and letting the comparison stand would silently make the
+            # ceiling drop every hit BM25 found alone.
+            hits = [
+                hit
+                for hit in hits
+                if hit.entry_id not in distances or hit.distance <= self.distance_ceiling
+            ]
+
+        channels = [
+            *(["vector"] if vector else []),
+            *(["fts"] if lexical_ranking else []),
+        ]
+        return hits[:k], channels
+
+    def _vector_channel(self, name: str, query_vector: bytes, k: int) -> list[Retrieved]:
+        """The vector half of `hybrid_entries`, with no ceiling applied.
+
+        Factored out of `search_entries` rather than called through it, for one reason that
+        matters: `search_entries` applies `distance_ceiling` to its own result, and applying
+        it here would drop candidates *before* fusion. A hit the ceiling excludes on cosine
+        grounds may still be the top lexical hit, and pre-filtering it would make the fused
+        ranking depend on the ceiling in a way `hybrid_entries`'s "vector channel only"
+        promise denies. The ceiling is applied once, at the end, to the fused list.
+        """
+        rows = fetch_rows(
+            self.connection,  # pyright: ignore[reportArgumentType]
+            "SELECT e.entry_id, e.value, vec_distance_cosine(c.embedding, ?) AS distance "
+            "FROM memory_entry e "
+            "JOIN memory_embedding_cache c "
+            "  ON c.digest = e.digest AND c.input_type = ? AND c.model_id = ? "
+            "WHERE e.actor_id = ? AND e.param = ? AND distance IS NOT NULL "
+            "ORDER BY distance ASC, e.entry_id ASC LIMIT ?",
+            (query_vector, DOCUMENT, self.cache.embedder.model_id, self.actor_id, name, k),
+        )
+        return [
+            Retrieved(entry_id=str(row[0]), value=str(row[1]), distance=float(row[2]))
+            for row in rows
+        ]
+
+    def _query_vector_is_rankable(self, vector: bytes) -> bool:
+        """Whether `vec_distance_cosine` can score anything against this query vector.
+
+        The predicate half of `_require_rankable_query`, split out because `hybrid_entries`
+        needs to *branch* on the answer rather than refuse on it. Same oracle, stated once:
+        the vector's distance to itself is NULL exactly when its magnitude is zero.
+        """
+        row = fetch_one(
+            self.connection,  # pyright: ignore[reportArgumentType]
+            "SELECT vec_distance_cosine(?, ?)",
+            (vector, vector),
+        )
+        return row is not None and row[0] is not None
 
     def unranked_entries(self, name: str) -> list[str]:
         """Entry ids with no cached vector, which the inner join silently cannot return.
@@ -656,6 +1259,19 @@ class SqliteMemoryBackend(MemoryBackend):
 
         Ignores `distance_ceiling` throughout: the ceiling is derived from this measurement,
         so applying it here would be circular.
+
+        **Measures the vector channel, not the hybrid one**, and that is a soundness
+        requirement rather than an oversight. Every quantity in the verdict is a cosine
+        distance: `separation` is a difference of two distance means, `worst_relevant` and
+        `best_control` are distance extremes, and `calibrate_ceiling` turns them into a
+        distance threshold. A fused ranking's top hit can be a lexical-only hit carrying
+        `distance=inf`, which would put an infinity into every one of those and make the
+        verdict meaningless — and worse, would make it *look* decisive. So this calls
+        `search_entries`. The consequence is worth stating plainly: a `discriminates` verdict
+        here is a claim about the embedding, and a corpus whose embedding does not
+        discriminate may still retrieve well through `_search`. That is not the guard being
+        wrong; the failure it exists to catch is a *useless embedding*, and the lexical
+        channel does not make a useless embedding useful.
         """
         self._require_list(name)
         ceiling, self.distance_ceiling = self.distance_ceiling, None
@@ -714,6 +1330,15 @@ class SqliteMemoryBackend(MemoryBackend):
         ceiling is a property of the corpus and the embedder, not of the SQL function, and
         `vec_distance_cosine` and `vector_distance_cos` do not agree to the last bit —
         measured, an identical float32 pair is 0.0 here and 4.47e-08 there.
+
+        Derived from, and applicable to, the **vector channel only** — inherited from
+        `probe_retrieval`, which explains why. There is deliberately no BM25 counterpart: bm25
+        scores are unbounded, negative, and move with corpus size and term frequency, so
+        "furthest relevant" and "closest control" are not comparable across two queries let
+        alone across two corpora, and any number derived from them would be the fitted
+        constant this whole retrieval path refuses. `hybrid_entries` therefore lets a
+        lexical-only hit past the ceiling, which is the honest reading: the ceiling is a
+        statement about cosine confidence and says nothing about an exact term match.
 
         Raises:
             CeilingNotSeparable: The distributions overlap, or one side was not
@@ -869,10 +1494,17 @@ class SqliteMemoryBackend(MemoryBackend):
             # A wholesale replace retires the old entries. The counter is monotonic, so the
             # retired ids are never handed out again and a stale id from an earlier forward
             # pass resolves to nothing rather than to somebody else's entry.
+            #
+            # The lexical index is cleared for the same parameter in the same breath, before
+            # any re-add. Deleting the entries alone would leave every old row `orphaned`,
+            # and since ids are never reused those rows would never be overwritten by a
+            # later insert either — they would accumulate across saves, each one a lexical
+            # hit that joins to nothing.
             self.connection.execute(
                 "DELETE FROM memory_entry WHERE actor_id = ? AND param = ?",
                 (self.actor_id, name),
             )
+            self._fts_delete_param(name)
             for item in value or []:
                 self.add_entry(name, str(item))
         else:
@@ -909,26 +1541,53 @@ class SqliteMemoryBackend(MemoryBackend):
         k: int = 5,
         **kwargs: Any,  # pyright: ignore[reportExplicitAny]
     ) -> tuple[list[str], ParameterMeta]:
-        """Return the top-k entry texts, with the ids in `meta["results"]`.
+        """Return the top-k entry texts by fused hybrid ranking, with the ids in
+        `meta["results"]`.
 
         `meta["results"]` is the whole mechanism for narrow gradients: it travels into the
         recall event, onto the reconstructed `ParameterNode`, and back out as
         `consolidate`'s `retrieved=`, so consolidation edits exactly the entries this
         forward pass read. `distances` rides along so a caller can audit retrieval quality
-        from the event log alone, after the fact, without re-running anything.
+        from the event log alone, after the fact, without re-running anything. Both are
+        unchanged in shape by the hybrid path — the gradient chain depends on them and the
+        contract is upstream's, not this file's.
 
         `distance_metric` is recorded alongside the embedding model because the numbers are
         only comparable within one SQL function. A log holding rows from both backends
-        would otherwise invite a threshold derived under one to be applied to the other.
+        would otherwise invite a threshold derived under one to be applied to the other. The
+        hybrid path adds three more fields for the same auditability reason, and they matter
+        most when read *after* the fact:
+
+            `channels`      which rankings produced these hits: `["vector", "fts"]`,
+                            `["vector"]`, or `["fts"]`. Without it a fallback is invisible,
+                            and a fallback is the one case where the hits mean something
+                            different from what the caller asked for.
+            `rrf_k`         the fusion constant these ranks were fused under, so a log row
+                            is interpretable if the default ever moves.
+            `lexical_metric` names `bm25`, in the same spirit as `distance_metric` and for a
+                            sharper reason: it is the field that says this row came from a
+                            backend whose engine can rank lexically at all. A `TursoMemory
+                            Backend` row never carries it, because `fts_score()` cannot.
+
+        `distances` holds `inf` for a hit only the lexical channel scored. That is deliberate
+        and it is why the value is not rounded blindly: `inf` is an honest "cosine did not
+        rank this" and round-trips through JSON as `Infinity`, where a substituted 0.0 would
+        claim a perfect vector match and a substituted 2.0 would claim a worst-case one.
         """
         del kwargs
-        hits = self.search_entries(name, query, k=k)
+        hits, channels = self.hybrid_entries(name, query, k=k)
         return [h.value for h in hits], {
             "results": {h.entry_id: h.value for h in hits},
-            "distances": {h.entry_id: round(h.distance, 6) for h in hits},
+            "distances": {
+                h.entry_id: (h.distance if h.distance == float("inf") else round(h.distance, 6))
+                for h in hits
+            },
             "distance_ceiling": self.distance_ceiling,
             "embedding_model": self.cache.embedder.model_id,
             "distance_metric": "vec_distance_cosine",
+            "lexical_metric": "bm25",
+            "channels": channels,
+            "rrf_k": RRF_K,
         }
 
     def _consolidate(
