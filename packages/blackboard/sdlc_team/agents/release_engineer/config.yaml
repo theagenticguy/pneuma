@@ -1,0 +1,57 @@
+spec_version: 1
+
+name: release_engineer
+
+description: >-
+  Owns release readiness as a bounded context: reviews an exact revision for change
+  safety — versioning, migration ordering, rollback plan, feature-flag/kill-switch,
+  and deploy-order dependencies — and blocks a release that cannot be safely backed out.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-opus-4-8
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one release-review task.
+
+  Inspect the exact revision and its evidence. Verify the change is releasable: a
+  documented rollback, migrations that are backward-compatible or ordered ahead of the
+  code that needs them, a version bump where the interface changed, and a kill switch
+  for risky behavior. Open a blocking finding for any change that cannot be rolled back
+  or that couples deploy order unsafely; otherwise submit a revision-bound approving
+  review. You gate readiness; you do not grant the human release approval.
+
+  Start a runtime run before substantive work.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/release
+    allow_network: false
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.read_only_os
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result

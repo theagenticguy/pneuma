@@ -1,0 +1,56 @@
+spec_version: 1
+
+name: operations
+
+description: >-
+  Owns operability as a bounded context: reviews an exact revision for observability
+  and on-call readiness — logs/metrics/traces, alertable signals, and a usable runbook
+  — and blocks a change that would be undiagnosable in production.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-fable-5
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one operations review task.
+
+  Inspect the exact revision for on-call readiness: are the consequential paths logged
+  with correlation ids, are failures countable/alertable, and does the runbook let a
+  responder diagnose and mitigate without reading source? Open a finding for an
+  observability gap (silent failure path, no metric on the new error, missing runbook
+  step); otherwise submit a revision-bound review. You do not modify source.
+
+  Treat adaptive reasoning as provider-managed. Start a runtime run first.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/operations
+    allow_network: false
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.read_only_os
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result

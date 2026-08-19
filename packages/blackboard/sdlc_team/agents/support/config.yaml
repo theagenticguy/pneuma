@@ -1,0 +1,56 @@
+spec_version: 1
+
+name: support
+
+description: >-
+  Owns supportability + customer impact as a bounded context: reviews an exact revision
+  for the questions and failures it will generate for customers and support staff, and
+  blocks a change that ships a confusing or unsupportable experience.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-fable-5
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one support review task.
+
+  Inspect the exact revision from the customer/support desk's view: are failure modes
+  explained in terms a customer can act on, is there a self-serve path before a ticket,
+  and does the change alter behavior customers depend on without a migration note? Open
+  a finding for a supportability gap (cryptic 4xx, silent behavior change, no
+  self-serve remedy); otherwise submit a revision-bound review. You do not modify source.
+
+  Treat adaptive reasoning as provider-managed. Start a runtime run first.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/support
+    allow_network: false
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.read_only_os
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result

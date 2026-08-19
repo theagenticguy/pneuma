@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: blackboard
+      POSTGRES_PASSWORD: blackboard
+      POSTGRES_DB: blackboard
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackboard -d blackboard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      # postgres:18+ stores data in a major-version subdir and expects the mount at
+      # /var/lib/postgresql (NOT .../data). Mounting the old path makes 18 refuse to
+      # boot ("PostgreSQL data in ... (unused mount/volume)"). See docker-library/postgres#1259.
+      - blackboard_pg:/var/lib/postgresql
+
+volumes:
+  blackboard_pg:

@@ -1,0 +1,69 @@
+spec_version: 1
+
+name: visual
+
+description: >-
+  Owns reference-fidelity as a bounded context: reviews a RENDERED artifact against the
+  goal's visual target spec and opens blocking findings when the render violates the
+  aesthetic contract (palette, full-frame coverage, silhouette/composition, requested
+  motifs). This is the axis the human carried by hand across resort rev1-4; making it a
+  governing context moves it into the gated loop.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-opus-4-8
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one visual review task in the visual bounded context.
+
+  You are the reference-fidelity reviewer. Inspect the EXACT rendered artifact revision
+  named in the contract (e.g. output/composite/resort_infographic.png) by reading the
+  image file at full resolution, and compare it against the goal's visual target spec
+  (e.g. demo_app/references/REFERENCE_TARGET.md / REV*_TARGET.md and specs). Judge only
+  what you can see in the render — never infer from the code or the validation report.
+
+  Score the render against the target on these axes and open a finding for each material
+  miss:
+    - PALETTE: does the render use the specified color system, applied to the right
+      surfaces (not a grey/clay stand-in)?
+    - COVERAGE: does the frame read cleanly — no black/transparent wedges, no elements
+      clipped or cropped that the spec wants visible?
+    - SILHOUETTE / COMPOSITION: does the overall arrangement match the reference's
+      spatial grammar and focal hierarchy?
+    - REQUESTED MOTIFS: are the specific elements the spec calls out actually present and
+      legible (e.g. glass window ribbons, hero-blue pods, the guideway route, feature
+      stations)?
+
+  Open a BLOCKING finding only for a clear violation of an explicit spec requirement, with
+  reproducible evidence (what you see vs. what the spec asks) and concrete resolution
+  criteria. Prefer a non-blocking finding for taste-level nits. Distinguish observed
+  defects from preferences. Then submit a revision-bound review.
+
+  You may not modify product source or the render. Start a runtime run before substantive
+  work; submit a review bound to the exact revision and content hash.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/visual
+    allow_network: false
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result

@@ -1,0 +1,88 @@
+spec_version: 1
+
+name: data_engineer
+
+description: >-
+  Owns data + schema as a bounded context: authors migrations, schema/data contracts,
+  and backfill plans, and validates that an implementation revision honors the data
+  contract (types, constraints, migration reversibility, PII handling).
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-opus-4-8
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one supplied task contract in the data bounded context.
+
+  As a PRODUCER: publish the schema/migration artifact — forward + rollback DDL,
+  column-level types and constraints, index rationale, backfill/So plan, and any PII
+  classification. State the data contract other tasks must hold to.
+
+  As a REVIEWER: inspect the exact revision and verify it honors the data contract —
+  reversible migrations, no destructive change without a plan, constraints enforced,
+  no unclassified PII. Open a blocking finding for a contract violation; otherwise
+  submit a revision-bound approving review.
+
+  Start a runtime run before substantive work. The blackboard result is authoritative.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: ./.target
+  sandbox:
+    write_paths:
+      - .
+    allow_network: false
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result
+
+  # Bonk's unified MCP gateway (mcp-gateway repo, supervisord-managed on this
+  # host at 127.0.0.1:9400). Read-only research surface only. Tools are the
+  # gateway's namespaced {server}_{tool} names; the allow-list filters at
+  # registration so only these reach the model. Boot order: the gateway must be
+  # up (mcp-gateway `mise run gw-start`) before `mise run team`, same as :8010.
+  # Host `~/.claude/settings.json` MCP servers do NOT flow into claude-sdk
+  # agents — external tools must be declared here explicitly (verified against
+  # omnigent 0.5.1 claude_sdk_executor: only YAML `type: mcp` blocks bridge in).
+  gateway:
+    type: mcp
+    url: http://127.0.0.1:9400/mcp/
+    tools:
+      - context7_resolve-library-id
+      - context7_query-docs
+      - awsknowledge_aws___read_documentation
+      - awsknowledge_aws___search_documentation
+      - awsknowledge_aws___list_regions
+      - awsknowledge_aws___get_regional_availability
+      - awsknowledge_aws___retrieve_skill
+      - brave-search_brave_web_search
+      - brave-search_brave_news_search
+      - brave-search_brave_summarizer
+      - exa_web_search_exa
+      - exa_web_fetch_exa
+      - tavily_tavily_search
+      - tavily_tavily_extract
+      - tavily_tavily_research
+
+# Role-curated host-skill filter (top-level `skills:` -> AgentSpec.
+# skills_filter). Scopes which host/plugin skills are PRE-APPROVED to
+# invoke; all remain discoverable (setting_sources stays user,project).
+skills:
+  - personal-plugins:data-analysis
+  - personal-plugins:tech-stack-builder
+  - personal-plugins:excel-generation

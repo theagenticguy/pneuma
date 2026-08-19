@@ -1,0 +1,91 @@
+[project]
+# Renamed from "omnigent-blackboard-poc" when it became a workspace member. The
+# DISTRIBUTION is `pneuma-blackboard`; the IMPORT package stays `sdlc_blackboard` so
+# every module, test, and script it arrived with keeps working unedited.
+name = "pneuma-blackboard"
+version = "0.1.0"
+description = "Transactional SDLC blackboard kernel with a thin MCP adapter"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "fastmcp>=3.4.4,<4",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "asyncpg>=0.30,<1",
+  "structlog>=26.1,<27",
+  "orjson>=3.10,<4",
+  "typer>=0.16,<1",
+]
+
+# A workspace member cannot be its own sibling's dev tool: the dev set moved from
+# [project.optional-dependencies] (an EXTRA, which `uv sync` does not install unless asked
+# for by name) to [dependency-groups] (which uv syncs for every workspace member by
+# default). Same packages, same bounds — this is what makes `uv sync` at the root enough to
+# run BOTH suites, and it matches how packages/pneuma already declares its dev set.
+[dependency-groups]
+dev = [
+  "pytest>=9.1,<10",
+  "pytest-asyncio>=1.4,<2",
+  "pytest-xdist>=3.8,<4",
+  "pytest-cov>=7.1,<8",
+  "ruff>=0.12,<1",
+  "pyright>=1.1.403,<2",
+  "hypothesis>=6.100,<7",
+  "testcontainers[postgres]>=4.8,<5",
+  # asyncpg ships no py.typed; version-matched stubs restore pyright-strict (research-stack.yaml).
+  "asyncpg-stubs>=0.31,<0.32",
+]
+
+[project.scripts]
+blackboard = "sdlc_blackboard.interfaces.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sdlc_blackboard"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "acceptance: live Bedrock/Omnigent acceptance tests (opt-in via RUN_BEDROCK_ACCEPTANCE=1)",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+# ruff 0.16 began formatting Python code blocks inside Markdown, which `ruff format --check`
+# then reports against HANDOFF.md — 4000 lines of design record whose embedded snippets are
+# quoted prose, not maintained source, and reflowing them would rewrite the historical
+# document. Nothing to do with the workspace move: the standalone PoC pinned ruff 0.15 via
+# mise, so its own `lint` task never saw .md files. Excluded rather than reformatted, and
+# scoped to the one file so any future Markdown stays in scope.
+extend-exclude = ["HANDOFF.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "S", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "E501", "S311"]
+# The operator demo script mirrors the e2e test: asserts guard each step, and its
+# raw SQL truncate/update use trusted constants (S608 not selected here anyway).
+"scripts/**" = ["S101", "E501"]
+# S608 (SQL-injection heuristic) fires on repositories that interpolate TRUSTED
+# module-constant table names while every VALUE is $N-bound. Scoped + explained
+# per hexagonal-arch-stack.md discipline (see repository module docstrings).
+"src/sdlc_blackboard/infrastructure/repositories/*.py" = ["S608"]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/test_refute_probes.py"]  # adversarial-audit scratch (agent-generated, throwaway)
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+# Documented relaxations (hexagonal-arch-stack.md §4): stub gaps only.
+reportUnknownMemberType = false      # asyncpg Record + decorator stubs defeat strict inference
+reportMissingTypeStubs = false
+reportUnusedFunction = false         # @mcp.tool / @mcp.custom_route register handlers as a side effect

@@ -1,0 +1,45 @@
+spec_version: 1
+
+name: quality
+
+description: >-
+  Independently validates an exact artifact revision against acceptance criteria and
+  publishes revision-bound evidence and findings.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-opus-4-8
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one QA review task.
+
+  Review only the exact artifact bindings in the contract. Do not treat a branch
+  name, mutable workspace, or later commit as equivalent.
+
+  Run or create tests only as permitted. Publish findings with evidence
+  (open_finding) and submit a review bound to the exact revision and content hash
+  (submit_review). Start a runtime run before substantive work.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: ./.target
+  sandbox:
+    type: none
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result
