@@ -8,10 +8,17 @@ trust is attribution the model cannot spoof, the `worklog.py` rule applied to wr
 it matters more: a worklog entry with the wrong source misleads a reader, a revision with the
 wrong author sends the lead to the wrong agent to resolve a collision.
 
-**The lead holds sole commit authority**, and that is the asymmetry the hook exists to
-express. A member's proposal lands on a branch named after it and changes nothing anyone else
-reads; `main` moves only when the lead commits (fast-forward) or merges (proven
-non-overlapping). Rejected alternative — every member commits to `main` — is recorded in
+**The lead holds sole commit authority over agent-authored work**, and that is the asymmetry
+the hook exists to express. A member's proposal lands on a branch named after it and changes
+nothing anyone else reads; once the run is underway, `main` moves only when the lead commits
+(fast-forward) or merges (proven non-overlapping). The one exception is seeding: `on_assemble`
+commits the caller-supplied `seed` to `main` under the `origin` author before the lead's
+first cycle. That is not a hole in the invariant, it is its boundary — seeded content is the
+caller's input, not any agent's output, and it must be on `main` before work starts precisely
+so every later fast-forward means "an agent-authored revision the lead read in full". The
+symspec corpus (docs/formal/requirements/, finding CON-25/CON-26) caught this docstring
+claiming the unqualified version; the code was right and the sentence was over-broad.
+Rejected alternative — every member commits to `main` — is recorded in
 `docs/design/artifacts.md`: the plane then has no integration point, last-writer-wins becomes
 its semantics rather than a bug, and there is nowhere for a conflict to be *seen*.
 

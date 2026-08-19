@@ -100,9 +100,17 @@ consuming it as tools keeps asyncpg and the kernel's dependencies out of pneuma 
   provenance becomes joinable across planes.
 - **The release gate spans both planes.** Gate = the kernel's derived evaluation over
   accepted reviews AND content-plane cleanliness: no unresolved `Conflict` rows, and
-  `split_brain` not CONFIRMED. Mechanically: a gate-evidence step runs the probe and
-  publishes its three-valued verdict as a review artifact the gate requires — the kernel
-  needs no new concept, the probe result is just one more blocking review.
+  `split_brain` affirmatively clean. The symspec corpus (docs/formal/requirements/,
+  finding XPL-1/XPL-2) proved the earlier wording — "not CONFIRMED" — contradicts the
+  review-integrity rule in `hooks/review.py`: a two-valued test over a three-valued
+  probe lets the could-not-tell verdict (no `decides` recorded anywhere, the likeliest
+  first-run state) pass the gate on absence of evidence. Resolution: the gate-evidence
+  step publishes the probe's three-valued verdict as a review artifact, and only the
+  affirmative "no divergence observed over recorded decisions" settles that review as
+  accepted; could-not-tell leaves it unsettled, which the kernel's existing
+  positive-evidence gate semantics already refuse. The kernel still needs no new
+  concept, and teams that never use `decides` must say so once (a single recorded
+  decision, or a waiver review) rather than passing silently.
 - **Trajectory rows and kernel events stay separate planes**, joined by
   `(goal_id, task_id, run_id)` carried in both. One is rollout evidence for learning;
   the other is organizational audit. Merging them would couple retention and schema
