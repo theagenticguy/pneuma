@@ -14,12 +14,29 @@ against scripted models.
 
 ## Quick start
 
+This package is a member of the [pneuma workspace](../../README.md); `uv sync` runs at the
+repo root and materializes one `.venv` serving every member. From the repo root:
+
 ```bash
-uv sync
-uv run pytest        # 901 tests: 881 pass, 20 skip (they need live models or optional files)
-uv run pneuma        # live Bedrock war-room run, writes artifacts/
+uv sync                                     # or: mise run install
+mise run test:pneuma                        # 1077 tests: 1057 pass, 20 skip
+uv run --package pneuma pytest packages/pneuma   # the same, spelled out
+mise run demo                               # live Bedrock war-room run, writes artifacts/
+```
+
+Or work inside this directory, where the commands are the familiar single-project ones:
+
+```bash
+cd packages/pneuma
+uv run pytest          # 1077 tests: 1057 pass, 20 skip (live models or optional files)
+uv run pneuma          # live Bedrock war-room run, writes artifacts/
 uv run pneuma --truth  # print the demo's planted ground truth and exit
 ```
+
+Note that `uv run --package pneuma pytest` needs the `packages/pneuma` path argument when
+invoked from the root: `--package` selects which member's dependencies to expose, but it
+does not change the working directory, and pytest takes its rootdir and config from the cwd.
+Without the path it would collect the blackboard's suite too.
 
 The `pneuma` command runs one incident investigation: several specialist agents, a lead
 holding no evidence, and a hiring budget. It exits non-zero when the demo's own answer
@@ -387,6 +404,16 @@ reference, behavior, analysis, diagrams, and insights, all generated from the so
 per-line citations. Each library module also has a hand-written design essay under
 `docs/design/` explaining why it is shaped the way it is, and two longer write-ups live at
 `docs/case-study.md` and `docs/process.md`.
+
+Two documents moved up to the repo level when this package became a workspace member,
+because they describe pneuma and the blackboard kernel *together* and would be wrong to file
+under either one:
+
+- [`../../docs/design/org-plane.md`](../../docs/design/org-plane.md) — the integration design
+  across the content, organization, and execution planes.
+- [`../../docs/formal/`](../../docs/formal/) — the TLA+ models of those planes (including
+  `OrgPlane.tla`, which models the blackboard's task lifecycle) plus the symspec corpus, and
+  [`PLANES.md`](../../docs/formal/PLANES.md), the which-record-system-when matrix.
 
 ## Contributing
 

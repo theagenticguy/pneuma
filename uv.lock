@@ -7,6 +7,11 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "pneuma",
+]
+
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -1061,7 +1066,7 @@ wheels = [
 [[package]]
 name = "pneuma"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "packages/pneuma" }
 dependencies = [
     { name = "libsql" },
     { name = "polars" },

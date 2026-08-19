@@ -1,11 +1,58 @@
+# One .venv at the workspace root serves every member (uv sync), but a member-local
+# .venv is still possible if someone runs uv inside packages/*, so the pattern is unanchored.
 .venv/
 __pycache__/
-*.pyc
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Test / coverage / lint caches, wherever a suite is run from.
 .pytest_cache/
 .ruff_cache/
 .hypothesis/
-dist/
-tools/tla2tools.jar
+.coverage
+htmlcov/
+
+# TLC model checker jar: 2.3MB binary, fetched not committed. Lives with the package that
+# shells out to it (packages/pneuma/src/pneuma/process/tla.py resolves it relative to the
+# package root), while the repo-level TLA+ specs in docs/formal/ reach it by relative path.
+packages/pneuma/tools/tla2tools.jar
+
+# TLC scratch state from a repo-level docs/formal/ model-checking run.
 docs/formal/states/
+
+# ERPAVal ephemeral session state (solutions/ IS tracked; sessions/ is not).
 .erpaval/sessions/
 .codegraph/
+
+# --- packages/blackboard ---
+# Local env / secrets (.env.example IS tracked).
+.env
+
+# Target-repo symlink (host-specific; created by `mise run link-target`).
+.target
+
+# Demo scratch output from the blackboard's scripted runs. Scoped to the blackboard
+# because packages/pneuma/artifacts/ is TRACKED (committed demo run output) — an
+# unanchored `artifacts/` here would start hiding changes to those files.
+qa-output/
+security-output/
+packages/blackboard/artifacts/
+
+# adversarial-audit scratch probes (agent self-labeled 'do not keep')
+packages/blackboard/tests/integration/test_refute_probes.py
+
+# Doc-generation scratch (packets + repomix flatten)
+docs/.packets/
+docs/.repomix/
+packages/*/docs/.packets/
+packages/*/docs/.repomix/
+
+# Lean build artifacts
+packages/blackboard/formal/.lake/
+
+# Detached MCP server (mise run mcp:start)
+.mcp.pid
+.mcp.log
