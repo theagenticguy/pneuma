@@ -6,5 +6,6 @@ __pycache__/
 .hypothesis/
 dist/
 tools/tla2tools.jar
+docs/formal/states/
 .erpaval/sessions/
 .codegraph/
