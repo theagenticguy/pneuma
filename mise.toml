@@ -1,0 +1,190 @@
+# mise is the single front door for the workspace: humans, agents, and CI invoke the same
+# tasks. `mise run check` is the definition of done.
+#
+# Every task runs from the WORKSPACE ROOT and reaches into a member explicitly, because
+# `uv run --package <name>` selects which member's dependencies to expose but does NOT
+# change the working directory. pytest derives its rootdir and its config from the cwd, so
+# `uv run --package pneuma pytest` with no path argument collects BOTH members' suites under
+# the root. Each test task therefore names its package directory; that is what makes
+# test:pneuma and test:blackboard actually disjoint.
+
+[tools]
+python = "3.14"
+uv = "latest"
+ruff = "latest"
+dbmate = "latest"
+
+[env]
+# One venv at the workspace root serves both members (uv sync installs each editable).
+_.python.venv = { path = ".venv", create = true }
+
+# --- blackboard conventions, copied from the POC's own mise.toml ---
+BLACKBOARD_DATABASE_URL = "{{ env.BLACKBOARD_DATABASE_URL | default(value='postgresql://blackboard:blackboard@127.0.0.1:5432/blackboard') }}"
+BLACKBOARD_HOST = "{{ env.BLACKBOARD_HOST | default(value='127.0.0.1') }}"
+# 8010 (not 8000) because 8000 is commonly occupied by another local MCP server; override
+# BLACKBOARD_MCP_PORT if you change it — but keep the sdlc_team YAMLs in sync.
+BLACKBOARD_MCP_PORT = "{{ env.BLACKBOARD_MCP_PORT | default(value='8010') }}"
+# omnigent is NOT a project dependency: the blackboard talks to it over HTTP and never
+# imports it, and folding it into the venv would downgrade shared deps (e.g. websockets<15
+# — which would also break pneuma, now that they share one venv). `mise run team` launches
+# it in an isolated uvx env instead.
+OMNIGENT_VERSION = "{{ env.OMNIGENT_VERSION | default(value='0.6.0') }}"
+OMNIGENT_DATA_DIR = "{{ env.OMNIGENT_DATA_DIR | default(value='/home/lalsaado/.omnigent-poc-0.6.0') }}"
+# The TARGET repository the SDLC team builds against — the parameter that makes the
+# blackboard runtime repo-agnostic. Specialists cwd into the `.target` symlink, not this
+# path (omnigent parses os_env.cwd verbatim, so the YAMLs cannot interpolate an env var).
+BLACKBOARD_TARGET_REPO = "{{ env.BLACKBOARD_TARGET_REPO | default(value='/home/lalsaado/workplace/demo_app') }}"
+
+# ---------------------------------------------------------------- install
+
+[tasks.install]
+description = "Sync the workspace: one .venv serving both members, each editable"
+# No --extra: both members declare dev tooling in [dependency-groups], which uv syncs for
+# every workspace member by default.
+run = "uv sync"
+
+[tasks."install:ci"]
+description = "Sync from the committed lockfile (fails on drift)"
+run = "uv sync --locked"
+
+# ---------------------------------------------------------------- test
+
+[tasks."test:pneuma"]
+description = "pneuma's suite (~4 min offline; TLC tests skip without packages/pneuma/tools/tla2tools.jar)"
+run = "uv run --package pneuma pytest packages/pneuma"
+
+[tasks."test:blackboard"]
+description = "blackboard's suite (integration/e2e skip cleanly without Docker + dbmate)"
+run = "uv run --package pneuma-blackboard pytest packages/blackboard -n auto"
+
+[tasks."test:blackboard:unit"]
+description = "Fast inner loop — blackboard unit + contract, no Postgres"
+run = "uv run --package pneuma-blackboard pytest packages/blackboard/tests/unit packages/blackboard/tests/contract -n auto"
+
+[tasks."test:blackboard:integration"]
+description = "blackboard against real Postgres via testcontainers"
+run = "uv run --package pneuma-blackboard pytest packages/blackboard/tests/integration packages/blackboard/tests/e2e"
+
+[tasks.test]
+description = "Both members' suites"
+depends = ["test:pneuma", "test:blackboard"]
+
+# ---------------------------------------------------------------- lint
+
+[tasks."lint:pneuma"]
+description = "ruff check for pneuma (E,F,I,UP,B,SIM; line-length 100)"
+# Run from inside the member so ruff picks up ITS pyproject: the two packages keep
+# deliberately different configs (the blackboard adds ASYNC,S,RUF plus per-file ignores),
+# and linting both from the root would apply one package's rules to the other.
+run = "uv run --directory packages/pneuma ruff check src tests"
+
+[tasks."lint:blackboard"]
+description = "ruff check + format check for the blackboard (adds ASYNC,S,RUF)"
+run = [
+  "uv run --directory packages/blackboard ruff check .",
+  "uv run --directory packages/blackboard ruff format --check .",
+]
+
+[tasks.lint]
+description = "ruff for both members, each under its own config"
+depends = ["lint:pneuma", "lint:blackboard"]
+
+[tasks."typecheck:blackboard"]
+description = "pyright strict over the blackboard (pneuma has no pyright gate)"
+run = "uv run --directory packages/blackboard pyright"
+
+# ---------------------------------------------------------------- the gate
+
+[tasks.check]
+description = "The definition of done: lint both, then both test suites"
+depends = ["lint", "test"]
+
+# ---------------------------------------------------------------- database
+
+[tasks."db:up"]
+description = "Start Postgres for the blackboard via docker compose"
+run = "docker compose -f packages/blackboard/compose.yaml up -d postgres"
+
+[tasks."db:down"]
+description = "Stop the blackboard's Postgres"
+run = "docker compose -f packages/blackboard/compose.yaml down"
+
+[tasks.migrate]
+description = "Apply the blackboard's SQL migrations via dbmate (through its CLI)"
+run = "uv run --directory packages/blackboard blackboard migrate"
+
+# ---------------------------------------------------------------- servers / demos
+
+[tasks.demo]
+description = "pneuma's live Bedrock war-room demo (writes packages/pneuma/artifacts/)"
+# --directory so the CLI's default `--out artifacts` lands in the package, as it did before.
+run = "uv run --directory packages/pneuma pneuma"
+
+[tasks.mcp]
+description = "The blackboard's FastMCP server on loopback:$BLACKBOARD_MCP_PORT (default 8010) — FOREGROUND"
+# The programmatic launcher: `fastmcp run` ignores --port in this environment (see
+# scripts/serve_blackboard.py docstring), and the team YAMLs dial 8010.
+run = "uv run --directory packages/blackboard python scripts/serve_blackboard.py"
+
+[tasks."mcp:start"]
+description = "Start the MCP server DETACHED (logs -> .mcp.log, pgid -> .mcp.pid)"
+# setsid detaches into a new session (its own process GROUP) with stdio redirected, so the
+# shell reclaims the prompt. We record the session-leader pid, which == the new PGID, so
+# mcp:stop can signal the WHOLE group — `uv run` forks a grandchild python and a single pid
+# cannot reach it. Idempotent: refuses to double-start if the group is still alive.
+dir = "packages/blackboard"
+run = '''
+if [ -f .mcp.pid ] && kill -0 "-$(cat .mcp.pid)" 2>/dev/null; then
+  echo "mcp already running (pgid $(cat .mcp.pid)) on :$BLACKBOARD_MCP_PORT"; exit 0
+fi
+setsid sh -c 'echo $$ > .mcp.pid; exec uv run python scripts/serve_blackboard.py' >.mcp.log 2>&1 < /dev/null &
+sleep 1
+echo "mcp started (pgid $(cat .mcp.pid)) -> http://$BLACKBOARD_HOST:$BLACKBOARD_MCP_PORT/mcp  (logs: packages/blackboard/.mcp.log)"
+'''
+
+[tasks."mcp:stop"]
+description = "Stop the detached MCP server started by mcp:start"
+dir = "packages/blackboard"
+run = '''
+if [ -f .mcp.pid ] && kill -0 "-$(cat .mcp.pid)" 2>/dev/null; then
+  kill -TERM "-$(cat .mcp.pid)" && echo "mcp stopped (pgid $(cat .mcp.pid))"
+else
+  echo "mcp not running"
+fi
+rm -f .mcp.pid
+'''
+
+[tasks."mcp:logs"]
+description = "Tail the detached MCP server log"
+run = "tail -f packages/blackboard/.mcp.log"
+
+[tasks."demo:blackboard"]
+description = "The blackboard's scripted deterministic E2E (no LLMs)"
+run = "uv run --directory packages/blackboard python scripts/run_scripted_demo.py"
+
+[tasks."demo:reset"]
+description = "Reset the blackboard's demo state"
+run = "uv run --directory packages/blackboard blackboard reset-demo"
+
+# ---------------------------------------------------------------- omnigent team
+
+[tasks."link-target"]
+description = "Point the SDLC team at $BLACKBOARD_TARGET_REPO via the .target symlink"
+dir = "packages/blackboard"
+run = "ln -sfn \"$BLACKBOARD_TARGET_REPO\" .target && echo \".target -> $(readlink .target)\""
+
+[tasks.team]
+description = "Run the live Omnigent SDLC team from PyPI-pinned omnigent (uvx-isolated)"
+dir = "packages/blackboard"
+run = "uvx --from \"omnigent==$OMNIGENT_VERSION\" omnigent run sdlc_team/"
+
+[tasks."team:validate"]
+description = "Parse the whole team through the pinned PyPI omnigent — proves 0 errors"
+dir = "packages/blackboard"
+run = "uvx --from \"omnigent==$OMNIGENT_VERSION\" python scripts/validate_team.py sdlc_team"
+
+# ---------------------------------------------------------------- formal
+
+[tasks."formal:blackboard"]
+description = "Kernel-check the blackboard's Lean model"
+run = "cd packages/blackboard/formal && lake build"

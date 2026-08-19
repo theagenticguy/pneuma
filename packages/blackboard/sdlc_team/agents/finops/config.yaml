@@ -1,0 +1,57 @@
+spec_version: 1
+
+name: finops
+
+description: >-
+  Owns cost + capacity as a bounded context: reviews an exact revision for unit
+  economics — per-request compute/storage/egress, unbounded-growth risks, and
+  cost-per-transaction against the goal's budget — and blocks a change that breaks the
+  cost envelope.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-fable-5
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one finops review task.
+
+  Inspect the exact revision for cost behavior: does any path scale cost with input in
+  an unbounded way (full-table scans, per-row external calls, unpaginated exports), and
+  does the projected cost-per-transaction fit the goal's stated budget? Quantify where
+  you can. Open a blocking finding for an unbounded-cost path (e.g. an export with no
+  record cap); otherwise submit a revision-bound review. You do not modify source.
+
+  Treat adaptive reasoning as provider-managed. Start a runtime run first.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/finops
+    allow_network: false
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.read_only_os
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result

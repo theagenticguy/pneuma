@@ -1,0 +1,90 @@
+spec_version: 1
+
+name: sdlc_team_lead
+
+description: >-
+  Cross-functional SDLC team lead. Converts a human objective into explicit
+  blackboard task contracts, delegates autonomous specialist work, integrates
+  artifacts and evidence, coordinates review and remediation, and requests
+  human approval at the final gate.
+
+spawn: true
+
+executor:
+  type: omnigent
+  context_window: 1000000
+  config:
+    harness: claude-sdk
+
+instructions: LEAD.md
+
+async: true
+cancellable: true
+timers: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    type: none
+
+tools:
+  # A generic inline MCP server named "blackboard" (verified: Omnigent 0.5.1 has NO
+  # framework "blackboard" concept — any tools: key with type mcp becomes an
+  # MCPServerConfig; url implies http transport). See README ADR-0004.
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - create_goal
+      - create_task
+      - refresh_ready_tasks
+      - get_goal_snapshot
+      - get_task_contract
+      - claim_task
+      - bind_runtime_session
+      - read_relevant_events
+      - get_gate_status
+      - record_human_approval
+      - authorize_goal_completion
+
+  # The canonical enterprise SDLC roster — each specialist is a BOUNDED CONTEXT
+  # (an authority slice), not a persona. The lead composes them per goal; the task
+  # contract drives behavior. See sdlc_team/ROSTER.md.
+  agents:
+    # Producing contexts
+    - analyst                       # requirements / business analysis
+    - architect                     # system design + architecture review
+    - implementation_claude_opus    # implementation — Claude Opus 4.8
+    - implementation_claude_fable   # implementation — Claude Fable 5
+    - implementation_codex_sol      # implementation — GPT-5.6 Sol (Codex)
+    - data_engineer                 # schema / migration / data-contract work
+    - documentation                 # docs + runbooks
+    - ux                            # UX / API-ergonomics review + artifacts
+    # Reviewing / governing contexts
+    - quality                       # QA — acceptance-criteria validation
+    - security                      # security review + blocking findings
+    - security_adversarial          # security review — attacker-mindset red-team strategy
+    - security_property             # security review — property-based / invariant strategy
+    - compliance                    # regulatory / policy / privacy review
+    - release_engineer              # release readiness + change management
+    - platform_sre                  # deployability / reliability / SLO review
+    - operations                    # runbook / on-call / observability review
+    - finops                        # cost / capacity / spend review
+    - support                       # supportability / customer-impact review
+    - visual                        # reference-fidelity review of rendered artifacts
+
+guardrails:
+  ask_timeout: 86400
+  policies:
+    spawn_bounds:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.spawn_bounds
+        arguments:
+          # Cap concurrent dispatches per turn; the lead fans out in waves across the
+          # 15-specialist roster rather than all at once.
+          max_dispatches_per_turn: 8
+          dispatch_tools:
+            - sys_session_send
+            - sys_session_create

@@ -1,0 +1,60 @@
+[project]
+name = "pneuma"
+version = "0.1.0"
+description = "Object-oriented AI agents with self-staffing subagent hierarchies, on strands-ai-functions"
+requires-python = ">=3.14"
+dependencies = [
+    "strands-ai-functions",
+    "strands-agents>=1.50.0",
+    "pydantic>=2.4.0",
+    "rich>=13.7",
+    "polars>=1.43.1",
+    "libsql>=0.1.11",
+    "pyturso>=0.7.2",
+    # Loadable vector extension for stdlib sqlite3, used only by
+    # memory/sqlite_backend.py. A library-side dependency on purpose: unlike polars
+    # and pm4py it is a single small shared object with no transitive deps, so the
+    # library keeps its "no dataframe engine" property with it installed.
+    "sqlite-vec>=0.1.9",
+]
+
+# PyPI 0.3.0 predates runtime/usage.py (the subtree token-rollup helpers), so we
+# build against the upstream commit we actually documented.
+[tool.uv.sources]
+strands-ai-functions = { git = "https://github.com/strands-labs/ai-functions.git", rev = "e47dc94e7b8e4b1e3f3e85587d0bc60e78c30296" }
+
+[project.scripts]
+pneuma = "pneuma.demo.cli:main"
+pneuma-timeline = "pneuma.demo.timeline_demo:main"
+pneuma-review = "pneuma.demo.review:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.163.0",
+    "pm4py>=2.7.23.3",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pneuma"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# `tests/` on the path explicitly, so `from paths import PERMITS` resolves from a test in any
+# subdirectory. Without it the import only works for files sitting directly in tests/, and
+# moving one down a level is a collection error.
+pythonpath = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

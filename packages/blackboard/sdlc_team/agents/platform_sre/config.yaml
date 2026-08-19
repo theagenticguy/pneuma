@@ -1,0 +1,92 @@
+spec_version: 1
+
+name: platform_sre
+
+description: >-
+  Owns deployability + reliability as a bounded context: reviews an exact revision for
+  SLO impact, resource footprint, failure modes, health/readiness, and graceful
+  degradation, and blocks a change that would regress reliability.
+
+executor:
+  type: omnigent
+  model: global.anthropic.claude-opus-4-8
+  config:
+    harness: claude-sdk
+
+prompt: |
+  Execute exactly one platform/SRE review task.
+
+  Inspect the exact revision for operability: does it expose health/readiness, bound
+  its resource use, degrade gracefully under dependency failure, and avoid unbounded
+  retries or connection leaks? Check that new latency/error surfaces are within the
+  goal's stated SLOs. Open a blocking finding for a reliability regression (missing
+  timeout, unbounded fan-out, no backpressure); otherwise submit a revision-bound
+  review. You do not modify source.
+
+  Start a runtime run before substantive work.
+
+async: true
+cancellable: true
+
+os_env:
+  type: caller_process
+  cwd: .
+  sandbox:
+    write_paths:
+      - ./artifacts/platform
+    allow_network: false
+
+guardrails:
+  policies:
+    read_only_os:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.read_only_os
+
+tools:
+  blackboard:
+    type: mcp
+    url: http://127.0.0.1:8010/mcp
+    tools:
+      - get_task_contract
+      - get_artifact_revision
+      - read_relevant_events
+      - start_runtime_run
+      - open_finding
+      - submit_review
+      - submit_task_result
+
+  # Bonk's unified MCP gateway (mcp-gateway repo, supervisord-managed on this
+  # host at 127.0.0.1:9400). Read-only research surface only. Tools are the
+  # gateway's namespaced {server}_{tool} names; the allow-list filters at
+  # registration so only these reach the model. Boot order: the gateway must be
+  # up (mcp-gateway `mise run gw-start`) before `mise run team`, same as :8010.
+  # Host `~/.claude/settings.json` MCP servers do NOT flow into claude-sdk
+  # agents — external tools must be declared here explicitly (verified against
+  # omnigent 0.5.1 claude_sdk_executor: only YAML `type: mcp` blocks bridge in).
+  gateway:
+    type: mcp
+    url: http://127.0.0.1:9400/mcp/
+    tools:
+      - context7_resolve-library-id
+      - context7_query-docs
+      - awsknowledge_aws___read_documentation
+      - awsknowledge_aws___search_documentation
+      - awsknowledge_aws___list_regions
+      - awsknowledge_aws___get_regional_availability
+      - awsknowledge_aws___retrieve_skill
+      - brave-search_brave_web_search
+      - brave-search_brave_news_search
+      - brave-search_brave_summarizer
+      - exa_web_search_exa
+      - exa_web_fetch_exa
+      - tavily_tavily_search
+      - tavily_tavily_extract
+      - tavily_tavily_research
+
+# Role-curated host-skill filter (top-level `skills:` -> AgentSpec.
+# skills_filter). Scopes which host/plugin skills are PRE-APPROVED to
+# invoke; all remain discoverable (setting_sources stays user,project).
+skills:
+  - personal-plugins:internal-research
+  - personal-plugins:diagrams

@@ -1,0 +1,6 @@
+name = "blackboard"
+version = "0.1.0"
+defaultTargets = ["Blackboard"]
+
+[[lean_lib]]
+name = "Blackboard"
